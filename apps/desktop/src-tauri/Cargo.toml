@@ -1,0 +1,61 @@
+[package]
+name = "faro"
+version = "0.1.0"
+description = "Núcleo de escritorio de Faro (Tauri 2)."
+authors = ["Concersa"]
+license = "LicenseRef-Proprietary"
+publish = false
+edition = "2021"
+rust-version = "1.98"
+
+[lib]
+# Nombre distinto del binario para evitar el conflicto de nombres en Windows
+# (patrón estándar de Tauri 2). Solo `rlib`: Faro es de escritorio; `staticlib` y
+# `cdylib` solo hacen falta para móvil y generan avisos del enlazador en Windows.
+name = "faro_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.0", features = [] }
+# Solo para que build.rs verifique permisos y capability (ya están en el árbol de tauri-build).
+toml = "1"
+serde_json = "1"
+
+[dependencies]
+# Sin plugins de Tauri en F0 (spec F0 §4.3).
+tauri = { version = "2.12.0", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing-appender = "0.2.5"
+tokio = { version = "1.53.1", features = ["process", "io-util", "time", "sync", "macros", "rt-multi-thread", "net"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
+# `serde`: `AddKeyInput.secret` se deserializa directamente a `SecretString` (Bóveda, T6).
+secrecy = { version = "0.10.3", features = ["serde"] }
+base64 = "0.23.1"
+dotenvy = "0.15.7"
+getrandom = "0.3"
+zeroize = "1.9.0"
+# Llavero del SO (Bóveda, ADR 0003). v3 con backends nativos; `apple-native` para macOS después.
+keyring = { version = "3.6.3", features = ["windows-native", "apple-native"] }
+# Solo para `last_tested_at` en ISO-8601 UTC.
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+
+[dev-dependencies]
+tempfile = "3"
+# `test`: runtime simulado para comprobar el ACL real en `tests/acl.rs`. Solo en pruebas.
+tauri = { version = "2.12.0", features = ["test"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# Regla del núcleo: nada de unwrap()/expect() en producción.
+# En pruebas se permiten (ver clippy.toml).
+unwrap_used = "deny"
+expect_used = "deny"
+
+[target."cfg(windows)".dependencies]
+win32job = "2.0.3"

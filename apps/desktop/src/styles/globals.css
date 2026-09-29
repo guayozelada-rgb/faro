@@ -1,0 +1,97 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "./tokens.css";
+
+/*
+ * Sin la paleta de colores de Tailwind (slate, gray, violet, black…): solo existen los tokens de Faro.
+ */
+@theme {
+  --color-*: initial;
+}
+
+/*
+ * Mapeo de los tokens de Faro a Tailwind v4.
+ * Los nombres de shadcn/ui (`background`, `foreground`, `muted`, `ring`…) apuntan a los mismos tokens.
+ */
+@theme inline {
+  --color-neutral-50: var(--faro-neutral-50);
+  --color-neutral-100: var(--faro-neutral-100);
+  --color-neutral-200: var(--faro-neutral-200);
+  --color-neutral-300: var(--faro-neutral-300);
+  --color-neutral-400: var(--faro-neutral-400);
+  --color-neutral-500: var(--faro-neutral-500);
+  --color-neutral-600: var(--faro-neutral-600);
+  --color-neutral-700: var(--faro-neutral-700);
+  --color-neutral-800: var(--faro-neutral-800);
+  --color-neutral-900: var(--faro-neutral-900);
+
+  --color-primary: var(--faro-primary);
+  --color-primary-foreground: var(--faro-primary-foreground);
+  --color-ai: var(--faro-ai);
+  --color-ai-foreground: var(--faro-ai-foreground);
+  --color-success: var(--faro-success);
+  --color-warning: var(--faro-warning);
+  --color-critical: var(--faro-critical);
+  --color-critical-foreground: var(--faro-critical-foreground);
+  --color-destructive: var(--faro-critical);
+  --color-destructive-foreground: var(--faro-critical-foreground);
+
+  --color-background: var(--faro-background);
+  --color-foreground: var(--faro-foreground);
+  --color-surface: var(--faro-surface);
+  --color-surface-foreground: var(--faro-foreground);
+  --color-card: var(--faro-card);
+  --color-card-foreground: var(--faro-foreground);
+  --color-muted: var(--faro-muted);
+  --color-muted-foreground: var(--faro-muted-foreground);
+  --color-border: var(--faro-border);
+  --color-input: var(--faro-input);
+  --color-ring: var(--faro-primary);
+  --color-overlay: var(--faro-overlay);
+  /* Tooltips: invertidos (fondo = texto principal, texto = fondo de ventana) */
+  --color-popover: var(--faro-foreground);
+  --color-popover-foreground: var(--faro-background);
+
+  /* Sombras mínimas con el gris más oscuro permitido, nunca negro */
+  --shadow-sm: 0 1px 3px 0 var(--faro-shadow), 0 1px 2px -1px var(--faro-shadow);
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", monospace;
+
+  /* Radios: 8 px controles, 12 px tarjetas */
+  --radius-md: 8px;
+  --radius-lg: 12px;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background font-sans text-foreground antialiased;
+    font-size: 16px;
+  }
+
+  /* Foco visible: anillo primary de 2 px en todo elemento enfocable con teclado */
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}

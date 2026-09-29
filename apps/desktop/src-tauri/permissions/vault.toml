@@ -1,0 +1,22 @@
+# Permisos de los comandos de la Bóveda (spec F0 §5.3). Uno por comando.
+# Ninguno devuelve la clave: solo el resumen con los últimos 4 caracteres.
+
+[[permission]]
+identifier = "allow-vault-list-keys"
+description = "Permite listar las claves de IA guardadas (proveedor, últimos 4 caracteres y estado)."
+commands.allow = ["vault_list_keys"]
+
+[[permission]]
+identifier = "allow-vault-add-key"
+description = "Permite probar una clave de IA con su proveedor y guardarla en el llavero si funciona."
+commands.allow = ["vault_add_key"]
+
+[[permission]]
+identifier = "allow-vault-test-key"
+description = "Permite probar con su proveedor una clave de IA ya guardada."
+commands.allow = ["vault_test_key"]
+
+[[permission]]
+identifier = "allow-vault-delete-key"
+description = "Permite borrar del llavero una clave de IA."
+commands.allow = ["vault_delete_key"]

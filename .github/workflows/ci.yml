@@ -1,0 +1,283 @@
+# CI de Faro (spec F0 §4.7, ADR 0005).
+#
+# Repositorio público: este workflow nunca usa `pull_request_target`, `workflow_run`,
+# secretos ni runners propios (self-hosted). El GITHUB_TOKEN es de solo lectura.
+# Todas las acciones están fijadas por SHA completo (Dependabot las actualiza).
+# `ci-ok` es el único check requerido en la protección de `main`.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TZ: UTC
+  UV_VERSION: "0.11.33"
+  CARGO_TERM_COLOR: always
+  FORCE_COLOR: "1"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  ts:
+    name: ts (interfaz y tipos compartidos)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Formato (Prettier)
+        run: npx --no-install prettier --check .
+
+      - name: Lint (ESLint)
+        run: npm run lint:ts
+
+      - name: Tipos (tsc, desktop y shared)
+        run: npm run typecheck --workspaces --if-present
+
+      - name: Pruebas de la interfaz con cobertura (umbral 70 %)
+        run: npm run test:desktop
+
+  engine:
+    name: engine (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: apps/engine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: apps/engine/uv.lock
+
+      - name: uv sync --locked
+        run: uv sync --locked
+
+      - name: Formato (ruff format)
+        run: uv run --locked ruff format --check .
+
+      - name: Lint (ruff check)
+        run: uv run --locked ruff check .
+
+      - name: Tipos (mypy --strict)
+        run: uv run --locked mypy faro_engine tests
+
+      # Umbrales en pyproject.toml y tests/conftest.py: 80 % global, 95 % en
+      # core/security.py y __main__.py.
+      - name: Pruebas del motor con cobertura
+        run: uv run --locked pytest
+
+  core:
+    name: core (núcleo Rust, Windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: npm ci
+        run: npm ci
+
+      # `tauri::generate_context!` necesita `apps/desktop/dist`.
+      - name: Build de la interfaz
+        run: npm run build -w apps/desktop
+
+      # rustup instala la versión exacta, componentes y target de rust-toolchain.toml.
+      - name: Toolchain de rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustc -Vv
+          cargo -V
+          cargo clippy -V
+          cargo fmt --version
+
+      # La caché solo se guarda desde `main`; los PR la reutilizan sin escribirla.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Formato (cargo fmt)
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
+
+      - name: Lint (clippy -D warnings)
+        run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --all-targets -- -D warnings
+
+      - name: Pruebas del núcleo (cargo test)
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: apps/engine/uv.lock
+
+      - name: uv sync del motor (.venv para engine_real)
+        run: uv sync --directory apps/engine --locked
+
+      # Solo el binario de pruebas `engine_real`: nunca se ejecutan en CI otras pruebas
+      # ignoradas (por ejemplo, las que tocan el llavero real del sistema).
+      - name: Arranque real del motor (engine_real, ignoradas por defecto)
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --test engine_real -- --ignored engine_real
+
+  contracts:
+    name: contracts (contratos generados al día)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: apps/engine/uv.lock
+
+      - name: npm ci
+        run: npm ci
+
+      - name: uv sync del motor
+        run: uv sync --directory apps/engine --locked
+
+      - name: Regenerar contratos
+        run: npm run contracts
+
+      - name: Sin diferencias en packages/shared
+        run: |
+          if ! git diff --exit-code packages/shared; then
+            echo "::error::Los contratos no están al día. Ejecuta 'npm run contracts' y sube los cambios de packages/shared."
+            exit 1
+          fi
+          untracked="$(git status --porcelain --untracked-files=all packages/shared)"
+          if [ -n "$untracked" ]; then
+            echo "$untracked"
+            echo "::error::'npm run contracts' generó archivos nuevos en packages/shared sin versionar."
+            exit 1
+          fi
+
+  audit:
+    name: audit (dependencias y secretos)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      # SHA-256 de gitleaks_8.30.1_linux_x64.tar.gz (comprobado contra el checksums.txt del release).
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      PIP_AUDIT_VERSION: "2.10.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: npm audit (dependencias de producción, nivel alto o crítico)
+        run: npm audit --omit=dev --audit-level=high
+
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-audit
+
+      # Se invoca el binario directamente para no instalar la toolchain de rust-toolchain.toml.
+      # Se ejecuta desde src-tauri para que cargo-audit lea `.cargo/audit.toml` (ignorados
+      # solo de Linux, revisados por revisor-seguridad, y `deny` de unsound/unmaintained).
+      - name: cargo audit
+        working-directory: apps/desktop/src-tauri
+        run: cargo-audit audit --file Cargo.lock
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: apps/engine/uv.lock
+
+      - name: pip-audit sobre el lock exportado del motor
+        run: |
+          req="$RUNNER_TEMP/engine-requirements.txt"
+          uv export --directory apps/engine --locked --all-groups --no-emit-project \
+            --format requirements-txt --output-file "$req"
+          uvx "pip-audit@${PIP_AUDIT_VERSION}" --requirement "$req" --require-hashes --disable-pip \
+            --progress-spinner off
+
+      - name: Instalar gitleaks (versión y SHA-256 fijos)
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl -fsSLo "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict
+          tar -xzf "$archive" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      # Reglas por defecto + excepciones puntuales (ruta Y valor) de .github/gitleaks.toml.
+      - name: gitleaks sobre todo el historial
+        run: gitleaks git --config .github/gitleaks.toml --redact --no-banner --verbose --exit-code 1 .
+
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [ts, engine, core, contracts, audit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Todos los trabajos terminaron en success
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          failed="$(echo "$RESULTS" | jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(", ")')"
+          if [ -n "$failed" ]; then
+            echo "::error::Trabajos que no terminaron en success: $failed"
+            exit 1
+          fi
+          echo "Todos los trabajos necesarios terminaron en success."

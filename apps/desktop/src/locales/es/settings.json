@@ -1,0 +1,68 @@
+{
+  "title": "Configuración",
+  "emptyState": {
+    "title": "Agrega tu primera clave de IA",
+    "description": "Los agentes la usan para escribir y analizar. Se guarda en el llavero de tu computadora.",
+    "action": "Agregar clave"
+  },
+  "vault": {
+    "title": "Claves de IA",
+    "titleHelpLabel": "Qué son las claves de IA",
+    "titleTooltip": "También se conocen como claves de API.",
+    "loadingLabel": "Cargando tus claves de IA",
+    "retry": "Intentar de nuevo",
+    "retrying": "Intentando de nuevo…",
+    "providers": {
+      "anthropic": "Anthropic (Claude)",
+      "openai": "OpenAI (ChatGPT)",
+      "gemini": "Google Gemini"
+    },
+    "providerShort": {
+      "anthropic": "Anthropic",
+      "openai": "OpenAI",
+      "gemini": "Google Gemini"
+    },
+    "maskedKey": "••••••••{{last4}}",
+    "maskedKeyLabel": "Clave que termina en {{last4}}",
+    "actions": {
+      "add": "Agregar clave",
+      "addLabel": "Agregar clave de {{provider}}",
+      "test": "Probar clave",
+      "testLabel": "Probar clave de {{provider}}",
+      "testing": "Probando…",
+      "replace": "Reemplazar clave",
+      "replaceLabel": "Reemplazar clave de {{provider}}",
+      "delete": "Borrar clave",
+      "deleteLabel": "Borrar clave de {{provider}}"
+    },
+    "dialog": {
+      "addTitle": "Agregar clave de {{provider}}",
+      "replaceTitle": "Reemplazar clave de {{provider}}",
+      "chooseTitle": "Agregar clave de IA",
+      "description": "Faro la prueba con el proveedor y solo la guarda si funciona.",
+      "providerLegend": "¿De qué proveedor es tu clave?",
+      "secretLabel": "Pega tu clave",
+      "emptySecret": "Pega tu clave antes de guardar.",
+      "submit": "Guardar y probar",
+      "submitting": "Probando la clave…",
+      "cancel": "Cancelar"
+    },
+    "help": {
+      "anthropic": "Encuéntrala en la página de claves de tu cuenta de Anthropic.",
+      "openai": "Encuéntrala en la página de claves de API de tu cuenta de OpenAI.",
+      "gemini": "Encuéntrala en Google AI Studio, en la sección de claves de API."
+    },
+    "delete": {
+      "title": "¿Borrar la clave de {{provider}}?",
+      "description": "Los agentes ya no podrán usar {{provider}} hasta que agregues otra clave.",
+      "confirm": "Borrar clave de {{provider}}",
+      "deleting": "Borrando la clave…",
+      "cancel": "Cancelar"
+    },
+    "toast": {
+      "added": "Clave de {{provider}} guardada y funcionando.",
+      "testValid": "La clave funciona.",
+      "deleted": "Clave de {{provider}} borrada."
+    }
+  }
+}

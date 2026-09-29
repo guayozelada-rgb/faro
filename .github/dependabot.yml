@@ -1,0 +1,71 @@
+# Dependabot de Faro (spec F0 §4.7, ADR 0005).
+# Semanal. Las actualizaciones menores y de parche se agrupan en un PR por ecosistema;
+# las mayores llegan en PR separados. Las alertas de seguridad se activan en Settings.
+# `cooldown` espera unos días tras cada publicación antes de proponerla (reduce el
+# riesgo de paquetes comprometidos que se retiran poco después de publicarse).
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: UTC
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      npm-menores:
+        update-types: [minor, patch]
+
+  - package-ecosystem: cargo
+    directory: /apps/desktop/src-tauri
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: UTC
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      cargo-menores:
+        update-types: [minor, patch]
+
+  - package-ecosystem: uv
+    directory: /apps/engine
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: UTC
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      uv-menores:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: UTC
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 5
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions-menores:
+        update-types: [minor, patch]

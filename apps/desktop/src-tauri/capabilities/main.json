@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Permisos de la ventana principal (spec F0 §5.3): motor (permissions/engine.toml) y Bóveda (permissions/vault.toml). Prohibidos en F0: shell:*, fs:*, http:*, opener:*, updater:*, notification:*.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-engine-status",
+    "allow-engine-restart",
+    "allow-vault-list-keys",
+    "allow-vault-add-key",
+    "allow-vault-test-key",
+    "allow-vault-delete-key"
+  ]
+}

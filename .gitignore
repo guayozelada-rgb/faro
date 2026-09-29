@@ -1,0 +1,72 @@
+# --- Documentos internos de Concersa: nunca en el repositorio público ---
+Plan de producto*
+*plan-de-producto*
+.claude/settings.local.json
+
+# --- Secretos y configuración local (nunca se versionan; ADR 0004 y 0005) ---
+.env
+.env.local
+.env*.local
+.env.*
+!.env.local.example
+*.pem
+*.p12
+*.pfx
+*.key
+# Certificados, llaves y perfiles de firma (Apple, Windows, Android/Java).
+*.p8
+*.cer
+*.crt
+*.der
+*.jks
+*.keystore
+*.mobileprovision
+*.provisionprofile
+
+# --- Bases de datos locales (F1: SQLite/SQLCipher con datos de usuario) ---
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# --- Node / TypeScript ---
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.vite/
+.eslintcache
+
+# --- Rust / Tauri ---
+target/
+apps/desktop/src-tauri/binaries/
+
+# --- Python ---
+.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+apps/engine/build/
+
+# --- Logs ---
+logs/
+*.log
+npm-debug.log*
+
+# --- Sistema operativo ---
+desktop.ini
+Thumbs.db
+.DS_Store
+
+# --- Editores ---
+.idea/
+.vscode/*
+!.vscode/extensions.json

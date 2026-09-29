@@ -1,0 +1,20 @@
+{
+  "appName": "[TODO] Faro",
+  "comingSoon": "[TODO] Esta sección estará disponible en una próxima versión.",
+  "skipToContent": "[TODO] Saltar al contenido",
+  "sidebar": {
+    "label": "[TODO] Secciones de Faro",
+    "collapse": "[TODO] Contraer barra lateral",
+    "expand": "[TODO] Expandir barra lateral"
+  },
+  "connection": {
+    "disconnected": "[TODO] Sin conectar",
+    "connected": "[TODO] Conectada",
+    "failing": "[TODO] Falla",
+    "untested": "[TODO] Sin probar",
+    "testing": "[TODO] Probando…"
+  },
+  "toasts": {
+    "label": "[TODO] Notificaciones"
+  }
+}

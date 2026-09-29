@@ -1,0 +1,24 @@
+{
+  "title": "[TODO] Inicio",
+  "emptyState": {
+    "title": "[TODO] Te damos la bienvenida a Faro",
+    "description": "[TODO] Aquí verás cada día qué hacer para atraer más clientes a tu sitio.",
+    "action": "[TODO] Agregar clave de IA"
+  },
+  "engine": {
+    "title": "[TODO] Motor de Faro",
+    "titleHelpLabel": "[TODO] Qué es el motor",
+    "titleTooltip": "[TODO] El motor es la parte de Faro que hace el trabajo en tu computadora.",
+    "starting": "[TODO] Encendiendo el motor de Faro…",
+    "ready": "[TODO] Motor conectado",
+    "versionLabel": "[TODO] Ver la versión del motor",
+    "version": "[TODO] Versión {{version}}",
+    "restarting": "[TODO] El motor no responde. Estamos intentando reconectarlo.",
+    "retry": "[TODO] Reintentar conexión",
+    "retrying": "[TODO] Reintentando conexión…"
+  },
+  "nextSteps": {
+    "title": "[TODO] Qué hacer ahora",
+    "allSet": "[TODO] Todo listo por ahora. Pronto podrás conectar tu sitio desde aquí."
+  }
+}

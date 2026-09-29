@@ -1,0 +1,108 @@
+{
+  "components": {
+    "schemas": {
+      "ErrorOut": {
+        "additionalProperties": false,
+        "description": "Formato de error común a todas las capas (ADR 0002).",
+        "properties": {
+          "code": {
+            "description": "Código estable `dominio.motivo`.",
+            "examples": [
+              "engine.unauthorized"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "details": {
+            "additionalProperties": true,
+            "title": "Details",
+            "type": "object"
+          },
+          "message": {
+            "description": "Mensaje en español para el usuario.",
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorOut",
+        "type": "object"
+      },
+      "HealthOut": {
+        "additionalProperties": false,
+        "description": "Estado del motor.",
+        "properties": {
+          "status": {
+            "const": "ok",
+            "default": "ok",
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "examples": [
+              "0.1.0"
+            ],
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "title": "HealthOut",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Faro Engine",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          }
+        },
+        "summary": "Estado del motor",
+        "tags": [
+          "health"
+        ]
+      }
+    }
+  }
+}

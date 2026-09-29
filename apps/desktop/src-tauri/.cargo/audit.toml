@@ -1,0 +1,31 @@
+# Configuración de cargo-audit para el núcleo de Faro (revisión de seguridad T12).
+# cargo-audit la lee de `.cargo/audit.toml` en el directorio actual: en CI el paso
+# `cargo audit` se ejecuta desde `apps/desktop/src-tauri` (ver .github/workflows/ci.yml).
+#
+# Regla: solo se ignoran avisos de crates que NO se compilan en ninguna plataforma de Faro
+# (Windows x64, macOS arm64 y x64), comprobado con
+#   cargo tree --locked --target <target> -e all -i <crate>
+# para x86_64-pc-windows-msvc, aarch64-apple-darwin y x86_64-apple-darwin.
+# Cualquier aviso que afecte a Windows o macOS se corrige, no se ignora.
+# Cada entrada nueva requiere revisión de `revisor-seguridad`.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2024-0429 | glib 0.18.5 | unsound (VariantStrIter).
+    # Solo Linux: lo arrastra la pila gtk-rs 0.18 (gtk -> muda/tao/wry de Tauri), que solo
+    # se compila con target Linux. `cargo tree -i glib` no devuelve nada para Windows ni macOS.
+    # Fecha: 2026-09-29. Revisar al añadir soporte Linux.
+    "RUSTSEC-2024-0429",
+    # RUSTSEC-2024-0370 | proc-macro-error 1.0.4 | unmaintained.
+    # Solo Linux: lo usa glib-macros 0.18 (pila gtk-rs 0.18). `cargo tree -i proc-macro-error`
+    # no devuelve nada para Windows ni macOS.
+    # Fecha: 2026-09-29. Revisar al añadir soporte Linux.
+    "RUSTSEC-2024-0370",
+]
+
+[output]
+# Los avisos informativos "unsound" y "unmaintained" que no estén en la lista de arriba
+# hacen fallar la auditoría: así, uno nuevo que afecte a Windows o macOS no pasa en silencio.
+deny = ["unmaintained", "unsound"]
+# cargo-audit 0.22 exige `quiet` si existe la sección `[output]`.
+quiet = false

@@ -1,0 +1,38 @@
+{
+  "name": "faro",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Faro: app de escritorio de SEO y Google Ads con agentes de IA para sitios WordPress y WooCommerce.",
+  "author": "Concersa",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=10"
+  },
+  "workspaces": [
+    "apps/desktop",
+    "packages/shared"
+  ],
+  "scripts": {
+    "setup": "npm ci && uv sync --directory apps/engine --locked",
+    "dev": "npm run tauri dev -w apps/desktop",
+    "dev:engine": "uv run --directory apps/engine python -m faro_engine --dev",
+    "lint": "npm run lint:ts && npm run lint:rs && npm run lint:py",
+    "lint:ts": "npm run lint -w apps/desktop",
+    "lint:rs": "cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings",
+    "lint:py": "uv run --directory apps/engine ruff check .",
+    "format": "prettier --write . && cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml && uv run --directory apps/engine ruff format .",
+    "format:check": "prettier --check . && cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check && uv run --directory apps/engine ruff format --check .",
+    "typecheck": "npm run typecheck --workspaces --if-present && uv run --directory apps/engine mypy faro_engine tests",
+    "test": "npm run test:desktop && npm run test:core && npm run test:engine",
+    "test:desktop": "npm run test -w apps/desktop",
+    "test:core": "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",
+    "test:engine": "uv run --directory apps/engine pytest",
+    "test:all": "npm run test",
+    "contracts": "node scripts/generate-contracts.mjs"
+  },
+  "devDependencies": {
+    "prettier": "3.6.2",
+    "prettier-plugin-tailwindcss": "0.6.14"
+  }
+}

@@ -1,0 +1,11 @@
+# Permisos de los comandos del motor (spec F0 §5.3). Uno por comando.
+
+[[permission]]
+identifier = "allow-engine-status"
+description = "Permite consultar el estado del motor local (sin puerto ni token)."
+commands.allow = ["engine_status"]
+
+[[permission]]
+identifier = "allow-engine-restart"
+description = "Permite reintentar la conexión con el motor local cuando está en error."
+commands.allow = ["engine_restart"]

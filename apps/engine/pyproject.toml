@@ -1,0 +1,96 @@
+[project]
+name = "faro-engine"
+version = "0.1.0"
+description = "Motor local de Faro (sidecar Python con FastAPI)."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Propietario. Todos los derechos reservados." }
+dependencies = [
+    "fastapi>=0.141.1",
+    "pydantic>=2.13.5",
+    "structlog>=26.1.0",
+    "uvicorn>=0.54.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "faro_engine"
+module-root = ""
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = [".", "tests"]
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "N", "UP", "B", "S", "A", "C4", "SIM", "RUF", "PT", "RET",
+    "ARG", "PL", "T20", "ASYNC", "BLE", "TRY", "PTH",
+]
+ignore = [
+    "PLR2004", # números mágicos en comparaciones (puertos, códigos HTTP)
+    "TRY003",  # mensajes largos en excepciones
+    "TRY400",  # log.error a propósito: sin trazas que puedan incluir rutas o valores
+    "PLR0911", "PLR0913", "PLR0915",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S603", "PLR2004", "ARG001", "S104", "PLC0415"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+files = ["faro_engine", "tests"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--cov=faro_engine",
+    "--cov-report=term-missing",
+    "--cov-fail-under=80",
+]
+markers = ["slow: pruebas de más de 2 s (solo CI nocturno)"]
+filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]
+
+[tool.coverage.run]
+source = ["faro_engine"]
+branch = true
+# Mide también los subprocesos `python -m faro_engine` de las pruebas de protocolo.
+patch = ["subprocess"]
+parallel = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]
+
+[tool.faro.coverage]
+# Umbral por módulo (spec F0 §4.7 y skill pruebas-faro); lo aplica tests/conftest.py.
+strict_modules = ["faro_engine/core/security.py", "faro_engine/__main__.py"]
+strict_fail_under = 95
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.9",
+]

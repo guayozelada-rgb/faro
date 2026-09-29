@@ -1,0 +1,9 @@
+# Toolchain fija de Rust para Faro (ADR 0001). rustup la instala automáticamente
+# la primera vez que se ejecuta cargo dentro del repositorio.
+# Para actualizarla: cambiar `channel` a la nueva versión estable exacta en un PR
+# y comprobar que `npm run lint:rs` y `npm run test:core` siguen en verde.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]
+targets = ["x86_64-pc-windows-msvc"]
+profile = "minimal"

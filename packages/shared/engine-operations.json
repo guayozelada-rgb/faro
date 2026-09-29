@@ -1,0 +1,7 @@
+[
+  {
+    "operationId": "getHealth",
+    "method": "GET",
+    "path": "/health"
+  }
+]

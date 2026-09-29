@@ -1,0 +1,49 @@
+# Finales de línea LF en todo el repositorio (ADR 0001)
+* text=auto eol=lf
+
+# Scripts de cmd.exe necesitan CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Imágenes e iconos
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.bmp binary
+*.ico binary
+*.icns binary
+
+# Fuentes
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+
+# Documentos, archivos comprimidos y ejecutables
+*.pdf binary
+*.zip binary
+*.gz binary
+*.7z binary
+*.tar binary
+*.exe binary
+*.dll binary
+*.msi binary
+*.pyd binary
+*.so binary
+*.dylib binary
+
+# Bases de datos
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+
+# Archivos generados (se colapsan en los diffs de GitHub)
+package-lock.json linguist-generated=true
+Cargo.lock linguist-generated=true
+uv.lock linguist-generated=true
+packages/shared/openapi.json linguist-generated=true
+packages/shared/engine.d.ts linguist-generated=true
+packages/shared/engine-operations.json linguist-generated=true

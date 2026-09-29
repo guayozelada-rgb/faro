@@ -1,0 +1,16 @@
+{
+  "recommendations": [
+    "rust-lang.rust-analyzer",
+    "tauri-apps.tauri-vscode",
+    "vadimcn.vscode-lldb",
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "bradlc.vscode-tailwindcss",
+    "lokalise.i18n-ally",
+    "ms-python.python",
+    "charliermarsh.ruff",
+    "ms-python.mypy-type-checker",
+    "EditorConfig.EditorConfig",
+    "github.vscode-github-actions"
+  ]
+}

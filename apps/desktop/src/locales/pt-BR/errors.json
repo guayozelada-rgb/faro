@@ -1,0 +1,26 @@
+{
+  "engine": {
+    "start_failed": "[TODO] No pudimos iniciar el motor de Faro. Intenta de nuevo.",
+    "restart_limit": "[TODO] El motor se detuvo varias veces seguidas. Cierra Faro y vuelve a abrirlo.",
+    "dev_unreachable": "[TODO] No encontramos el motor de desarrollo en la dirección configurada.",
+    "unauthorized": "[TODO] El motor rechazó la conexión. Reinicia Faro.",
+    "forbidden_host": "[TODO] El motor rechazó la conexión. Reinicia Faro.",
+    "not_found": "[TODO] No encontramos lo que buscabas.",
+    "invalid_request": "[TODO] La solicitud no es válida. Intenta de nuevo.",
+    "integrity_failed": "[TODO] Faro no pudo verificar sus archivos. Reinstala la app."
+  },
+  "vault": {
+    "invalid_input": "[TODO] Esa clave no tiene el formato esperado. Cópiala de nuevo desde la página del proveedor.",
+    "invalid_key": "[TODO] El proveedor rechazó esta clave. Revisa que esté completa y activa.",
+    "key_restricted": "[TODO] La clave funciona, pero no tiene los permisos que Faro necesita. Crea una clave con acceso completo.",
+    "already_exists": "[TODO] Ya tienes una clave de este proveedor. Reemplázala si quieres usar otra.",
+    "not_found": "[TODO] No encontramos esa clave. Puede que ya la hayas borrado.",
+    "keyring_unavailable": "[TODO] No pudimos abrir el llavero de tu computadora. Reinicia Faro e intenta de nuevo.",
+    "provider_unreachable": "[TODO] No pudimos comprobar la clave. Revisa tu conexión a internet e intenta de nuevo.",
+    "provider_rate_limited": "[TODO] El proveedor está recibiendo muchas solicitudes. Espera un minuto e intenta de nuevo.",
+    "provider_error": "[TODO] El proveedor tuvo un problema. Intenta de nuevo en unos minutos."
+  },
+  "internal": {
+    "unexpected": "[TODO] Algo salió mal. Intenta de nuevo; si se repite, reinicia Faro."
+  }
+}

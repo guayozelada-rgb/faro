@@ -1,0 +1,27 @@
+{
+  "name": "@faro/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Contratos generados del motor de Faro (OpenAPI, tipos TypeScript y lista de operaciones).",
+  "author": "Concersa",
+  "license": "UNLICENSED",
+  "types": "./engine.d.ts",
+  "exports": {
+    ".": {
+      "types": "./engine.d.ts"
+    },
+    "./engine": {
+      "types": "./engine.d.ts"
+    },
+    "./engine-operations.json": "./engine-operations.json",
+    "./openapi.json": "./openapi.json",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}

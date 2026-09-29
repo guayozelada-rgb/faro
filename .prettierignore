@@ -1,0 +1,25 @@
+# Documentación y configuración de agentes: se editan a mano, Prettier no las toca
+docs/
+.claude/
+CLAUDE.md
+
+# Dependencias y salidas de build
+node_modules/
+dist/
+coverage/
+target/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/binaries/
+
+# Lockfiles
+package-lock.json
+Cargo.lock
+uv.lock
+
+# Motor Python (lo formatea ruff)
+apps/engine/.venv/
+
+# Contratos generados por `npm run contracts` (formato estable propio del generador)
+packages/shared/openapi.json
+packages/shared/engine.d.ts
+packages/shared/engine-operations.json

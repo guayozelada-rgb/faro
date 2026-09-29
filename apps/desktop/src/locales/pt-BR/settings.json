@@ -1,0 +1,68 @@
+{
+  "title": "[TODO] Configuración",
+  "emptyState": {
+    "title": "[TODO] Agrega tu primera clave de IA",
+    "description": "[TODO] Los agentes la usan para escribir y analizar. Se guarda en el llavero de tu computadora.",
+    "action": "[TODO] Agregar clave"
+  },
+  "vault": {
+    "title": "[TODO] Claves de IA",
+    "titleHelpLabel": "[TODO] Qué son las claves de IA",
+    "titleTooltip": "[TODO] También se conocen como claves de API.",
+    "loadingLabel": "[TODO] Cargando tus claves de IA",
+    "retry": "[TODO] Intentar de nuevo",
+    "retrying": "[TODO] Intentando de nuevo…",
+    "providers": {
+      "anthropic": "[TODO] Anthropic (Claude)",
+      "openai": "[TODO] OpenAI (ChatGPT)",
+      "gemini": "[TODO] Google Gemini"
+    },
+    "providerShort": {
+      "anthropic": "[TODO] Anthropic",
+      "openai": "[TODO] OpenAI",
+      "gemini": "[TODO] Google Gemini"
+    },
+    "maskedKey": "[TODO] ••••••••{{last4}}",
+    "maskedKeyLabel": "[TODO] Clave que termina en {{last4}}",
+    "actions": {
+      "add": "[TODO] Agregar clave",
+      "addLabel": "[TODO] Agregar clave de {{provider}}",
+      "test": "[TODO] Probar clave",
+      "testLabel": "[TODO] Probar clave de {{provider}}",
+      "testing": "[TODO] Probando…",
+      "replace": "[TODO] Reemplazar clave",
+      "replaceLabel": "[TODO] Reemplazar clave de {{provider}}",
+      "delete": "[TODO] Borrar clave",
+      "deleteLabel": "[TODO] Borrar clave de {{provider}}"
+    },
+    "dialog": {
+      "addTitle": "[TODO] Agregar clave de {{provider}}",
+      "replaceTitle": "[TODO] Reemplazar clave de {{provider}}",
+      "chooseTitle": "[TODO] Agregar clave de IA",
+      "description": "[TODO] Faro la prueba con el proveedor y solo la guarda si funciona.",
+      "providerLegend": "[TODO] ¿De qué proveedor es tu clave?",
+      "secretLabel": "[TODO] Pega tu clave",
+      "emptySecret": "[TODO] Pega tu clave antes de guardar.",
+      "submit": "[TODO] Guardar y probar",
+      "submitting": "[TODO] Probando la clave…",
+      "cancel": "[TODO] Cancelar"
+    },
+    "help": {
+      "anthropic": "[TODO] Encuéntrala en la página de claves de tu cuenta de Anthropic.",
+      "openai": "[TODO] Encuéntrala en la página de claves de API de tu cuenta de OpenAI.",
+      "gemini": "[TODO] Encuéntrala en Google AI Studio, en la sección de claves de API."
+    },
+    "delete": {
+      "title": "[TODO] ¿Borrar la clave de {{provider}}?",
+      "description": "[TODO] Los agentes ya no podrán usar {{provider}} hasta que agregues otra clave.",
+      "confirm": "[TODO] Borrar clave de {{provider}}",
+      "deleting": "[TODO] Borrando la clave…",
+      "cancel": "[TODO] Cancelar"
+    },
+    "toast": {
+      "added": "[TODO] Clave de {{provider}} guardada y funcionando.",
+      "testValid": "[TODO] La clave funciona.",
+      "deleted": "[TODO] Clave de {{provider}} borrada."
+    }
+  }
+}
