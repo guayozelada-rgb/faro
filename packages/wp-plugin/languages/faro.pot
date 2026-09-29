@@ -1,0 +1,156 @@
+# Copyright (C) 2026 Concersa
+# This file is distributed under the GPL-2.0-or-later.
+msgid ""
+msgstr ""
+"Project-Id-Version: Faro 0.1.0\n"
+"Report-Msgid-Bugs-To: https://wordpress.org/support/plugin/faro\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"POT-Creation-Date: 2026-09-29T22:31:59+00:00\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"X-Generator: WP-CLI 2.12.0\n"
+"X-Domain: faro\n"
+
+#. Plugin Name of the plugin
+#: faro.php
+#: admin/class-faro-admin.php:57
+#: admin/class-faro-admin.php:58
+#: admin/views/settings-page.php:20
+msgid "Faro"
+msgstr ""
+
+#. Description of the plugin
+#: faro.php
+msgid "Conecta tu sitio con Faro, la app de escritorio de marketing digital, para que pueda leer tus páginas, entradas y productos. No necesita tu contraseña."
+msgstr ""
+
+#. Author of the plugin
+#: faro.php
+msgid "Concersa"
+msgstr ""
+
+#: admin/class-faro-admin.php:78
+msgid "Ajustes"
+msgstr ""
+
+#: admin/class-faro-admin.php:96
+msgid "No tienes permiso para hacer esto."
+msgstr ""
+
+#: admin/class-faro-admin.php:117
+msgid "Acción no válida."
+msgstr ""
+
+#: admin/class-faro-admin.php:155
+msgid "No tienes permiso para ver esta página."
+msgstr ""
+
+#: admin/views/settings-page.php:23
+msgid "Desconectamos tu sitio de Faro."
+msgstr ""
+
+#: admin/views/settings-page.php:27
+msgid "Tu sitio no usa HTTPS. Faro solo se conecta a sitios con HTTPS."
+msgstr ""
+
+#: admin/views/settings-page.php:31
+msgid "La conexión con Faro dejó de funcionar porque cambiaron las claves de seguridad de WordPress. Genera un código nuevo y escríbelo en Faro."
+msgstr ""
+
+#: admin/views/settings-page.php:36
+msgid "Tu código de conexión"
+msgstr ""
+
+#. translators: %s: dirección del sitio.
+#: admin/views/settings-page.php:41
+#, php-format
+msgid "Escríbelo en Faro junto con esta dirección: %s"
+msgstr ""
+
+#: admin/views/settings-page.php:44
+msgid "Caduca en 10 minutos y solo sirve una vez."
+msgstr ""
+
+#: admin/views/settings-page.php:46
+msgid "Si usas este código, la conexión actual se reemplazará."
+msgstr ""
+
+#: admin/views/settings-page.php:51
+msgid "Generar otro código"
+msgstr ""
+
+#. translators: %s: fecha y hora de la conexión.
+#: admin/views/settings-page.php:59
+#, php-format
+msgid "Tu sitio está conectado con Faro desde el %s."
+msgstr ""
+
+#. translators: %s: fecha y hora de la última lectura.
+#: admin/views/settings-page.php:65
+#, php-format
+msgid "Última lectura de Faro: %s."
+msgstr ""
+
+#: admin/views/settings-page.php:73
+msgid "Desconectar de Faro"
+msgstr ""
+
+#: admin/views/settings-page.php:77
+msgid "Faro dejará de leer este sitio. ¿Quieres desconectarlo?"
+msgstr ""
+
+#: admin/views/settings-page.php:84
+#: admin/views/settings-page.php:94
+msgid "Generar código de conexión"
+msgstr ""
+
+#: admin/views/settings-page.php:89
+msgid "Conecta tu sitio con Faro"
+msgstr ""
+
+#: admin/views/settings-page.php:90
+msgid "Faro leerá tus páginas, entradas y productos. No necesita tu contraseña."
+msgstr ""
+
+#: admin/views/settings-page.php:99
+msgid "Abre Faro en tu computadora y ve a Configuración → Sitios conectados."
+msgstr ""
+
+#: includes/class-faro-errors.php:40
+msgid "Los datos enviados no son válidos."
+msgstr ""
+
+#: includes/class-faro-errors.php:41
+msgid "La conexión con Faro no es válida."
+msgstr ""
+
+#: includes/class-faro-errors.php:42
+msgid "Este sitio ya no está conectado con Faro."
+msgstr ""
+
+#: includes/class-faro-errors.php:43
+msgid "La conexión con Faro dejó de funcionar porque cambiaron las claves de seguridad de WordPress."
+msgstr ""
+
+#: includes/class-faro-errors.php:44
+msgid "La hora de la petición no coincide con la del sitio."
+msgstr ""
+
+#: includes/class-faro-errors.php:45
+msgid "El código no coincide."
+msgstr ""
+
+#: includes/class-faro-errors.php:46
+msgid "Este sitio no usa HTTPS. Faro solo se conecta a sitios con HTTPS."
+msgstr ""
+
+#: includes/class-faro-errors.php:47
+msgid "El código caducó o ya se usó. Genera uno nuevo en WordPress."
+msgstr ""
+
+#: includes/class-faro-errors.php:48
+msgid "Hubo demasiados intentos. Espera 15 minutos e intenta de nuevo."
+msgstr ""
