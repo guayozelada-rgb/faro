@@ -11,9 +11,14 @@ use serde::Deserialize;
 use crate::error::AppError;
 
 /// Resultado correcto de `GET /health`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HealthOk {
     pub version: String,
+    /// `None` si la base del perfil está lista; si no, el error (código conocido) que
+    /// informa el motor. El motor sigue `ok` aunque la base no esté disponible (ADR 0009 §4).
+    pub database_error: Option<AppError>,
+    /// La base tiene migraciones de una versión más nueva de Faro (solo aviso).
+    pub newer_schema: bool,
 }
 
 /// Motivo por el que `GET /health` no fue correcto. No contiene cuerpos ni cabeceras.
@@ -37,6 +42,27 @@ pub enum HealthError {
 struct HealthBody {
     status: String,
     version: String,
+    /// Opcional para tolerar un motor anterior a F1a: sin él, la base cuenta como no disponible.
+    database: Option<DatabaseBody>,
+}
+
+#[derive(Deserialize)]
+struct DatabaseBody {
+    state: String,
+    error_code: Option<String>,
+    #[serde(default)]
+    newer_schema: bool,
+}
+
+/// Traduce `database` de `/health` a un error del núcleo (nunca reenvía texto del motor).
+fn database_error(database: Option<&DatabaseBody>) -> Option<AppError> {
+    match database {
+        Some(db) if db.state == "ready" => None,
+        Some(db) if db.state == "unavailable" => {
+            Some(AppError::from_database_code(db.error_code.as_deref()))
+        }
+        _ => Some(AppError::db_unavailable()),
+    }
 }
 
 /// Cliente del motor. Su `Debug` no muestra el token (lo oculta `SecretString`).
@@ -106,7 +132,54 @@ impl EngineClient {
             return Err(HealthError::BadBody);
         }
         Ok(HealthOk {
+            database_error: database_error(body.database.as_ref()),
+            newer_schema: body.database.as_ref().is_some_and(|db| db.newer_schema),
             version: body.version,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn body(json: &str) -> HealthBody {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn base_lista_no_es_error() {
+        let b = body(
+            r#"{"status":"ok","version":"1","database":{"state":"ready","error_code":null,"newer_schema":true}}"#,
+        );
+        assert_eq!(database_error(b.database.as_ref()), None);
+        assert!(b.database.unwrap().newer_schema);
+    }
+
+    #[test]
+    fn base_no_disponible_usa_el_codigo_conocido() {
+        let b = body(
+            r#"{"status":"ok","version":"1","database":{"state":"unavailable","error_code":"db.key_missing","newer_schema":false}}"#,
+        );
+        assert_eq!(
+            database_error(b.database.as_ref()).unwrap().code,
+            "db.key_missing"
+        );
+    }
+
+    #[test]
+    fn forma_desconocida_o_ausente_es_db_unavailable() {
+        for json in [
+            r#"{"status":"ok","version":"1"}"#,
+            r#"{"status":"ok","version":"1","database":{"state":"raro","error_code":null}}"#,
+            r#"{"status":"ok","version":"1","database":{"state":"unavailable","error_code":"x.y"}}"#,
+        ] {
+            let b = body(json);
+            assert_eq!(
+                database_error(b.database.as_ref()).unwrap().code,
+                "db.unavailable",
+                "{json}"
+            );
+        }
     }
 }

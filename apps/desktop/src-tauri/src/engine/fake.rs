@@ -112,11 +112,25 @@ impl FakeProcess {
         .await;
     }
 
-    /// Lee el token y responde `ready`. Devuelve el token recibido.
+    /// Lee el token y la línea `db_key` (en ese orden) y responde `ready`.
+    /// Devuelve el token recibido.
     pub async fn handshake(&mut self, port: u16) -> String {
-        let token = self.read_line().await.expect("sin token en stdin");
+        self.handshake_full(port).await.0
+    }
+
+    /// Como [`handshake`](Self::handshake), devolviendo también la línea `db_key` (JSON).
+    pub async fn handshake_full(&mut self, port: u16) -> (String, serde_json::Value) {
+        let (token, db_key) = self.read_handshake().await;
         self.send_ready(port).await;
-        token
+        (token, db_key)
+    }
+
+    /// Lee las dos primeras líneas de stdin: token y `db_key`.
+    pub async fn read_handshake(&mut self) -> (String, serde_json::Value) {
+        let token = self.read_line().await.expect("sin token en stdin");
+        let db_key = self.read_line().await.expect("sin línea db_key en stdin");
+        let db_key = serde_json::from_str(&db_key).expect("db_key no es JSON");
+        (token, db_key)
     }
 
     /// Simula que el proceso termina con `code`.
@@ -179,6 +193,8 @@ pub enum HealthMode {
 pub struct FakeHealthServer {
     pub port: u16,
     mode: Arc<AtomicU8>,
+    /// `None` = base lista; `Some(code)` = base no disponible con ese código.
+    database_error: Arc<Mutex<Option<&'static str>>>,
     last_auth: Arc<Mutex<Option<String>>>,
     hits: Arc<AtomicUsize>,
 }
@@ -190,6 +206,7 @@ impl FakeHealthServer {
         let server = Self {
             port,
             mode: Arc::new(AtomicU8::new(HealthMode::Ok as u8)),
+            database_error: Arc::new(Mutex::new(None)),
             last_auth: Arc::new(Mutex::new(None)),
             hits: Arc::new(AtomicUsize::new(0)),
         };
@@ -208,6 +225,11 @@ impl FakeHealthServer {
 
     pub fn set_mode(&self, mode: HealthMode) {
         self.mode.store(mode as u8, Ordering::SeqCst);
+    }
+
+    /// Estado de la base que informa `/health`.
+    pub fn set_database_error(&self, code: Option<&'static str>) {
+        *self.database_error.lock().unwrap() = code;
     }
 
     pub fn last_auth(&self) -> Option<String> {
@@ -236,8 +258,14 @@ impl FakeHealthServer {
         *self.last_auth.lock().unwrap() = auth;
         self.hits.fetch_add(1, Ordering::SeqCst);
 
+        let ok_body = match *self.database_error.lock().unwrap() {
+            None => r#"{"status":"ok","version":"9.9.9","database":{"state":"ready","error_code":null,"newer_schema":false}}"#.to_owned(),
+            Some(code) => format!(
+                r#"{{"status":"ok","version":"9.9.9","database":{{"state":"unavailable","error_code":"{code}","newer_schema":false}}}}"#
+            ),
+        };
         let (status, body) = match self.mode.load(Ordering::SeqCst) {
-            0 => ("200 OK", r#"{"status":"ok","version":"9.9.9"}"#),
+            0 => ("200 OK", ok_body.as_str()),
             3 => (
                 "401 Unauthorized",
                 r#"{"code":"engine.unauthorized","message":"x","details":{}}"#,

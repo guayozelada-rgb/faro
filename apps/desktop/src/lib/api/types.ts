@@ -26,6 +26,13 @@ export interface EngineStatus {
   version: string | null;
   /** Solo cuando state = "error". */
   error: FaroErrorData | null;
+  /**
+   * Solo cuando state = "ready": la base de datos local no está disponible
+   * (`db.*` o `vault.keyring_unavailable`), leído de `/health` (spec F1a §4.3, §5.4).
+   * El núcleo siempre lo envía (`null` si la base está lista). Opcional hasta T11,
+   * que lo valida en `isEngineStatus` y muestra el aviso en la tarjeta del motor.
+   */
+  database_error?: FaroErrorData | null;
 }
 
 /**
