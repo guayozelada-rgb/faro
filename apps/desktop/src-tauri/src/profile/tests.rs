@@ -524,6 +524,9 @@ fn la_llave_no_aparece_en_los_logs() {
         .with_writer(move || writer.clone())
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
+    // Otras pruebas en paralelo pueden haber dejado en caché el interés de los callsites
+    // sin este subscriber (fallo intermitente en CI): se recalcula ya con él activo.
+    tracing::callsite::rebuild_interest_cache();
 
     let (_dir, store, keys) = setup();
     let first = keys.prepare(); // crea

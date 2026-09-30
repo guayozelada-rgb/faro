@@ -472,6 +472,9 @@ fn capture_logs() -> (LogBuffer, tracing::subscriber::DefaultGuard) {
         .with_writer(move || writer.clone())
         .finish();
     let guard = tracing::subscriber::set_default(subscriber);
+    // Otras pruebas en paralelo pueden haber dejado en caché el interés de los callsites
+    // sin este subscriber (fallo intermitente en CI): se recalcula ya con él activo.
+    tracing::callsite::rebuild_interest_cache();
     (buffer, guard)
 }
 
@@ -506,7 +509,11 @@ async fn el_token_no_aparece_en_ningun_log() {
     proc2.exit(0);
     shutdown.await.unwrap();
 
-    wait_until(|| logs.text().contains("engine.ready")).await;
+    wait_until(|| {
+        let text = logs.text();
+        text.contains("engine.ready") && text.contains("estado del motor")
+    })
+    .await;
     let text = logs.text();
     assert!(text.contains("estado del motor"), "la captura no funciona");
     for token in [&token1, &token2] {
@@ -724,6 +731,11 @@ async fn la_llave_de_la_base_no_aparece_en_ningun_log() {
     proc2.exit(0);
     shutdown.await.unwrap();
 
+    wait_until(|| {
+        let text = logs.text();
+        text.contains("llave de la base preparada") && text.contains("estado del motor")
+    })
+    .await;
     let text = logs.text();
     assert!(
         text.contains("llave de la base preparada"),

@@ -154,6 +154,8 @@ mod tests {
             EnvFilter::new("info"),
         );
         tracing::subscriber::with_default(subscriber, || {
+            // Interés de los callsites recalculado con este subscriber (pruebas en paralelo).
+            tracing::callsite::rebuild_interest_cache();
             tracing::info!(prueba = 1, "hola desde la prueba");
             tracing::debug!("no debe aparecer con nivel info");
         });
@@ -230,6 +232,8 @@ mod tests {
         let subscriber = subscriber(writer, Some(console.clone()), EnvFilter::new("debug"));
         let secrets = fake_secrets();
         tracing::subscriber::with_default(subscriber, || {
+            // Interés de los callsites recalculado con este subscriber (pruebas en paralelo).
+            tracing::callsite::rebuild_interest_cache();
             let [openai, anthropic, google, jwt, hex, session, bearer] = secrets.clone();
             tracing::info!("mensaje con {openai} y {anthropic}");
             tracing::warn!(detalle = google.as_str(), "clave de Google");
