@@ -1,6 +1,47 @@
 {
   "components": {
     "schemas": {
+      "DatabaseHealth": {
+        "additionalProperties": false,
+        "description": "Estado de la base del perfil (ADR 0009 §4). El motor sigue `ok` aunque no esté lista.",
+        "properties": {
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Código `db.*` (o `vault.keyring_unavailable`) si no está disponible.",
+            "examples": [
+              "db.key_missing"
+            ],
+            "title": "Error Code"
+          },
+          "newer_schema": {
+            "description": "La base tiene migraciones de una versión más nueva de Faro (aviso).",
+            "title": "Newer Schema",
+            "type": "boolean"
+          },
+          "state": {
+            "enum": [
+              "ready",
+              "unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "error_code",
+          "newer_schema"
+        ],
+        "title": "DatabaseHealth",
+        "type": "object"
+      },
       "ErrorOut": {
         "additionalProperties": false,
         "description": "Formato de error común a todas las capas (ADR 0002).",
@@ -35,6 +76,9 @@
         "additionalProperties": false,
         "description": "Estado del motor.",
         "properties": {
+          "database": {
+            "$ref": "#/components/schemas/DatabaseHealth"
+          },
           "status": {
             "const": "ok",
             "default": "ok",
@@ -50,7 +94,8 @@
           }
         },
         "required": [
-          "version"
+          "version",
+          "database"
         ],
         "title": "HealthOut",
         "type": "object"

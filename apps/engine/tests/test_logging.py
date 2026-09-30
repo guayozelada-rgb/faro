@@ -78,6 +78,11 @@ def test_drop_sensitive_keys() -> None:
     assert dict(drop_sensitive_keys(None, "info", event)) == {"event": "x", "ok": 1}
 
 
+def test_drop_sensitive_keys_removes_database_key_fields() -> None:
+    event = {"event": "x", "key": "a" * 64, "DB_KEY": "b", "key_hex": "c", "error_code": "d"}
+    assert dict(drop_sensitive_keys(None, "info", event)) == {"event": "x", "error_code": "d"}
+
+
 def test_uuid7_format() -> None:
     first, second = uuid7(), uuid7()
     assert first.version == 7

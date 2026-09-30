@@ -72,7 +72,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # macos-latest (arm64) verifica la librería nativa SQLCipher (spec F1a §4.6, ADR 0009).
+        os: [ubuntu-latest, windows-latest, macos-latest]
     defaults:
       run:
         working-directory: apps/engine
@@ -99,8 +100,8 @@ jobs:
       - name: Tipos (mypy --strict)
         run: uv run --locked mypy faro_engine tests
 
-      # Umbrales en pyproject.toml y tests/conftest.py: 80 % global, 95 % en
-      # core/security.py y __main__.py.
+      # Umbrales en pyproject.toml y tests/conftest.py: 80 % global, 95 % en los módulos de
+      # [tool.faro.coverage] strict_modules (seguridad, protocolo y base cifrada).
       - name: Pruebas del motor con cobertura
         run: uv run --locked pytest
 

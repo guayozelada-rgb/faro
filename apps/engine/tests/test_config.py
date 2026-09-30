@@ -59,12 +59,24 @@ def test_load_dev_config_defaults_port(tmp_path: Path) -> None:
         ("FARO_ENGINE_DEV_TOKEN={token}\nFARO_ENGINE_DEV_PORT=abc\n", "port_invalid"),
         ("FARO_ENGINE_DEV_TOKEN={token}\nFARO_ENGINE_DEV_PORT=80\n", "port_invalid"),
         ("FARO_ENGINE_DEV_TOKEN={token}\nFARO_ENGINE_DEV_PORT=70000\n", "port_invalid"),
+        ("FARO_ENGINE_DEV_TOKEN={token}\nFARO_ENGINE_DEV_DB_KEY=corta\n", "db_key_invalid"),
+        (
+            "FARO_ENGINE_DEV_TOKEN={token}\nFARO_ENGINE_DEV_DB_KEY=ññññññññññññññññññññññññññññññññññññññññññññññññññññññññññññññññ\n",
+            "db_key_invalid",
+        ),
+        ("FARO_ENGINE_DEV_TOKEN={token}\nFARO_ENGINE_DEV_DB_KEY={key}\n", "profile_id_invalid"),
+        (
+            "FARO_ENGINE_DEV_TOKEN={token}\nFARO_ENGINE_DEV_DB_KEY={key}\nFARO_ENGINE_DEV_PROFILE_ID=../x\n",
+            "profile_id_invalid",
+        ),
     ],
 )
 def test_load_dev_config_errors(tmp_path: Path, text: str, reason: str) -> None:
     token = secrets.token_urlsafe(32)
     with pytest.raises(DevConfigError) as info:
-        load_dev_config(_write(tmp_path, text.replace("{token}", token)))
+        load_dev_config(
+            _write(tmp_path, text.replace("{token}", token).replace("{key}", "ab" * 32))
+        )
     assert info.value.reason == reason
     assert token not in str(info.value)
 
@@ -73,3 +85,26 @@ def test_load_dev_config_missing_file(tmp_path: Path) -> None:
     with pytest.raises(DevConfigError) as info:
         load_dev_config(tmp_path / "missing")
     assert info.value.reason == "env_file_missing"
+
+
+def test_load_dev_config_with_dev_database(tmp_path: Path) -> None:
+    token = secrets.token_urlsafe(32)
+    profile = "01920000-0000-7000-8000-000000000001"
+    config = load_dev_config(
+        _write(
+            tmp_path,
+            f"FARO_ENGINE_DEV_TOKEN={token}\nFARO_ENGINE_DEV_DB_KEY={'cd' * 32}\n"
+            f"FARO_ENGINE_DEV_PROFILE_ID={profile}\n",
+        )
+    )
+    assert config.db_key == bytearray("cd" * 32, "ascii")
+    assert config.profile_id == profile
+    assert "cd" * 32 not in repr(config)
+
+
+def test_load_dev_config_without_dev_database(tmp_path: Path) -> None:
+    config = load_dev_config(
+        _write(tmp_path, f"FARO_ENGINE_DEV_TOKEN={secrets.token_urlsafe(32)}\n")
+    )
+    assert config.db_key is None
+    assert config.profile_id is None

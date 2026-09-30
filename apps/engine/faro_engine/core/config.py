@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from faro_engine.core.db.connection import is_valid_key_hex
+from faro_engine.core.db.profile import is_valid_profile_id
 from faro_engine.core.protocol import is_valid_token
 
 # El motor solo escucha aquí. Nunca 0.0.0.0.
@@ -12,12 +14,16 @@ HOST = "127.0.0.1"
 
 # Tiempos del protocolo (spec F0, §4.4).
 TOKEN_TIMEOUT_SECONDS = 10.0
+DB_KEY_TIMEOUT_SECONDS = 10.0  # 2.ª línea de stdin (ADR 0010 §1)
 SHUTDOWN_GRACE_SECONDS = 10.0
 
 # Modo desarrollo "externo".
 DEFAULT_DEV_PORT = 8765
 DEV_TOKEN_VAR = "FARO_ENGINE_DEV_TOKEN"  # noqa: S105 - nombre de variable, no un secreto
 DEV_PORT_VAR = "FARO_ENGINE_DEV_PORT"
+# Base de desarrollo (ADR 0009, excepción consciente solo en `--dev`, nunca datos reales).
+DEV_DB_KEY_VAR = "FARO_ENGINE_DEV_DB_KEY"
+DEV_PROFILE_ID_VAR = "FARO_ENGINE_DEV_PROFILE_ID"
 MIN_DEV_PORT = 1024
 MAX_PORT = 65535
 
@@ -58,6 +64,9 @@ class DevConfigError(Exception):
 class DevConfig:
     token: bytes = field(repr=False)
     port: int
+    # Llave de la base de desarrollo (64 hex) y perfil; `None` si no están definidos.
+    db_key: bytearray | None = field(default=None, repr=False)
+    profile_id: str | None = None
 
 
 def parse_env_file(text: str) -> dict[str, str]:
@@ -103,4 +112,16 @@ def load_dev_config(env_file: Path) -> DevConfig:
             raise DevConfigError("port_invalid") from exc
         if not MIN_DEV_PORT <= port <= MAX_PORT:
             raise DevConfigError("port_invalid")
-    return DevConfig(token=token, port=port)
+
+    db_key: bytearray | None = None
+    profile_id: str | None = None
+    raw_key = values.get(DEV_DB_KEY_VAR, "").strip()
+    if raw_key:
+        if not raw_key.isascii() or not is_valid_key_hex(raw_key.encode("ascii")):
+            raise DevConfigError("db_key_invalid")
+        raw_profile = values.get(DEV_PROFILE_ID_VAR, "").strip()
+        if not is_valid_profile_id(raw_profile):
+            raise DevConfigError("profile_id_invalid")
+        db_key = bytearray(raw_key, "ascii")
+        profile_id = raw_profile
+    return DevConfig(token=token, port=port, db_key=db_key, profile_id=profile_id)

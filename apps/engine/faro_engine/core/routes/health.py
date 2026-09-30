@@ -1,12 +1,19 @@
-"""`GET /health`: el núcleo lo consulta cada 15 s (exige token, ADR 0004)."""
+"""`GET /health`: el núcleo lo consulta cada 15 s (exige token, ADR 0004).
+
+Informa también el estado de la base (`database`, ADR 0009 §4): el motor responde `ok`
+aunque la base no esté disponible, y el núcleo muestra el código a la interfaz.
+"""
 
 from __future__ import annotations
+
+from typing import cast
 
 from fastapi import APIRouter, Request
 
 from faro_engine.core.config import Settings
+from faro_engine.core.db.database import Database
 from faro_engine.core.operations import faro_operation
-from faro_engine.core.schemas.common import ErrorOut, HealthOut
+from faro_engine.core.schemas.common import DatabaseHealth, ErrorOut, HealthOut
 
 router = APIRouter(tags=["health"])
 
@@ -25,4 +32,11 @@ router = APIRouter(tags=["health"])
 )
 async def get_health(request: Request) -> HealthOut:
     settings: Settings = request.app.state.settings
-    return HealthOut(status="ok", version=settings.version)
+    status = cast(Database, request.app.state.database).status
+    return HealthOut(
+        status="ok",
+        version=settings.version,
+        database=DatabaseHealth(
+            state=status.state, error_code=status.error_code, newer_schema=status.newer_schema
+        ),
+    )
