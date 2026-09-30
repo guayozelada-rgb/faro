@@ -1,4 +1,4 @@
-# CI de Faro (spec F0 §4.7, ADR 0005).
+# CI de Faro (spec F0 §4.7, spec F1a §4.6, ADR 0005).
 #
 # Repositorio público: este workflow nunca usa `pull_request_target`, `workflow_run`,
 # secretos ni runners propios (self-hosted). El GITHUB_TOKEN es de solo lectura.
@@ -25,6 +25,11 @@ env:
   UV_VERSION: "0.11.33"
   CARGO_TERM_COLOR: always
   FORCE_COLOR: "1"
+  # Plugin de WordPress: PHP mínimo soportado y Composer fijo en el runner. Las versiones de
+  # PHP, WordPress y WooCommerce de los contenedores las fijan los .wp-env*.json, y la de
+  # wp-env, packages/wp-plugin/package-lock.json.
+  PHP_VERSION: "8.1"
+  COMPOSER_VERSION: "2.10.3"
 
 defaults:
   run:
@@ -202,6 +207,205 @@ jobs:
             exit 1
           fi
 
+  # Plugin de WordPress (packages/wp-plugin, GPL-2.0-or-later, ADR 0008). Sin Docker:
+  # estilo, análisis estático y zip de distribución.
+  wp-plugin:
+    name: wp-plugin (PHPCS, PHPStan y zip)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          tools: composer:${{ env.COMPOSER_VERSION }}
+          coverage: none
+
+      - name: Carpeta de caché de Composer
+        id: composer-cache
+        working-directory: packages/wp-plugin
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-${{ runner.os }}-php${{ env.PHP_VERSION }}-${{ hashFiles('packages/wp-plugin/composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-php${{ env.PHP_VERSION }}-
+
+      - name: composer validate (composer.lock al día)
+        working-directory: packages/wp-plugin
+        run: composer validate --no-check-publish --no-check-all
+
+      # Solo herramientas de desarrollo: el plugin no tiene dependencias de Composer en
+      # tiempo de ejecución y el zip no lleva vendor/.
+      - name: composer install
+        working-directory: packages/wp-plugin
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Estilo (PHPCS, WordPress Coding Standards y PHPCompatibilityWP 8.1+)
+        working-directory: packages/wp-plugin
+        run: composer phpcs
+
+      - name: Análisis estático (PHPStan)
+        working-directory: packages/wp-plugin
+        run: composer phpstan
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Zip del plugin (dos builds seguidos con el mismo hash)
+        run: |
+          zip=packages/wp-plugin/dist/faro-wordpress.zip
+          npm run build:wp-plugin
+          first="$(sha256sum "$zip" | cut -d' ' -f1)"
+          npm run build:wp-plugin
+          second="$(sha256sum "$zip" | cut -d' ' -f1)"
+          if [ "$first" != "$second" ]; then
+            echo "::error::El zip del plugin no es determinista: $first != $second"
+            exit 1
+          fi
+          echo "SHA-256 de faro-wordpress.zip: \`$first\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Contenido del zip (carpeta faro/, con LICENSE, sin pruebas ni herramientas)
+        run: |
+          zip=packages/wp-plugin/dist/faro-wordpress.zip
+          list="$RUNNER_TEMP/faro-wordpress.txt"
+          unzip -Z1 "$zip" > "$list"
+          cat "$list"
+          fail=0
+          if grep -v '^faro/' "$list"; then
+            echo "::error::El zip tiene entradas fuera de la carpeta faro/."
+            fail=1
+          fi
+          if grep -E '(^|/)(tests|vendor|node_modules|dist)(/|$)|(^|/)\.|(^|/)composer\.(json|lock)$|(^|/)package(-lock)?\.json$|(^|/)php(cs|stan|unit)\.' "$list"; then
+            echo "::error::El zip incluye pruebas, dependencias, archivos ocultos o configuración de desarrollo."
+            fail=1
+          fi
+          for required in faro/LICENSE faro/faro.php faro/uninstall.php faro/readme.txt; do
+            if ! grep -qxF "$required" "$list"; then
+              echo "::error::Falta $required en el zip."
+              fail=1
+            fi
+          done
+          if ! unzip -p "$zip" faro/LICENSE | grep -q 'GNU GENERAL PUBLIC LICENSE'; then
+            echo "::error::faro/LICENSE no contiene la GPL (ADR 0008)."
+            fail=1
+          fi
+          exit "$fail"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: faro-wordpress-zip
+          path: packages/wp-plugin/dist/faro-wordpress.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  # PHPUnit del plugin dentro de WordPress real (wp-env + Docker del runner). Sin secretos:
+  # los contenedores solo descargan WordPress, WooCommerce e imágenes públicas.
+  wp-plugin-integration:
+    name: wp-plugin-integration (${{ matrix.config }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # PHP 8.3 + WordPress 7.1.2 + WooCommerce 11.1.2 (.wp-env.json); HPOS activado y desactivado.
+          - config: actual
+            wp-env-config: ""
+          # PHP 8.1 + WordPress 6.0.16, sin WooCommerce (.wp-env.min.json, puertos 8890/8891).
+          - config: minimo
+            wp-env-config: .wp-env.min.json
+    env:
+      WP_ENV_CONFIG: ${{ matrix.wp-env-config }}
+    defaults:
+      run:
+        working-directory: packages/wp-plugin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          tools: composer:${{ env.COMPOSER_VERSION }}
+          coverage: none
+
+      - name: Carpeta de caché de Composer
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-${{ runner.os }}-php${{ env.PHP_VERSION }}-${{ hashFiles('packages/wp-plugin/composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-php${{ env.PHP_VERSION }}-
+
+      # vendor/ (PHPUnit y polyfills) llega a los contenedores por el mapeo de .wp-env*.json.
+      # composer.json fija la plataforma en PHP 8.1, así que sirve para PHP 8.1 y 8.3.
+      - name: composer install
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: packages/wp-plugin/package-lock.json
+
+      # wp-env y sus dependencias fijadas por packages/wp-plugin/package-lock.json.
+      # --ignore-scripts: wp-env usa Docker y no necesita los binarios que instalan los
+      # scripts de las dependencias de WordPress Playground.
+      - name: npm ci (wp-env)
+        run: npm ci --ignore-scripts
+
+      - name: Carpeta de trabajo de wp-env
+        run: echo "WP_ENV_HOME=$RUNNER_TEMP/wp-env" >> "$GITHUB_ENV"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/wp-env
+          key: wp-env-${{ matrix.config }}-${{ hashFiles('packages/wp-plugin/.wp-env*.json', 'packages/wp-plugin/package-lock.json') }}
+
+      - name: Arrancar wp-env (un reintento si falla)
+        run: |
+          args=()
+          if [ -n "$WP_ENV_CONFIG" ]; then args=(--config "$WP_ENV_CONFIG"); fi
+          if ! npx --no-install wp-env start "${args[@]}"; then
+            echo "::warning::wp-env no arrancó al primer intento; se reintenta una vez."
+            npx --no-install wp-env stop "${args[@]}" || true
+            sleep 15
+            npx --no-install wp-env start "${args[@]}"
+          fi
+
+      - name: PHPUnit (HPOS activado si hay WooCommerce)
+        run: |
+          args=()
+          if [ -n "$WP_ENV_CONFIG" ]; then args=(--config "$WP_ENV_CONFIG"); fi
+          npx --no-install wp-env run tests-cli "${args[@]}" --env-cwd=wp-content/plugins/faro vendor/bin/phpunit
+
+      - name: PHPUnit (HPOS desactivado)
+        if: matrix.config == 'actual'
+        run: npx --no-install wp-env run tests-cli --env-cwd=wp-content/plugins/faro env FARO_TEST_HPOS=0 vendor/bin/phpunit
+
+      # T9 añade aquí, solo en `actual`: setup-uv + uv sync y `pytest -m wp_env`
+      # (integración motor ↔ plugin, spec F1a §9.4).
+
+      - name: Apagar wp-env
+        if: always()
+        run: |
+          args=()
+          if [ -n "$WP_ENV_CONFIG" ]; then args=(--config "$WP_ENV_CONFIG"); fi
+          npx --no-install wp-env stop "${args[@]}" || true
+
   audit:
     name: audit (dependencias y secretos)
     runs-on: ubuntu-latest
@@ -249,6 +453,18 @@ jobs:
           uvx "pip-audit@${PIP_AUDIT_VERSION}" --requirement "$req" --require-hashes --disable-pip \
             --progress-spinner off
 
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          tools: composer:${{ env.COMPOSER_VERSION }}
+          coverage: none
+
+      # Sobre composer.lock, sin instalar nada; incluye las herramientas de desarrollo,
+      # que se ejecutan en la CI.
+      - name: composer audit (plugin de WordPress)
+        working-directory: packages/wp-plugin
+        run: composer audit --locked
+
       - name: Instalar gitleaks (versión y SHA-256 fijos)
         run: |
           archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
@@ -266,7 +482,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [ts, engine, core, contracts, audit]
+    needs: [ts, engine, core, contracts, wp-plugin, wp-plugin-integration, audit]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -20,6 +20,10 @@ Firma v1: ver ADR 0011 §2 y los vectores compartidos en `packages/shared/fixtur
 
 Sin PHP local: todo corre en contenedores (Docker).
 
+wp-env y sus dependencias están fijados en `package.json` y `package-lock.json` de esta carpeta (no es un workspace del monorepo). Instálalos una vez con `npm ci --ignore-scripts`; después `npx @wordpress/env@11.16.0` usa esa copia fijada.
+
+El zip para instalar en WordPress se genera desde la raíz del repositorio con `npm run build:wp-plugin` (`dist/faro-wordpress.zip`, carpeta `faro/`, sin `tests/`, `vendor/` ni configuración de desarrollo).
+
 ```sh
 # Herramientas de desarrollo
 docker run --rm -v "$PWD:/app" -w /app composer:2 install

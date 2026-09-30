@@ -44,6 +44,7 @@ target/
 apps/desktop/src-tauri/binaries/
 
 # --- Python ---
+apps/engine/.devdata/
 .venv/
 __pycache__/
 *.py[cod]
@@ -55,6 +56,12 @@ __pycache__/
 htmlcov/
 *.egg-info/
 apps/engine/build/
+
+# --- Plugin de WordPress (packages/wp-plugin) ---
+# Herramientas de Composer y zip generado por `npm run build:wp-plugin`.
+packages/wp-plugin/vendor/
+packages/wp-plugin/dist/
+packages/wp-plugin/.phpunit.result.cache
 
 # --- Logs ---
 logs/

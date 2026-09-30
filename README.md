@@ -16,7 +16,7 @@ Faro_App/
 │  └─ cloud/            # Nube de Faro (fase posterior)
 ├─ packages/
 │  ├─ shared/           # Contratos generados del motor (npm run contracts)
-│  └─ wp-plugin/        # Plugin de WordPress (fase posterior)
+│  └─ wp-plugin/        # Plugin de WordPress/WooCommerce (PHP, licencia GPL-2.0-or-later)
 ├─ scripts/             # Scripts de build y generación de contratos
 ├─ docs/                # Especificaciones (specs/) y decisiones de arquitectura (adr/)
 ├─ .github/             # CI de GitHub Actions
@@ -72,7 +72,7 @@ Todos los comandos se ejecutan desde la raíz del repositorio. Son la interfaz c
 
 | Comando | Qué hace |
 | --- | --- |
-| `npm run setup` | `npm ci` y `uv sync --directory apps/engine --locked` (dependencias exactas de los lockfiles) |
+| `npm run setup` | `npm ci`, `uv sync --directory apps/engine --locked` (dependencias exactas de los lockfiles) y `build:wp-plugin` |
 | `npm run dev` | Abre la app en modo desarrollo (`tauri dev`); el núcleo lanza y supervisa el motor desde `apps/engine/.venv` |
 | `npm run dev:engine` | Arranca solo el motor en modo externo (`--dev`), para usarlo con `FARO_ENGINE_DEV_URL` |
 | `npm run lint` | Ejecuta `lint:ts`, `lint:rs` y `lint:py` |
@@ -88,6 +88,7 @@ Todos los comandos se ejecutan desde la raíz del repositorio. Son la interfaz c
 | `npm run test:engine` | Pruebas del motor con pytest (`uv run --directory apps/engine pytest`) |
 | `npm run test:all` | En F0 es igual que `test`; desde F1 incluye las pruebas extremo a extremo |
 | `npm run contracts` | Regenera los contratos del motor en `packages/shared` (`openapi.json`, `engine.d.ts`, `engine-operations.json`) |
+| `npm run build:wp-plugin` | Genera el zip del plugin de WordPress en `packages/wp-plugin/dist/faro-wordpress.zip` (carpeta `faro/`, sin pruebas ni herramientas; dos builds dan el mismo SHA-256) |
 
 ## Modo de desarrollo del motor
 
@@ -116,10 +117,12 @@ Cada pull request hacia `main`, cada push a `main` y cada ejecución manual lanz
 | `engine` | Ubuntu y Windows | `ruff format --check`, `ruff check`, `mypy --strict` y pytest con cobertura (80 %; 95 % en seguridad y protocolo) |
 | `core` | Windows | Build de la interfaz, `cargo fmt --check`, `clippy -D warnings`, `cargo test` y el arranque real del motor (`engine_real`) |
 | `contracts` | Ubuntu | `npm run contracts` no deja diferencias en `packages/shared` |
-| `audit` | Ubuntu | `npm audit`, `cargo audit`, `pip-audit` y `gitleaks` sobre todo el historial |
+| `wp-plugin` | Ubuntu | Plugin de WordPress: PHPCS (WordPress Coding Standards), PHPStan y el zip del plugin (contenido y hash estable) |
+| `wp-plugin-integration` | Ubuntu (Docker) | PHPUnit del plugin en wp-env: configuración actual (PHP 8.3, WordPress y WooCommerce fijados, HPOS activado y desactivado) y mínima (PHP 8.1, WordPress 6.0, sin WooCommerce) |
+| `audit` | Ubuntu | `npm audit`, `cargo audit`, `pip-audit`, `composer audit` y `gitleaks` sobre todo el historial |
 | `ci-ok` | Ubuntu | Falla si cualquiera de los anteriores no terminó bien. Es el único check requerido en `main` |
 
-Además, `.github/workflows/codeql.yml` ejecuta CodeQL (Actions, JavaScript/TypeScript, Python y Rust) y `.github/dependabot.yml` propone actualizaciones semanales de npm, Cargo, uv y GitHub Actions.
+Además, `.github/workflows/codeql.yml` ejecuta CodeQL (Actions, JavaScript/TypeScript, Python y Rust) y `.github/dependabot.yml` propone actualizaciones semanales de npm, Cargo, uv, Composer y GitHub Actions.
 
 Para reproducir la CI en local antes de abrir un PR: `npm run format:check`, `npm run lint`, `npm run typecheck`, `npm run test` y `npm run contracts` (este último no debe cambiar ningún archivo).
 
@@ -183,3 +186,5 @@ Para comprobar la configuración: `gh api repos/OWNER/REPO/actions/permissions/w
 Copyright © 2026 Concersa. Todos los derechos reservados.
 
 El código se publica solo para consulta. No se concede licencia para usarlo, copiarlo, modificarlo ni distribuirlo sin permiso escrito de Concersa. Ver [`LICENSE`](LICENSE).
+
+Excepción: el contenido de `packages/wp-plugin/` se distribuye bajo GPL-2.0-or-later; ver [`packages/wp-plugin/LICENSE`](packages/wp-plugin/LICENSE). El resto del repositorio sigue siendo "Todos los derechos reservados" (ADR 0008).
