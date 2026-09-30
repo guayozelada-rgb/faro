@@ -27,3 +27,11 @@ regexes = [
   '''^dGVzdC1mYXJvLWhtYWMtc2VjcmV0LW5vdC1yZWFsLTE$''',
   '''^dGVzdC1mYXJvLWhtYWMtc2VjcmV0LW5vdC1yZWFsLTI$''',
 ]
+
+# Nombre de una referencia del llavero (ADR 0010), no un secreto: `generic-api-key` lo
+# detecta por la clave `secret_ref`. Solo ese valor exacto y solo en este archivo.
+[[allowlists]]
+description = "Referencia del llavero en las pruebas de auditoría del motor (no es un secreto)"
+condition = "AND"
+paths = ['''(^|/)apps/engine/tests/test_protocol\.py$''']
+regexes = ['''^llm/anthropic/default$''']
