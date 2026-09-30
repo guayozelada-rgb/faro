@@ -501,39 +501,16 @@ fn debug_nunca_muestra_la_llave() {
     assert!(format!("{message:?}").contains("[oculto]"));
 }
 
-#[derive(Clone, Default)]
-struct LogBuffer(Arc<Mutex<Vec<u8>>>);
-
-impl io::Write for LogBuffer {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 #[test]
 fn la_llave_no_aparece_en_los_logs() {
-    let buffer = LogBuffer::default();
-    let writer = buffer.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_ansi(false)
-        .with_writer(move || writer.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-    // Otras pruebas en paralelo pueden haber dejado en caché el interés de los callsites
-    // sin este subscriber (fallo intermitente en CI): se recalcula ya con él activo.
-    tracing::callsite::rebuild_interest_cache();
+    let (buffer, _guard) = crate::test_logs::capture();
 
     let (_dir, store, keys) = setup();
     let first = keys.prepare(); // crea
     let second = keys.prepare(); // reutiliza
     store.delete(&db_key_ref(first.profile_id())).unwrap();
     let third = keys.prepare(); // regenera (sin .db)
-    let text = String::from_utf8_lossy(&buffer.0.lock().unwrap()).into_owned();
+    let text = buffer.text();
     assert!(
         text.contains("llave de la base preparada"),
         "la captura no funciona"

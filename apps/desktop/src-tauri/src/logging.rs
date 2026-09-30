@@ -153,6 +153,7 @@ mod tests {
             None::<fn() -> std::io::Sink>,
             EnvFilter::new("info"),
         );
+        crate::test_logs::ensure_global();
         tracing::subscriber::with_default(subscriber, || {
             // Interés de los callsites recalculado con este subscriber (pruebas en paralelo).
             tracing::callsite::rebuild_interest_cache();
@@ -231,6 +232,7 @@ mod tests {
         let console = Captured::default();
         let subscriber = subscriber(writer, Some(console.clone()), EnvFilter::new("debug"));
         let secrets = fake_secrets();
+        crate::test_logs::ensure_global();
         tracing::subscriber::with_default(subscriber, || {
             // Interés de los callsites recalculado con este subscriber (pruebas en paralelo).
             tracing::callsite::rebuild_interest_cache();
