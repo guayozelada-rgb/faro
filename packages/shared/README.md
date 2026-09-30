@@ -6,7 +6,7 @@ Contratos entre la interfaz y el motor de Faro. **No se editan a mano**: los gen
 | --- | --- | --- |
 | `openapi.json` | Esquema OpenAPI 3.1 exportado por el motor, con las claves ordenadas alfabéticamente. | `@faro/shared/openapi.json` |
 | `engine.d.ts` | Tipos TypeScript generados con `openapi-typescript` (`paths`, `components`, `operations`). | `import type { operations } from "@faro/shared/engine"` |
-| `engine-operations.json` | Lista permitida de operaciones `[{ operationId, method, path }]`, ordenada por `operationId`. La usa el núcleo Rust para `engine_call`. | `@faro/shared/engine-operations.json` |
+| `engine-operations.json` | Lista permitida de operaciones `[{ operationId, method, path, timeout_seconds, secrets: [{ ref, access }] }]`, ordenada por `operationId` (y `secrets` por `ref`). La incrusta el núcleo Rust para `engine_call`: tiempo máximo y concesiones de secretos (ADR 0010 §3). | `@faro/shared/engine-operations.json` |
 
 ## Regenerar
 
@@ -24,4 +24,6 @@ La salida es determinista (claves ordenadas, 2 espacios en los JSON, finales de 
 
 - Los tres archivos se versionan. La CI ejecuta `npm run contracts` y falla si `git diff --exit-code packages/shared` detecta cambios, así que después de cambiar un endpoint del motor hay que regenerarlos y subirlos en el mismo PR.
 - Todo endpoint del motor necesita `operation_id` en `camelCase`; el generador falla si falta, si no es `camelCase` o si está repetido.
+- Todo endpoint del motor declara `openapi_extra=faro_operation(timeout_seconds=..., secrets=[...])` (extensiones `x-faro-timeout-seconds` y `x-faro-secrets`). El generador falla si faltan o no son válidos; las reglas están en la skill `contratos-api-local`. **Cualquier cambio en `secrets` de este archivo requiere revisión de `revisor-seguridad`.**
+- `npm run test:contracts` ejecuta las pruebas del generador (`scripts/generate-contracts.test.mjs`).
 - `npm run typecheck -w packages/shared` comprueba que `engine.d.ts` compila en modo estricto.

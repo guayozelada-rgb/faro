@@ -101,7 +101,9 @@
         "summary": "Estado del motor",
         "tags": [
           "health"
-        ]
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
       }
     }
   }

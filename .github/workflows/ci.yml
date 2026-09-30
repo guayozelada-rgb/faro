@@ -191,6 +191,10 @@ jobs:
       - name: uv sync del motor
         run: uv sync --directory apps/engine --locked
 
+      # Validación de timeout_seconds y secrets por operación (ADR 0010 §3, spec F1a T4b).
+      - name: Pruebas del generador de contratos
+        run: npm run test:contracts
+
       - name: Regenerar contratos
         run: npm run contracts
 

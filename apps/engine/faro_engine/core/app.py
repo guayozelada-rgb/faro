@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from faro_engine.core.config import Settings
 from faro_engine.core.errors import install_error_handlers
 from faro_engine.core.logging import RequestLoggingMiddleware
+from faro_engine.core.operations import validate_app_operations
 from faro_engine.core.routes import health
 from faro_engine.core.security import SecurityMiddleware
 
@@ -28,6 +29,8 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.settings = settings
     install_error_handlers(app)
     app.include_router(health.router)
+    # Toda operación declara timeout y secretos (ADR 0010 §3); si no, el motor no arranca.
+    validate_app_operations(app)
     # add_middleware apila hacia fuera: el último añadido es el más externo.
     app.add_middleware(
         SecurityMiddleware,

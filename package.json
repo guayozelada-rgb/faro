@@ -24,10 +24,11 @@
     "format": "prettier --write . && cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml && uv run --directory apps/engine ruff format .",
     "format:check": "prettier --check . && cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check && uv run --directory apps/engine ruff format --check .",
     "typecheck": "npm run typecheck --workspaces --if-present && uv run --directory apps/engine mypy faro_engine tests",
-    "test": "npm run test:desktop && npm run test:core && npm run test:engine",
+    "test": "npm run test:desktop && npm run test:core && npm run test:engine && npm run test:contracts",
     "test:desktop": "npm run test -w apps/desktop",
     "test:core": "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",
     "test:engine": "uv run --directory apps/engine pytest",
+    "test:contracts": "node --test scripts/generate-contracts.test.mjs",
     "test:all": "npm run test",
     "contracts": "node scripts/generate-contracts.mjs",
     "build:wp-plugin": "node scripts/build-wp-plugin.mjs"

@@ -82,7 +82,11 @@ exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]
 
 [tool.faro.coverage]
 # Umbral por módulo (spec F0 §4.7 y skill pruebas-faro); lo aplica tests/conftest.py.
-strict_modules = ["faro_engine/core/security.py", "faro_engine/__main__.py"]
+strict_modules = [
+    "faro_engine/core/security.py",
+    "faro_engine/__main__.py",
+    "faro_engine/core/operations.py",
+]
 strict_fail_under = 95
 
 [dependency-groups]
