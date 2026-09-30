@@ -296,6 +296,79 @@ async fn las_concesiones_desaparecen_al_reiniciar_el_motor() {
     drop(guard2);
 }
 
+/// Envía la solicitud mientras el llavero está ocupado; `change` corre cuando la solicitud
+/// ya pasó la comprobación de la concesión y espera el candado.
+async fn ask_while_keyring_busy(
+    s: &mut Setup,
+    run_id: &str,
+    op: &str,
+    secret_ref: &str,
+    value: Option<&str>,
+    change: impl FnOnce(&Setup),
+) -> (Value, Value) {
+    let busy = s.broker.keyring.lock().await;
+    let broker = Arc::clone(&s.broker);
+    let line = request_line(run_id, op, secret_ref, value);
+    let pending = tokio::spawn(async move { broker.handle_line(&line).await });
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!pending.is_finished(), "la solicitud no esperó el llavero");
+    change(s);
+    drop(busy);
+    let response = pending.await.unwrap().expect("respuesta");
+    (
+        serde_json::from_str(&response).unwrap(),
+        s.next_audit().await,
+    )
+}
+
+#[tokio::test]
+async fn concesion_revocada_mientras_espera_el_llavero_se_rechaza() {
+    let mut s = setup().await;
+    s.put(&wp(SITE), &wp_value(TOKEN));
+
+    // La llamada termina (se suelta la concesión) con el `get` en cola.
+    let guard = s.grant("checkSiteConnection", site_path(SITE));
+    let run = guard.run_id().to_owned();
+    let mut guard = Some(guard);
+    let (response, audit) =
+        ask_while_keyring_busy(&mut s, &run, "get", &wp(SITE), None, |_| drop(guard.take())).await;
+    assert_denied(
+        &response,
+        &audit,
+        "vault.secret_not_allowed",
+        "run_inactive",
+    );
+    assert!(response.get("value").is_none());
+
+    // El motor se reinicia con otro perfil con la `create` de `{new}` en cola: ni se crea
+    // el secreto ni el sitio entra en el índice de ningún perfil.
+    let other_profile = "0192f0a0-00ff-7abc-8def-0123456789ab";
+    let guard = s.grant("connectSite", BTreeMap::new());
+    let run = guard.run_id().to_owned();
+    let (response, audit) = ask_while_keyring_busy(
+        &mut s,
+        &run,
+        "create",
+        &wp(NEW_SITE),
+        Some(&wp_value(TOKEN)),
+        |s| s.broker.engine_started(2, Some(other_profile)),
+    )
+    .await;
+    assert_denied(
+        &response,
+        &audit,
+        "vault.secret_not_allowed",
+        "run_inactive",
+    );
+    assert_eq!(s.stored(&wp(NEW_SITE)), None);
+    let registry = SiteRegistry::new(s.dir.path());
+    assert!(!registry.contains(PROFILE, NEW_SITE));
+    assert!(!registry.contains(other_profile, NEW_SITE));
+    drop(guard);
+}
+
 // ---------- 3. referencia y operación concedidas ----------
 
 #[tokio::test]

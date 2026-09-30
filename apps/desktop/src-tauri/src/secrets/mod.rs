@@ -81,6 +81,9 @@ struct NewSlot {
 struct Grant {
     operation_id: &'static str,
     expires_at: Instant,
+    /// Motor y perfil para los que se concedió: la ejecución usa estos, no los actuales.
+    generation: u64,
+    profile_id: Option<String>,
     refs: Vec<(String, Vec<Op>)>,
     new_slot: Option<NewSlot>,
 }
@@ -301,6 +304,8 @@ impl SecretBroker {
             Grant {
                 operation_id: operation.operation_id.as_str(),
                 expires_at: Instant::now() + ttl,
+                generation,
+                profile_id,
                 refs,
                 new_slot,
             },
@@ -316,11 +321,16 @@ impl SecretBroker {
     /// operación válida puede declarar) para probar las defensas posteriores.
     #[cfg(test)]
     pub(crate) fn insert_test_grant(&self, run_id: &str, refs: Vec<(String, Vec<Op>)>) {
-        self.lock().grants.insert(
+        let mut state = self.lock();
+        let generation = state.generation;
+        let profile_id = state.profile_id.clone();
+        state.grants.insert(
             run_id.to_owned(),
             Grant {
                 operation_id: "pruebaInterna",
                 expires_at: Instant::now() + Duration::from_secs(60),
+                generation,
+                profile_id,
                 refs,
                 new_slot: None,
             },
@@ -455,7 +465,10 @@ impl SecretBroker {
         let secret = value.map(|v| SecretString::from(v.as_str().to_owned()));
 
         // 5 y ejecución en el llavero.
-        let done = self.execute(&context, permit, secret).await;
+        let done = match self.execute(&context, permit, secret).await {
+            Ok(done) => done,
+            Err(denial) => return self.denied(&id, &context, denial),
+        };
         self.finish(&id, &context, done)
     }
 
@@ -496,9 +509,11 @@ impl SecretBroker {
         context: &Context<'_>,
         permit: Permit,
         secret: Option<SecretString>,
-    ) -> Done {
+    ) -> Result<Done, Denial> {
         let _serial = self.keyring.lock().await;
-        let profile_id = self.lock().profile_id.clone();
+        // La espera del candado puede cruzarse con el fin de la llamada o un reinicio del
+        // motor: se vuelve a comprobar la concesión y se usa su perfil, no el actual.
+        let profile_id = self.live_grant_profile(context.run_id)?;
         let store = Arc::clone(&self.store);
         let sites = self.sites.clone();
         let secret_ref = context.secret_ref.to_owned();
@@ -534,7 +549,23 @@ impl SecretBroker {
                 }
             }
         }
-        done
+        Ok(done)
+    }
+
+    /// Perfil de la concesión `run_id` si sigue viva: no caducó y el motor que la
+    /// recibió sigue en marcha.
+    fn live_grant_profile(&self, run_id: &str) -> Result<Option<String>, Denial> {
+        let state = self.lock();
+        match state.grants.get(run_id) {
+            Some(grant)
+                if grant.expires_at > Instant::now()
+                    && state.running
+                    && grant.generation == state.generation =>
+            {
+                Ok(grant.profile_id.clone())
+            }
+            _ => Err(deny(NOT_ALLOWED, "run_inactive")),
+        }
     }
 
     fn finish(&self, id: &str, context: &Context<'_>, done: Done) -> Zeroizing<String> {
