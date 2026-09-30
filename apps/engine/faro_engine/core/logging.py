@@ -100,6 +100,10 @@ def configure_logging(level: int = logging.INFO, stream: TextIO | None = None) -
         logger = logging.getLogger(name)
         logger.handlers.clear()
         logger.propagate = True
+    # httpx registra cada URL pedida (con su consulta) en INFO: la red saliente ya deja
+    # sus propios eventos sin URL ni cabeceras (`faro_engine.net`).
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 class RequestLoggingMiddleware:

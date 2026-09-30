@@ -50,7 +50,7 @@ _CREDENTIAL_UNUSABLE_MESSAGE: Final = (
     "Faro no pudo usar una credencial guardada. Reinicia Faro e intenta de nuevo."
 )
 
-MESSAGES: Final[Mapping[str, str]] = {
+_BASE_MESSAGES: Final[Mapping[str, str]] = {
     ENGINE_UNAUTHORIZED: "El motor rechazó la conexión. Reinicia Faro.",
     ENGINE_FORBIDDEN_HOST: "El motor rechazó la conexión. Reinicia Faro.",
     ENGINE_NOT_FOUND: "No encontramos lo que buscabas.",
@@ -88,6 +88,127 @@ MESSAGES: Final[Mapping[str, str]] = {
     ),
 }
 
+# Sitios conectados (spec F1a §5.6, ADR 0011 y 0012). El estado HTTP de cada uno está en
+# `SITE_STATUS`; la interfaz elige el mensaje por `code`, no por el estado.
+SITE_INVALID_URL: Final = "site.invalid_url"
+SITE_HTTPS_REQUIRED: Final = "site.https_required"
+SITE_ADDRESS_NOT_ALLOWED: Final = "site.address_not_allowed"
+SITE_UNREACHABLE: Final = "site.unreachable"
+SITE_TLS_ERROR: Final = "site.tls_error"
+SITE_TIMEOUT: Final = "site.timeout"
+SITE_SERVER_ERROR: Final = "site.server_error"
+SITE_RATE_LIMITED: Final = "site.rate_limited"
+SITE_PLUGIN_NOT_FOUND: Final = "site.plugin_not_found"
+SITE_PLUGIN_OUTDATED: Final = "site.plugin_outdated"
+SITE_BLOCKED: Final = "site.blocked"
+SITE_MOVED: Final = "site.moved"
+SITE_BAD_RESPONSE: Final = "site.bad_response"
+SITE_RESPONSE_TOO_LARGE: Final = "site.response_too_large"
+SITE_INVALID_CODE_FORMAT: Final = "site.invalid_code_format"
+SITE_PAIRING_CODE_INVALID: Final = "site.pairing_code_invalid"
+SITE_PAIRING_CODE_EXPIRED: Final = "site.pairing_code_expired"
+SITE_ALREADY_CONNECTED: Final = "site.already_connected"
+SITE_NOT_FOUND: Final = "site.not_found"
+SITE_REVOKED: Final = "site.revoked"
+SITE_CONNECTION_BROKEN: Final = "site.connection_broken"
+SITE_AUTH_FAILED: Final = "site.auth_failed"
+SITE_SECRET_MISSING: Final = "site.secret_missing"  # noqa: S105 - código, no un secreto
+SITE_CLOCK_SKEW: Final = "site.clock_skew"
+
+SITE_MESSAGES: Final[Mapping[str, str]] = {
+    SITE_INVALID_URL: "Esa dirección no parece válida. Escríbela así: https://tutienda.com",
+    SITE_HTTPS_REQUIRED: "Faro solo se conecta a sitios con HTTPS (el candado del navegador).",
+    SITE_ADDRESS_NOT_ALLOWED: (
+        "Esa dirección apunta a esta computadora o a tu red local. Faro solo se conecta a "
+        "sitios publicados en internet."
+    ),
+    SITE_UNREACHABLE: (
+        "No pudimos conectar con tu sitio. Revisa la dirección y que el sitio esté en línea."
+    ),
+    SITE_TLS_ERROR: (
+        "El certificado de seguridad de tu sitio no es válido. Pide a tu proveedor de hosting "
+        "que lo revise."
+    ),
+    SITE_TIMEOUT: "Tu sitio tardó demasiado en responder. Intenta de nuevo en unos minutos.",
+    SITE_SERVER_ERROR: "Tu sitio tuvo un problema al responder. Intenta de nuevo en unos minutos.",
+    SITE_RATE_LIMITED: (
+        "Tu sitio recibió demasiados intentos. Espera 15 minutos e intenta de nuevo."
+    ),
+    SITE_PLUGIN_NOT_FOUND: (
+        "No encontramos el plugin de Faro en ese sitio. Revisa que esté instalado y activado."
+    ),
+    SITE_PLUGIN_OUTDATED: (
+        "El plugin de Faro de tu sitio no es compatible con esta versión. Instala la versión "
+        "más reciente."
+    ),
+    SITE_BLOCKED: (
+        "Algo en tu sitio está bloqueando la conexión, como un plugin de seguridad. Permite el "
+        "acceso a la API de WordPress e intenta de nuevo."
+    ),
+    SITE_MOVED: (
+        "Tu sitio respondió desde otra dirección. Vuelve a conectarlo con la dirección nueva."
+    ),
+    SITE_BAD_RESPONSE: (
+        "Tu sitio respondió algo que no esperábamos. Revisa que el plugin de Faro esté actualizado."
+    ),
+    SITE_RESPONSE_TOO_LARGE: "Tu sitio envió una respuesta demasiado grande. Intenta de nuevo.",
+    SITE_INVALID_CODE_FORMAT: "El código tiene 6 números.",
+    # El número de intentos se añade en `pairing_code_invalid()`.
+    SITE_PAIRING_CODE_INVALID: ("El código no coincide. Revísalo en WordPress (Ajustes → Faro)."),
+    SITE_PAIRING_CODE_EXPIRED: (
+        "Este código ya no sirve: caducó o ya se usó. Genera uno nuevo en WordPress."
+    ),
+    SITE_ALREADY_CONNECTED: "Este sitio ya está en Faro.",
+    SITE_NOT_FOUND: "No encontramos ese sitio en Faro. Puede que ya lo hayas quitado.",
+    SITE_REVOKED: (
+        "Tu sitio se desconectó de Faro desde WordPress. Vuelve a conectarlo con un código nuevo."
+    ),
+    SITE_CONNECTION_BROKEN: (
+        "La conexión dejó de funcionar porque cambiaron las claves de seguridad de WordPress. "
+        "Vuelve a conectarlo con un código nuevo."
+    ),
+    SITE_AUTH_FAILED: "Tu sitio rechazó la conexión. Vuelve a conectarlo con un código nuevo.",
+    SITE_SECRET_MISSING: (
+        "Falta la conexión de este sitio en el llavero de tu computadora. Vuelve a conectarlo "
+        "con un código nuevo."
+    ),
+    SITE_CLOCK_SKEW: (
+        "La hora de tu computadora no coincide con la de tu sitio. Activa la fecha y hora "
+        "automáticas e intenta de nuevo."
+    ),
+}
+
+# 400: la entrada del usuario; 404/409/410/429: estado de Faro o del sitio; 502: el sitio
+# respondió mal o no se pudo usar; 504: el sitio no respondió a tiempo.
+SITE_STATUS: Final[Mapping[str, int]] = {
+    SITE_INVALID_URL: 400,
+    SITE_HTTPS_REQUIRED: 400,
+    SITE_ADDRESS_NOT_ALLOWED: 400,
+    SITE_UNREACHABLE: 502,
+    SITE_TLS_ERROR: 502,
+    SITE_TIMEOUT: 504,
+    SITE_SERVER_ERROR: 502,
+    SITE_RATE_LIMITED: 429,
+    SITE_PLUGIN_NOT_FOUND: 502,
+    SITE_PLUGIN_OUTDATED: 502,
+    SITE_BLOCKED: 502,
+    SITE_MOVED: 502,
+    SITE_BAD_RESPONSE: 502,
+    SITE_RESPONSE_TOO_LARGE: 502,
+    SITE_INVALID_CODE_FORMAT: 400,
+    SITE_PAIRING_CODE_INVALID: 400,
+    SITE_PAIRING_CODE_EXPIRED: 410,
+    SITE_ALREADY_CONNECTED: 409,
+    SITE_NOT_FOUND: 404,
+    SITE_REVOKED: 409,
+    SITE_CONNECTION_BROKEN: 409,
+    SITE_AUTH_FAILED: 409,
+    SITE_SECRET_MISSING: 409,
+    SITE_CLOCK_SKEW: 502,
+}
+
+MESSAGES: Final[Mapping[str, str]] = {**_BASE_MESSAGES, **SITE_MESSAGES}
+
 
 class FaroError(Exception):
     """Error de dominio que se devuelve al cliente con el formato común."""
@@ -112,6 +233,23 @@ class FaroError(Exception):
 
     def to_out(self) -> ErrorOut:
         return ErrorOut(code=self.code, message=self.message, details=self.details)
+
+
+def site_error(code: str, details: Mapping[str, Any] | None = None) -> FaroError:
+    """Error `site.*` con su mensaje y estado del catálogo."""
+    return FaroError.of(code, SITE_STATUS[code], details)
+
+
+def pairing_code_invalid(attempts_left: int) -> FaroError:
+    """`site.pairing_code_invalid` con los intentos que quedan (`details.attempts_left`)."""
+    left = max(0, attempts_left)
+    tail = "Te queda 1 intento." if left == 1 else f"Te quedan {left} intentos."
+    return FaroError(
+        SITE_PAIRING_CODE_INVALID,
+        f"{SITE_MESSAGES[SITE_PAIRING_CODE_INVALID]} {tail}",
+        SITE_STATUS[SITE_PAIRING_CODE_INVALID],
+        {"attempts_left": left},
+    )
 
 
 def unauthorized() -> FaroError:
