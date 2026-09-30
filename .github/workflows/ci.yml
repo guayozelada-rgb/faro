@@ -401,8 +401,24 @@ jobs:
         if: matrix.config == 'actual'
         run: npx --no-install wp-env run tests-cli --env-cwd=wp-content/plugins/faro env FARO_TEST_HPOS=0 vendor/bin/phpunit
 
-      # T9 añade aquí, solo en `actual`: setup-uv + uv sync y `pytest -m wp_env`
-      # (integración motor ↔ plugin, spec F1a §9.4).
+      # Integración motor ↔ plugin (spec F1a §9.4), solo en `actual`: el motor corre dentro
+      # de pytest con el modo de sitios locales contra http://localhost:8888 y un canal de
+      # secretos simulado en memoria (sin llavero ni secretos de la CI).
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        if: matrix.config == 'actual'
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: apps/engine/uv.lock
+
+      - name: Integración motor ↔ plugin (pytest -m wp_env)
+        if: matrix.config == 'actual'
+        working-directory: apps/engine
+        env:
+          FARO_WP_ENV_URL: http://localhost:8888
+        run: |
+          uv sync --locked
+          uv run --locked pytest -m wp_env --no-cov -p no:cacheprovider
 
       - name: Apagar wp-env
         if: always()

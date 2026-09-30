@@ -2,8 +2,9 @@
 
 CI comprueba con `git diff --exit-code` que `npm run contracts` no genera diferencias;
 esta prueba lo detecta antes y sin git: los archivos versionados siguen al día con la app,
-la lista permitida contiene exactamente `getHealth` y cada operación lleva los
-`timeout_seconds` y `secrets` que declara su ruta (ADR 0010 §3, spec F1a §4.5).
+la lista permitida contiene exactamente las 7 operaciones de la spec F1a §5.2 con sus
+`timeout_seconds` y `secrets` (§9.6) y cada operación lleva lo que declara su ruta
+(ADR 0010 §3, spec F1a §4.5).
 """
 
 from __future__ import annotations
@@ -28,15 +29,34 @@ def _load(name: str) -> Any:
     return json.loads((SHARED / name).read_text(encoding="utf-8"))
 
 
-def test_engine_operations_is_exactly_get_health() -> None:
+def _op(
+    operation_id: str, method: str, path: str, timeout: int, secrets: list[dict[str, Any]]
+) -> dict[str, Any]:
+    return {
+        "operationId": operation_id,
+        "method": method,
+        "path": path,
+        "timeout_seconds": timeout,
+        "secrets": secrets,
+    }
+
+
+def _wp(ref: str, *access: str) -> list[dict[str, Any]]:
+    return [{"ref": ref, "access": list(access)}]
+
+
+def test_engine_operations_are_exactly_the_f1a_operations() -> None:
+    # Concesiones exactas (spec F1a §5.2): cambiar esta tabla requiere revisor-seguridad,
+    # igual que `concesiones_exactas_por_operacion` en el núcleo.
+    site = "wp/{site_id}/token"
     assert _load("engine-operations.json") == [
-        {
-            "operationId": "getHealth",
-            "method": "GET",
-            "path": "/health",
-            "timeout_seconds": 10,
-            "secrets": [],
-        }
+        _op("checkSiteConnection", "POST", "/sites/{site_id}/check", 45, _wp(site, "get")),
+        _op("connectSite", "POST", "/sites", 60, _wp("wp/{new}/token", "create", "delete")),
+        _op("getHealth", "GET", "/health", 10, []),
+        _op("listSiteContent", "GET", "/sites/{site_id}/content", 45, _wp(site, "get")),
+        _op("listSites", "GET", "/sites", 10, []),
+        _op("reconnectSite", "PUT", "/sites/{site_id}/connection", 60, _wp(site, "set")),
+        _op("removeSite", "DELETE", "/sites/{site_id}", 45, _wp(site, "get", "delete")),
     ]
 
 
@@ -83,7 +103,17 @@ def test_versioned_openapi_matches_the_app() -> None:
     assert _load("openapi.json") == build_openapi()
 
 
-def test_engine_d_ts_declares_get_health() -> None:
+def test_engine_d_ts_declares_the_operations() -> None:
     text = (SHARED / "engine.d.ts").read_text(encoding="utf-8")
-    assert "getHealth" in text
+    for operation in (
+        "getHealth",
+        "listSites",
+        "connectSite",
+        "reconnectSite",
+        "checkSiteConnection",
+        "listSiteContent",
+        "removeSite",
+    ):
+        assert operation in text
     assert '"/health"' in text
+    assert '"/sites/{site_id}/content"' in text

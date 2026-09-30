@@ -1,6 +1,34 @@
 {
   "components": {
     "schemas": {
+      "ConnectSiteIn": {
+        "additionalProperties": false,
+        "description": "Cuerpo de `connectSite`. El código solo vive en esta petición: no se guarda ni se\nregistra.",
+        "properties": {
+          "pairing_code": {
+            "description": "6 números; admite espacios.",
+            "maxLength": 16,
+            "minLength": 1,
+            "title": "Pairing Code",
+            "type": "string"
+          },
+          "url": {
+            "examples": [
+              "https://tutienda.com"
+            ],
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "pairing_code"
+        ],
+        "title": "ConnectSiteIn",
+        "type": "object"
+      },
       "DatabaseHealth": {
         "additionalProperties": false,
         "description": "Estado de la base del perfil (ADR 0009 §4). El motor sigue `ok` aunque no esté lista.",
@@ -72,6 +100,19 @@
         "title": "ErrorOut",
         "type": "object"
       },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
       "HealthOut": {
         "additionalProperties": false,
         "description": "Estado del motor.",
@@ -98,6 +139,451 @@
           "database"
         ],
         "title": "HealthOut",
+        "type": "object"
+      },
+      "ReconnectSiteIn": {
+        "additionalProperties": false,
+        "description": "Cuerpo de `reconnectSite`.",
+        "properties": {
+          "pairing_code": {
+            "description": "6 números; admite espacios.",
+            "maxLength": 16,
+            "minLength": 1,
+            "title": "Pairing Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pairing_code"
+        ],
+        "title": "ReconnectSiteIn",
+        "type": "object"
+      },
+      "RemoveSiteOut": {
+        "additionalProperties": false,
+        "properties": {
+          "remote_revoked": {
+            "description": "`true` si el sitio confirmó la desconexión (o ya estaba desconectado).",
+            "title": "Remote Revoked",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "remote_revoked"
+        ],
+        "title": "RemoveSiteOut",
+        "type": "object"
+      },
+      "SiteConnectionOut": {
+        "additionalProperties": false,
+        "properties": {
+          "connected_at": {
+            "examples": [
+              "2026-09-30T12:00:00Z"
+            ],
+            "title": "Connected At",
+            "type": "string"
+          },
+          "counts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SiteCountsOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_checked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Checked At"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Por qué está desconectado: `site.revoked`, `site.connection_broken`, `site.auth_failed` o `site.secret_missing`.",
+            "examples": [
+              "site.revoked"
+            ],
+            "title": "Last Error Code"
+          },
+          "plugin_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plugin Version"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "seo_plugin": {
+            "anyOf": [
+              {
+                "enum": [
+                  "yoast",
+                  "rank_math",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seo Plugin"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "revoked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "woocommerce": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WooCommerceOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "wp_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wp Version"
+          }
+        },
+        "required": [
+          "status",
+          "last_error_code",
+          "connected_at",
+          "last_checked_at",
+          "revoked_at",
+          "plugin_version",
+          "wp_version",
+          "woocommerce",
+          "seo_plugin",
+          "counts"
+        ],
+        "title": "SiteConnectionOut",
+        "type": "object"
+      },
+      "SiteContentItem": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "page",
+              "post",
+              "product"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "modified_at": {
+            "title": "Modified At",
+            "type": "string"
+          },
+          "remote_id": {
+            "title": "Remote Id",
+            "type": "integer"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "title": {
+            "description": "Texto plano (nunca HTML).",
+            "title": "Title",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "remote_id",
+          "kind",
+          "title",
+          "url",
+          "slug",
+          "modified_at"
+        ],
+        "title": "SiteContentItem",
+        "type": "object"
+      },
+      "SiteContentPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SiteContentItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Número de la página siguiente, como texto.",
+            "title": "Next Cursor"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "total_pages": {
+            "title": "Total Pages",
+            "type": "integer"
+          },
+          "woocommerce_active": {
+            "title": "Woocommerce Active",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "total",
+          "total_pages",
+          "woocommerce_active"
+        ],
+        "title": "SiteContentPage",
+        "type": "object"
+      },
+      "SiteCountsOut": {
+        "additionalProperties": false,
+        "properties": {
+          "pages": {
+            "title": "Pages",
+            "type": "integer"
+          },
+          "posts": {
+            "title": "Posts",
+            "type": "integer"
+          },
+          "products": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`null` si WooCommerce no está activo.",
+            "title": "Products"
+          }
+        },
+        "required": [
+          "pages",
+          "posts",
+          "products"
+        ],
+        "title": "SiteCountsOut",
+        "type": "object"
+      },
+      "SiteListOut": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SiteOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Siempre `null` en F1a.",
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "SiteListOut",
+        "type": "object"
+      },
+      "SiteOut": {
+        "additionalProperties": false,
+        "description": "Un sitio conectado. `connection` es `null` solo en sitios sin plugin (reservado F2).",
+        "properties": {
+          "connection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SiteConnectionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "examples": [
+              "01920000-0000-7000-8000-000000000001"
+            ],
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "url": {
+            "examples": [
+              "https://tutienda.com"
+            ],
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "url",
+          "name",
+          "created_at",
+          "connection"
+        ],
+        "title": "SiteOut",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "WooCommerceOut": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "hpos_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hpos Enabled"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "active",
+          "version",
+          "hpos_enabled"
+        ],
+        "title": "WooCommerceOut",
         "type": "object"
       }
     }
@@ -149,6 +635,842 @@
         ],
         "x-faro-secrets": [],
         "x-faro-timeout-seconds": 10
+      }
+    },
+    "/sites": {
+      "get": {
+        "operationId": "listSites",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos o llavero no disponibles."
+          }
+        },
+        "summary": "Sitios conectados",
+        "tags": [
+          "sites"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      },
+      "post": {
+        "operationId": "connectSite",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectSiteIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Dirección o código no válidos."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`site.not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Conexión revocada o sitio ya conectado."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`site.rate_limited`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "El sitio respondió mal o no se pudo usar."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos o llavero no disponibles."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`site.timeout`."
+          }
+        },
+        "summary": "Conectar un sitio con un código de WordPress",
+        "tags": [
+          "sites"
+        ],
+        "x-faro-secrets": [
+          {
+            "access": [
+              "create",
+              "delete"
+            ],
+            "ref": "wp/{new}/token"
+          }
+        ],
+        "x-faro-timeout-seconds": 60
+      }
+    },
+    "/sites/{site_id}": {
+      "delete": {
+        "operationId": "removeSite",
+        "parameters": [
+          {
+            "description": "UUID del sitio en minúsculas.",
+            "in": "path",
+            "name": "site_id",
+            "required": true,
+            "schema": {
+              "description": "UUID del sitio en minúsculas.",
+              "examples": [
+                "01920000-0000-7000-8000-000000000001"
+              ],
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Site Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoveSiteOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Dirección o código no válidos."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`site.not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Conexión revocada o sitio ya conectado."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`site.rate_limited`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "El sitio respondió mal o no se pudo usar."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos o llavero no disponibles."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`site.timeout`."
+          }
+        },
+        "summary": "Desconectar y quitar un sitio",
+        "tags": [
+          "sites"
+        ],
+        "x-faro-secrets": [
+          {
+            "access": [
+              "get",
+              "delete"
+            ],
+            "ref": "wp/{site_id}/token"
+          }
+        ],
+        "x-faro-timeout-seconds": 45
+      }
+    },
+    "/sites/{site_id}/check": {
+      "post": {
+        "operationId": "checkSiteConnection",
+        "parameters": [
+          {
+            "description": "UUID del sitio en minúsculas.",
+            "in": "path",
+            "name": "site_id",
+            "required": true,
+            "schema": {
+              "description": "UUID del sitio en minúsculas.",
+              "examples": [
+                "01920000-0000-7000-8000-000000000001"
+              ],
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Site Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Dirección o código no válidos."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`site.not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Conexión revocada o sitio ya conectado."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`site.rate_limited`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "El sitio respondió mal o no se pudo usar."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos o llavero no disponibles."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`site.timeout`."
+          }
+        },
+        "summary": "Comprobar la conexión (una revocación es un resultado, no un error)",
+        "tags": [
+          "sites"
+        ],
+        "x-faro-secrets": [
+          {
+            "access": [
+              "get"
+            ],
+            "ref": "wp/{site_id}/token"
+          }
+        ],
+        "x-faro-timeout-seconds": 45
+      }
+    },
+    "/sites/{site_id}/connection": {
+      "put": {
+        "operationId": "reconnectSite",
+        "parameters": [
+          {
+            "description": "UUID del sitio en minúsculas.",
+            "in": "path",
+            "name": "site_id",
+            "required": true,
+            "schema": {
+              "description": "UUID del sitio en minúsculas.",
+              "examples": [
+                "01920000-0000-7000-8000-000000000001"
+              ],
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Site Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReconnectSiteIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Dirección o código no válidos."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`site.not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Conexión revocada o sitio ya conectado."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`site.rate_limited`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "El sitio respondió mal o no se pudo usar."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos o llavero no disponibles."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`site.timeout`."
+          }
+        },
+        "summary": "Volver a conectar un sitio con un código nuevo",
+        "tags": [
+          "sites"
+        ],
+        "x-faro-secrets": [
+          {
+            "access": [
+              "set"
+            ],
+            "ref": "wp/{site_id}/token"
+          }
+        ],
+        "x-faro-timeout-seconds": 60
+      }
+    },
+    "/sites/{site_id}/content": {
+      "get": {
+        "operationId": "listSiteContent",
+        "parameters": [
+          {
+            "description": "UUID del sitio en minúsculas.",
+            "in": "path",
+            "name": "site_id",
+            "required": true,
+            "schema": {
+              "description": "UUID del sitio en minúsculas.",
+              "examples": [
+                "01920000-0000-7000-8000-000000000001"
+              ],
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Site Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "enum": [
+                "page",
+                "post",
+                "product"
+              ],
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Número de página como texto.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[1-9][0-9]{0,4}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Número de página como texto.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteContentPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Dirección o código no válidos."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`site.not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Conexión revocada o sitio ya conectado."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`site.rate_limited`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "El sitio respondió mal o no se pudo usar."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos o llavero no disponibles."
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`site.timeout`."
+          }
+        },
+        "summary": "Páginas, entradas o productos publicados (leídos en vivo)",
+        "tags": [
+          "sites"
+        ],
+        "x-faro-secrets": [
+          {
+            "access": [
+              "get"
+            ],
+            "ref": "wp/{site_id}/token"
+          }
+        ],
+        "x-faro-timeout-seconds": 45
       }
     }
   }

@@ -20,6 +20,7 @@ from fastapi import FastAPI
 
 from faro_engine import __main__ as entry
 from faro_engine.core import protocol
+from faro_engine.core.app import create_app
 from faro_engine.core.audit import AuditLog
 from faro_engine.core.db.database import Database
 from faro_engine.core.db.profile import dev_data_dir, profile_db_path
@@ -548,3 +549,76 @@ def test_run_writes_audit_events_from_stdin(pipe: Pipe, tmp_path: Path) -> None:
     finally:
         conn.close()
     assert rows == [("secret.denied", "denied")]
+
+
+# --- Modo de sitios locales (ADR 0012, spec F1a §9.2) --------------------------------------
+
+
+def test_run_rejects_local_sites_when_frozen(capsys: pytest.CaptureFixture[str]) -> None:
+    sink = io.BytesIO()
+    code = entry.run(["--allow-local-sites"], stdin_fd=0, out=sink, frozen=True)
+    assert code == entry.EXIT_USAGE == 2
+    assert sink.getvalue() == b""
+    assert "config.local_sites_rejected" in capsys.readouterr().err
+
+
+def _capture_settings(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    captured: list[Any] = []
+    real = create_app
+
+    def spy(settings: Any, *args: Any, **kwargs: Any) -> FastAPI:
+        captured.append(settings)
+        return real(settings, *args, **kwargs)
+
+    monkeypatch.setattr(entry, "create_app", spy)
+    return captured
+
+
+@pytest.mark.parametrize(("argv", "expected"), [(["--allow-local-sites"], True), ([], False)])
+def test_run_allow_local_sites_flag(  # noqa: PLR0917 - fixtures de pytest
+    pipe: Pipe,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    expected: bool,
+) -> None:
+    captured = _capture_settings(monkeypatch)
+    pipe.write(secrets.token_urlsafe(32).encode("ascii") + NL + db_key_line())
+    sink = ReadySink()
+    thread, result = _run_in_thread(
+        argv=[*argv, "--data-dir", str(tmp_path)], stdin_fd=pipe.read_fd, out=sink, frozen=False
+    )
+    assert sink.flushed.wait(WAIT)
+    pipe.write(b'{"event":"shutdown"}\n')
+    thread.join(WAIT)
+    assert result == [entry.EXIT_OK]
+    [settings] = captured
+    assert settings.allow_local_sites is expected
+    assert ("net.local_sites_enabled" in capsys.readouterr().err) is expected
+
+
+@pytest.mark.parametrize(("value", "expected"), [("1", True), ("0", False), ("true", False)])
+def test_run_dev_reads_allow_local_sites(
+    pipe: Pipe, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str, expected: bool
+) -> None:
+    captured = _capture_settings(monkeypatch)
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        f"FARO_ENGINE_DEV_TOKEN={secrets.token_urlsafe(32)}\n"
+        f"FARO_ENGINE_DEV_PORT={_free_port()}\nFARO_ALLOW_LOCAL_SITES={value}\n",
+        encoding="utf-8",
+    )
+    sink = ReadySink()
+    thread, result = _run_in_thread(
+        argv=["--dev", "--data-dir", str(tmp_path / "devdata")],
+        stdin_fd=pipe.read_fd,
+        out=sink,
+        env_file=env_file,
+        frozen=False,
+    )
+    assert sink.flushed.wait(WAIT)
+    pipe.write(b'{"event":"shutdown"}\n')
+    thread.join(WAIT)
+    assert result == [entry.EXIT_OK]
+    assert captured[0].allow_local_sites is expected
