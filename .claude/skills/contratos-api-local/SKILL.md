@@ -91,12 +91,18 @@ Reglas (las comprueban `create_app` al arrancar el motor, `scripts/generate-cont
 
 - **Los dos campos son obligatorios** en toda operación; sin secretos, `secrets=[]`. No se admite ninguna otra extensión `x-faro-*`.
 - `timeout_seconds`: entero entre **10 y 300**. Es lo que espera el núcleo (`engine.timeout`); el motor corta su trabajo 5 s antes (ADR 0012). Lo que tarde más devuelve `202` con `run_id`.
-- `ref`: la gramática del llavero (skill `llavero-y-cifrado`) en forma de plantilla:
-  - `wp/{parametro}/token`: `{parametro}` es un parámetro de **la ruta de esa operación** (`{site_id}`), que el núcleo sustituye por el valor de la llamada validado como UUID. Nunca un UUID literal.
-  - `wp/{new}/token`: solo `create` (y opcionalmente `delete` de lo creado); `new` no puede ser nombre de parámetro de ruta.
-  - `llm/<anthropic|openai|gemini>/<alias>` y `oauth/google/<cuenta>`: literales (un `{param}` ahí siempre fallaría la validación como UUID).
-  - `db/*` **nunca**: el generador y el motor lo rechazan.
-- `access`: lista no vacía y sin repetidos de `get`, `create`, `set`, `delete`. Se guarda en ese orden canónico; `secrets` se ordena por `ref`. Una `ref` no puede aparecer dos veces.
+- `ref`: la gramática del llavero (skill `llavero-y-cifrado`) en forma de plantilla. `{parametro}` es un parámetro de **la ruta de esa operación** (`{site_id}`), que el núcleo sustituye por el valor de la llamada validado como UUID; nunca un UUID literal. `new` no puede ser nombre de parámetro de ruta. `llm/*` va literal (un `{param}` ahí siempre fallaría la validación como UUID). Una `ref` no textual o que no cumpla la gramática se rechaza.
+- `access`: lista no vacía y sin repetidos, limitada por el **tipo de referencia**:
+
+| Plantilla de `ref` | Accesos permitidos | Uso previsto (spec F1a §5.2) |
+| --- | --- | --- |
+| `llm/<anthropic\|openai\|gemini>/<alias>` (literal) | `get` | leer la clave de IA; agregarla, reemplazarla o borrarla solo desde la Bóveda (núcleo) |
+| `wp/{parametro}/token` (`{parametro}` = parámetro de la ruta, UUID) | `get`, `set`, `delete` (nunca `create`) | `checkSiteConnection` y `listSiteContent`: `get`; `reconnectSite`: `set`; `removeSite`: `get` + `delete` |
+| `wp/{new}/token` | `create` (obligatorio) y `delete` | `connectSite`: crear el token del sitio nuevo y borrarlo si la vinculación queda a medias |
+| `oauth/*` | ninguno (rechazada) | pendiente de la spec de OAuth: la cuenta la resolverá el núcleo desde el perfil activo, nunca un parámetro de ruta |
+| `db/*` | ninguno (rechazada siempre) | la llave de la base solo se entrega al arrancar |
+
+Se guarda en el orden canónico `get`, `create`, `set`, `delete`; `secrets` se ordena por `ref`. Una `ref` no puede aparecer dos veces. La tabla vive en `ACCESS_BY_KIND` de `core/operations.py` y de `scripts/generate-contracts.mjs`: cámbiala en los dos a la vez.
 - Pide el mínimo: una operación con `secrets=[]` no obtiene ningún secreto aunque el motor lo pida. **Cualquier cambio en `secrets` requiere revisión de `revisor-seguridad`** (la plantilla de PR lo recuerda desde T10).
 
 ## Reglas

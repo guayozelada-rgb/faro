@@ -39,16 +39,38 @@ export const MIN_TIMEOUT_SECONDS = 10;
 export const MAX_TIMEOUT_SECONDS = 300;
 /** Accesos permitidos, en su orden canónico. */
 export const SECRET_ACCESS = ["get", "create", "set", "delete"];
-const NEW_PLACEHOLDER = "{new}";
 // Gramática del llavero (skill llavero-y-cifrado) en forma de plantilla: el <uuid> de
-// `wp/<uuid>/token` va siempre como `{parametro_de_ruta}` o `{new}`; `llm/*` y
-// `oauth/google/*` son literales; `db/*` nunca se concede.
+// `wp/<uuid>/token` va siempre como `{parametro_de_ruta}` o `{new}`; `llm/*` es literal;
+// `db/*` nunca se concede y `oauth/*` todavía no (pendiente de su spec).
 const PLACEHOLDER = String.raw`\{[a-z][a-z0-9_]{0,31}\}`;
+const LLM_RE = /^llm\/(?:anthropic|openai|gemini)\/[a-z0-9_-]{1,32}$/;
+const WP_NEW_RE = /^wp\/\{new\}\/token$/;
+const WP_PARAM_RE = new RegExp(String.raw`^wp/${PLACEHOLDER}/token$`);
+/** Unión de las plantillas admitidas (incluye `wp/{new}/token`). */
 export const SECRET_REF_TEMPLATE_RE = new RegExp(
-  String.raw`^(?:llm/(?:anthropic|openai|gemini)/[a-z0-9_-]{1,32}` +
-    String.raw`|wp/${PLACEHOLDER}/token` +
-    String.raw`|oauth/google/[0-9]{1,64})$`,
+  String.raw`^(?:llm/(?:anthropic|openai|gemini)/[a-z0-9_-]{1,32}|wp/${PLACEHOLDER}/token)$`,
 );
+/**
+ * Accesos por tipo de referencia (spec F1a §5.2, ADR 0010 §3); misma tabla que
+ * ACCESS_BY_KIND en operations.py. connectSite -> wp/{new}/token create (+delete);
+ * reconnectSite -> wp/{site_id}/token set; checkSiteConnection y listSiteContent -> get;
+ * removeSite -> get y delete. Las claves de IA solo se leen: las gestiona la Bóveda.
+ */
+export const ACCESS_BY_KIND = [
+  { name: "llm/<proveedor>/<alias>", pattern: LLM_RE, allowed: ["get"], required: [] },
+  {
+    name: "wp/{new}/token",
+    pattern: WP_NEW_RE,
+    allowed: ["create", "delete"],
+    required: ["create"],
+  },
+  {
+    name: "wp/{parametro}/token",
+    pattern: WP_PARAM_RE,
+    allowed: ["get", "set", "delete"],
+    required: [],
+  },
+];
 const PLACEHOLDER_RE = new RegExp(PLACEHOLDER, "g");
 const PATH_PARAM_RE = /\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}/g;
 
@@ -194,11 +216,18 @@ function readGrant(grant, where, pathParams) {
   if (ref.startsWith("db/")) {
     fail(`${SECRETS_KEY} de ${where}: "${ref}" es la llave de la base; \`db/*\` nunca se concede.`);
   }
-  if (!SECRET_REF_TEMPLATE_RE.test(ref)) {
+  if (ref.startsWith("oauth/")) {
+    fail(
+      `${SECRETS_KEY} de ${where}: "${ref}" está pendiente de la spec de OAuth: la cuenta la ` +
+        "resolverá el núcleo desde el perfil activo, nunca un parámetro de ruta.",
+    );
+  }
+  const kind = ACCESS_BY_KIND.find(({ pattern }) => pattern.test(ref));
+  if (kind === undefined) {
     fail(
       `${SECRETS_KEY} de ${where}: ${JSON.stringify(ref)} no cumple la gramática del llavero ` +
-        "en forma de plantilla (llm/<proveedor>/<alias>, wp/{parametro}/token, " +
-        "wp/{new}/token u oauth/google/<cuenta>).",
+        "en forma de plantilla (llm/<proveedor>/<alias>, wp/{parametro}/token o " +
+        "wp/{new}/token).",
     );
   }
   for (const [placeholder] of ref.matchAll(PLACEHOLDER_RE)) {
@@ -223,13 +252,12 @@ function readGrant(grant, where, pathParams) {
     fail(`${SECRETS_KEY} de ${where}: "${ref}" repite accesos.`);
   }
   if (
-    ref.includes(NEW_PLACEHOLDER) &&
-    (!access.includes("create") || access.some((op) => op !== "create" && op !== "delete"))
+    access.some((op) => !kind.allowed.includes(op)) ||
+    kind.required.some((op) => !access.includes(op))
   ) {
-    fail(
-      `${SECRETS_KEY} de ${where}: "${ref}" usa {new}; solo admite \`create\` y, ` +
-        "opcionalmente, `delete` de lo creado.",
-    );
+    const allowed = SECRET_ACCESS.filter((op) => kind.allowed.includes(op)).join(", ");
+    const required = kind.required.length > 0 ? ` (obligatorio: ${kind.required.join(", ")})` : "";
+    fail(`${SECRETS_KEY} de ${where}: "${ref}" (${kind.name}) solo admite: ${allowed}${required}.`);
   }
   return { ref, access: SECRET_ACCESS.filter((op) => access.includes(op)) };
 }

@@ -120,7 +120,7 @@ describe("buildOperations: campos por operación", () => {
   });
 
   it("acepta las referencias literales de la gramática y los límites de timeout", () => {
-    for (const ref of ["llm/openai/trabajo_2", "llm/gemini/a-b", "oauth/google/1234567890"]) {
+    for (const ref of ["llm/openai/trabajo_2", "llm/gemini/a-b"]) {
       buildOperations(withGrant({ ref, access: ["get"] }));
     }
     buildOperations(schemaWith({ "GET /x": op("getX", 10, []) }));
@@ -162,8 +162,6 @@ describe("buildOperations: validación de secrets", () => {
     "wp/{Site}/token",
     "wp/{site_id}/hmac",
     "wp/*/token",
-    "oauth/google/{account}",
-    "oauth/google/usuario@example.com",
     "",
     "wp/{site_id}/token\n",
   ]) {
@@ -171,6 +169,38 @@ describe("buildOperations: validación de secrets", () => {
       assertFails(withGrant({ ref, access: ["get"] }), /gramática del llavero/);
     });
   }
+
+  for (const ref of ["oauth/google/1234567890", "oauth/google/{account}", "oauth/microsoft/x"]) {
+    it(`rechaza ${ref} hasta la spec de OAuth`, () => {
+      assertFails(withGrant({ ref, access: ["get"] }), /pendiente de la spec de OAuth/);
+    });
+  }
+
+  for (const op of ["set", "delete", "create"]) {
+    it(`llm/openai/default no admite ${op}`, () => {
+      assertFails(
+        withGrant({ ref: "llm/openai/default", access: [op] }),
+        /llm\/<proveedor>\/<alias>\) solo admite: get\./,
+      );
+      assertFails(
+        withGrant({ ref: "llm/openai/default", access: ["get", op] }),
+        /solo admite: get\./,
+      );
+    });
+  }
+
+  it("wp/{parametro}/token admite get, set y delete, pero nunca create", () => {
+    const [operation] = buildOperations(
+      withGrant({ ref: "wp/{site_id}/token", access: ["delete", "set", "get"] }),
+    );
+    assert.deepEqual(operation.secrets, [
+      { ref: "wp/{site_id}/token", access: ["get", "set", "delete"] },
+    ]);
+    assertFails(
+      withGrant({ ref: "wp/{site_id}/token", access: ["create"] }),
+      /solo admite: get, set, delete\./,
+    );
+  });
 
   it("rechaza parámetros que no están en la ruta", () => {
     assertFails(
@@ -202,7 +232,10 @@ describe("buildOperations: validación de secrets", () => {
 
   for (const access of [["get"], ["delete"], ["create", "get"], ["create", "set"]]) {
     it(`{new} no admite ${JSON.stringify(access)}`, () => {
-      assertFails(withGrant({ ref: "wp/{new}/token", access }, "/sites"), /usa \{new\}/);
+      assertFails(
+        withGrant({ ref: "wp/{new}/token", access }, "/sites"),
+        /wp\/\{new\}\/token\) solo admite: create, delete \(obligatorio: create\)/,
+      );
     });
   }
 

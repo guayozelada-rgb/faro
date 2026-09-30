@@ -39,6 +39,7 @@ def test_faro_operation_sorts_refs_and_access_canonically() -> None:
             _grant("llm/anthropic/default", "get"),
         ],
     )
+    assert list(extra) == [TIMEOUT_KEY, SECRETS_KEY]
     assert extra[SECRETS_KEY] == [
         {"ref": "llm/anthropic/default", "access": ["get"]},
         {"ref": "wp/{site_id}/token", "access": ["get", "delete"]},
@@ -52,7 +53,6 @@ def test_faro_operation_sorts_refs_and_access_canonically() -> None:
         "llm/openai/trabajo_2",
         "llm/gemini/a-b",
         "wp/{site_id}/token",
-        "oauth/google/1234567890",
     ],
 )
 def test_valid_ref_templates(ref: str) -> None:
@@ -96,8 +96,6 @@ def test_db_refs_are_never_granted(ref: str) -> None:
         "wp/{Site}/token",
         "wp/{site_id}/hmac",
         "wp/*/token",
-        "oauth/google/{account}",
-        "oauth/google/usuario@example.com",
         "",
         "wp/{site_id}/token\n",
     ],
@@ -105,6 +103,40 @@ def test_db_refs_are_never_granted(ref: str) -> None:
 def test_invalid_ref_templates_are_rejected(ref: str) -> None:
     with pytest.raises(OperationMetadataError, match="gramática"):
         faro_operation(timeout_seconds=30, secrets=[_grant(ref, "get")])
+
+
+@pytest.mark.parametrize(
+    "ref", ["oauth/google/1234567890", "oauth/google/{account}", "oauth/microsoft/x"]
+)
+def test_oauth_refs_are_pending_their_spec(ref: str) -> None:
+    with pytest.raises(OperationMetadataError, match="pendiente de la spec de OAuth"):
+        faro_operation(timeout_seconds=30, secrets=[_grant(ref, "get")])
+
+
+def test_ref_must_be_text() -> None:
+    grant = SecretGrant(ref=cast(str, 7), access=("get",))
+    with pytest.raises(OperationMetadataError, match="debe ser texto"):
+        faro_operation(timeout_seconds=30, secrets=[grant])
+
+
+@pytest.mark.parametrize("access", ["set", "delete", "create"])
+def test_llm_refs_only_allow_get(access: str) -> None:
+    with pytest.raises(OperationMetadataError, match=r"llm/<proveedor>/<alias>\) solo admite: get"):
+        faro_operation(timeout_seconds=30, secrets=[_grant("llm/openai/default", access)])
+    with pytest.raises(OperationMetadataError, match="solo admite: get"):
+        faro_operation(timeout_seconds=30, secrets=[_grant("llm/openai/default", "get", access)])
+
+
+def test_wp_param_refs_allow_get_set_delete() -> None:
+    extra = faro_operation(
+        timeout_seconds=45, secrets=[_grant("wp/{site_id}/token", "delete", "set", "get")]
+    )
+    assert extra[SECRETS_KEY] == [{"ref": "wp/{site_id}/token", "access": ["get", "set", "delete"]}]
+
+
+def test_wp_param_refs_never_allow_create() -> None:
+    with pytest.raises(OperationMetadataError, match="solo admite: get, set, delete"):
+        faro_operation(timeout_seconds=60, secrets=[_grant("wp/{site_id}/token", "create")])
 
 
 def test_access_must_not_be_empty() -> None:

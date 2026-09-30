@@ -39,17 +39,29 @@ SecretAccess = Literal["get", "create", "set", "delete"]
 # Orden canónico de `access` en el OpenAPI y en engine-operations.json.
 ACCESS_ORDER: Final[tuple[SecretAccess, ...]] = get_args(SecretAccess)
 
-NEW_PLACEHOLDER: Final = "{new}"
-
 # Gramática del llavero (skill `llavero-y-cifrado`) en forma de plantilla: el `<uuid>` de
 # `wp/<uuid>/token` se escribe siempre como `{parametro_de_ruta}` o `{new}`; el núcleo lo
-# sustituye por el parámetro de ruta de la llamada, validado como UUID. `llm/*` y
-# `oauth/google/*` se declaran literales. `db/*` nunca.
+# sustituye por el parámetro de ruta de la llamada, validado como UUID. `llm/*` se declara
+# literal. `db/*` nunca; `oauth/*` todavía no (pendiente de su spec).
 _PLACEHOLDER = r"\{[a-z][a-z0-9_]{0,31}\}"
+_LLM_RE: Final = re.compile(r"^llm/(?:anthropic|openai|gemini)/[a-z0-9_-]{1,32}$")
+_WP_NEW_RE: Final = re.compile(r"^wp/\{new\}/token$")
+_WP_PARAM_RE: Final = re.compile(rf"^wp/{_PLACEHOLDER}/token$")
+# Unión de las plantillas admitidas (incluye `wp/{new}/token`).
 SECRET_REF_TEMPLATE_RE: Final = re.compile(
-    r"^(?:llm/(?:anthropic|openai|gemini)/[a-z0-9_-]{1,32}"
-    rf"|wp/{_PLACEHOLDER}/token"
-    r"|oauth/google/[0-9]{1,64})$"
+    rf"^(?:llm/(?:anthropic|openai|gemini)/[a-z0-9_-]{{1,32}}|wp/{_PLACEHOLDER}/token)$"
+)
+
+# Accesos por tipo de referencia (spec F1a §5.2, ADR 0010 §3). Los usos previstos:
+# connectSite -> wp/{new}/token create (+delete si la vinculación queda a medias);
+# reconnectSite -> wp/{site_id}/token set; checkSiteConnection y listSiteContent -> get;
+# removeSite -> get y delete. Las claves de IA solo se leen: se agregan, reemplazan y
+# borran desde la Bóveda (núcleo), nunca desde el motor.
+# (tipo, patrón, accesos permitidos, accesos obligatorios)
+ACCESS_BY_KIND: Final[tuple[tuple[str, re.Pattern[str], frozenset[str], frozenset[str]], ...]] = (
+    ("llm/<proveedor>/<alias>", _LLM_RE, frozenset({"get"}), frozenset()),
+    ("wp/{new}/token", _WP_NEW_RE, frozenset({"create", "delete"}), frozenset({"create"})),
+    ("wp/{parametro}/token", _WP_PARAM_RE, frozenset({"get", "set", "delete"}), frozenset()),
 )
 _PLACEHOLDER_RE: Final = re.compile(_PLACEHOLDER)
 _PATH_PARAM_RE: Final = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}")
@@ -68,12 +80,20 @@ class SecretGrant:
 
 
 def _validate_grant(grant: SecretGrant) -> dict[str, Any]:
-    ref = grant.ref
+    ref: object = grant.ref
+    if not isinstance(ref, str):
+        raise OperationMetadataError("La referencia de un secreto debe ser texto.")
     if ref.startswith("db/"):
         raise OperationMetadataError(
             f"La referencia {ref!r} es de la llave de la base: `db/*` nunca se concede."
         )
-    if not SECRET_REF_TEMPLATE_RE.fullmatch(ref):
+    if ref.startswith("oauth/"):
+        raise OperationMetadataError(
+            f"La referencia {ref!r} está pendiente de la spec de OAuth: la cuenta la resolverá "
+            "el núcleo desde el perfil activo, nunca un parámetro de ruta."
+        )
+    kind = next((k for k in ACCESS_BY_KIND if k[1].fullmatch(ref)), None)
+    if kind is None:
         raise OperationMetadataError(
             f"La referencia {ref!r} no cumple la gramática del llavero en forma de plantilla."
         )
@@ -84,11 +104,12 @@ def _validate_grant(grant: SecretGrant) -> dict[str, Any]:
     unknown = [a for a in grant.access if a not in ACCESS_ORDER]
     if unknown:
         raise OperationMetadataError(f"La referencia {ref!r} tiene accesos desconocidos.")
-    if NEW_PLACEHOLDER in ref and (
-        "create" not in grant.access or not set(grant.access) <= {"create", "delete"}
-    ):
+    name, _, allowed, required = kind
+    if not set(grant.access) <= allowed or not required <= set(grant.access):
+        allowed_text = ", ".join(a for a in ACCESS_ORDER if a in allowed)
+        required_text = f" (obligatorio: {', '.join(sorted(required))})" if required else ""
         raise OperationMetadataError(
-            f"La referencia {ref!r} usa {{new}}: solo admite `create` y, opcionalmente, `delete`."
+            f"La referencia {ref!r} ({name}) solo admite: {allowed_text}{required_text}."
         )
     access = [a for a in ACCESS_ORDER if a in grant.access]
     return {"ref": ref, "access": access}
