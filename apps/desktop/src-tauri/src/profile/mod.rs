@@ -6,16 +6,26 @@
 //!   como `db/<perfil>/key`. Solo sale del núcleo por la 2.ª línea de stdin del motor
 //!   ([`DbKeyMessage::to_line`]); nunca por IPC, logs, `Debug` ni `secret_request`.
 //! - Reglas (en cada arranque y reinicio del motor):
-//!   - sin `profiles.json` → perfil nuevo; la llave se guarda **antes** de escribir el archivo;
-//!   - llave presente → se entrega;
-//!   - llave ausente y **no** existe `<app_data_dir>/profiles/<perfil>.db` → llave nueva;
-//!   - llave ausente y el `.db` existe → **nunca** se genera otra: `db.key_missing`;
+//!   - sin `profiles.json` y sin datos de ningún perfil en `profiles/` → perfil nuevo; la
+//!     llave se guarda **antes** de escribir el archivo;
+//!   - sin `profiles.json` pero con datos de **un solo** perfil cuya llave está en el
+//!     llavero con forma válida → se adopta (se reescribe `profiles.json` apuntando a él);
+//!     con datos de varios perfiles o sin llave → no se crea nada: perfil nulo y
+//!     `db.key_missing`;
+//!   - llave presente con forma válida → se entrega;
+//!   - entrada del llavero con forma inválida → **nunca** se sobrescribe (podría
+//!     recuperarse y abrir las copias): `db.key_missing`;
+//!   - llave ausente y **no** hay datos del perfil → llave nueva;
+//!   - llave ausente y hay datos del perfil → **nunca** se genera otra: `db.key_missing`;
 //!   - llavero caído → `vault.keyring_unavailable`.
-//! - El núcleo solo comprueba si el `.db` existe; nunca lo abre.
+//! - "Datos del perfil" = `profiles/<perfil>.db`, `.db-wal`, `.db-shm` o alguna copia
+//!   `profiles/backups/<perfil>-v*.db`. Si no se puede comprobar, cuenta como que hay datos.
+//!   El núcleo solo mira nombres de archivo; nunca abre las bases.
 
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::io::{self, Write as _};
@@ -32,6 +42,10 @@ use crate::vault::store::SecretStore;
 pub const PROFILES_FILE: &str = "profiles.json";
 /// Carpeta de las bases de los perfiles (la misma que usa el motor con `--data-dir`).
 pub const PROFILES_DIR: &str = "profiles";
+/// Copias de seguridad del motor: `backups/<perfil>-v<NNNN>-<YYYYMMDDTHHMMSSZ>.db`.
+pub const BACKUPS_DIR: &str = "backups";
+/// Archivos de una base SQLite (la base y sus archivos de WAL y memoria compartida).
+const DB_SUFFIXES: [&str; 3] = [".db", ".db-wal", ".db-shm"];
 /// Versión del formato de `profiles.json`.
 pub const PROFILES_VERSION: u32 = 1;
 /// Bytes aleatorios de la llave de SQLCipher.
@@ -127,6 +141,10 @@ pub enum KeyOutcome {
     KeyringUnavailable,
     /// `profiles.json` ilegible o no se pudo escribir.
     ProfileUnavailable,
+    /// Sin `profiles.json`: se adoptó el único perfil con datos y llave válida.
+    Adopted,
+    /// Sin `profiles.json` y con datos que no se pueden adoptar: no se crea nada.
+    OrphanData,
 }
 
 impl KeyOutcome {
@@ -138,6 +156,8 @@ impl KeyOutcome {
             Self::KeyMissing => "key_missing",
             Self::KeyringUnavailable => "keyring_unavailable",
             Self::ProfileUnavailable => "profile_unavailable",
+            Self::Adopted => "adopted",
+            Self::OrphanData => "orphan_data",
         }
     }
 }
@@ -288,7 +308,65 @@ impl ProfileKeys {
         message
     }
 
+    fn profiles_dir(&self) -> PathBuf {
+        self.app_data_dir.join(PROFILES_DIR)
+    }
+
+    fn orphan(reason: &'static str) -> DbKeyMessage {
+        tracing::warn!(
+            reason,
+            "hay datos de perfiles sin profiles.json; no se crea un perfil nuevo"
+        );
+        DbKeyMessage::error(
+            NIL_PROFILE_ID.to_owned(),
+            DB_KEY_MISSING,
+            KeyOutcome::OrphanData,
+        )
+    }
+
     fn first_run(&self) -> DbKeyMessage {
+        // Sin `profiles.json`, pero puede haber bases de un perfil anterior.
+        let found = match profiles_with_data(&self.profiles_dir()) {
+            Ok(found) => found,
+            Err(err) => {
+                tracing::warn!(kind = ?err.kind(), "no se pudo revisar la carpeta de perfiles");
+                return Self::orphan("scan_failed");
+            }
+        };
+        let mut found = found.into_iter();
+        match (found.next(), found.next()) {
+            (None, _) => self.create_profile(),
+            (Some(profile_id), None) => self.adopt(profile_id),
+            (Some(_), Some(_)) => Self::orphan("multiple_profiles"),
+        }
+    }
+
+    /// Adopta el único perfil con datos si su llave está en el llavero con forma válida.
+    fn adopt(&self, profile_id: String) -> DbKeyMessage {
+        let key = match self.store.get(&db_key_ref(&profile_id)) {
+            Ok(Some(key)) if is_valid_key_hex(key.expose_secret()) => key,
+            Ok(Some(_)) => return Self::orphan("invalid_key"),
+            Ok(None) => return Self::orphan("key_missing"),
+            Err(_) => {
+                return DbKeyMessage::error(
+                    NIL_PROFILE_ID.to_owned(),
+                    KEYRING_UNAVAILABLE,
+                    KeyOutcome::KeyringUnavailable,
+                )
+            }
+        };
+        let file = ProfilesFile {
+            version: PROFILES_VERSION,
+            active_profile_id: profile_id.clone(),
+        };
+        if let Err(err) = write_profiles_atomic(&self.app_data_dir, &file) {
+            // La base y su llave ya existen: se entrega igual y se reintenta al volver a arrancar.
+            tracing::warn!(kind = ?err.kind(), "no se pudo guardar el perfil adoptado");
+        }
+        DbKeyMessage::key(profile_id, key, KeyOutcome::Adopted)
+    }
+
+    fn create_profile(&self) -> DbKeyMessage {
         let Ok(profile_id) = new_uuid_v7() else {
             tracing::error!("el generador aleatorio del sistema no está disponible");
             return DbKeyMessage::error(
@@ -334,10 +412,12 @@ impl ProfileKeys {
             if is_valid_key_hex(key.expose_secret()) {
                 return DbKeyMessage::key(profile_id, key, KeyOutcome::Reused);
             }
+            // Nunca se sobrescribe: la entrada podría recuperarse y abrir las copias.
             tracing::warn!("la llave guardada de la base no tiene la forma esperada");
+            return DbKeyMessage::error(profile_id, DB_KEY_MISSING, KeyOutcome::KeyMissing);
         }
-        // Sin llave utilizable: solo se crea otra si no hay datos que perder.
-        if self.db_may_exist(&profile_id) {
+        // Sin llave: solo se crea otra si no hay datos que perder.
+        if self.data_may_exist(&profile_id) {
             return DbKeyMessage::error(profile_id, DB_KEY_MISSING, KeyOutcome::KeyMissing);
         }
         match self.generate_and_store(&secret_ref) {
@@ -346,10 +426,11 @@ impl ProfileKeys {
         }
     }
 
-    /// `true` si el `.db` existe **o no se pudo comprobar** (nunca arriesgar los datos).
-    fn db_may_exist(&self, profile_id: &str) -> bool {
-        match self.db_path(profile_id).try_exists() {
-            Ok(exists) => exists,
+    /// `true` si hay datos del perfil (base, WAL, SHM o copias) **o no se pudo
+    /// comprobar** (nunca arriesgar los datos).
+    fn data_may_exist(&self, profile_id: &str) -> bool {
+        match profiles_with_data(&self.profiles_dir()) {
+            Ok(found) => found.contains(profile_id),
             Err(err) => {
                 tracing::warn!(kind = ?err.kind(), "no se pudo comprobar la base del perfil");
                 true
@@ -384,6 +465,49 @@ impl DbKeyProvider for ProfileKeys {
     fn db_key(&self) -> DbKeyMessage {
         self.prepare()
     }
+}
+
+/// Perfiles (UUID válidos) con algún archivo de datos en `profiles_dir`:
+/// `<perfil>.db`, `<perfil>.db-wal`, `<perfil>.db-shm` o `backups/<perfil>-v*.db`.
+/// Una carpeta que no existe no tiene datos; cualquier otro error se devuelve.
+fn profiles_with_data(profiles_dir: &Path) -> io::Result<BTreeSet<String>> {
+    let mut found = BTreeSet::new();
+    for name in dir_names(profiles_dir)? {
+        for suffix in DB_SUFFIXES {
+            if let Some(id) = name.strip_suffix(suffix) {
+                if is_valid_profile_id(id) {
+                    found.insert(id.to_owned());
+                }
+            }
+        }
+    }
+    for name in dir_names(&profiles_dir.join(BACKUPS_DIR))? {
+        if let (Some(id), Some(rest)) = (name.get(..36), name.get(36..)) {
+            if is_valid_profile_id(id) && rest.starts_with("-v") && rest.ends_with(".db") {
+                found.insert(id.to_owned());
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Nombres (UTF-8) de las entradas de `dir`, en minúsculas ASCII; vacío si la carpeta no
+/// existe. Windows y macOS no distinguen mayúsculas: `0192ABCD-….db` es el mismo archivo
+/// que el motor abre como `0192abcd-….db`, así que cuenta como datos de ese perfil (y el
+/// id se devuelve siempre en minúsculas). También normaliza `.DB`, `-WAL` y `-V`.
+fn dir_names(dir: &Path) -> io::Result<Vec<String>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        if let Ok(name) = entry?.file_name().into_string() {
+            names.push(name.to_ascii_lowercase());
+        }
+    }
+    Ok(names)
 }
 
 /// `Ok(None)` si no existe; `Err(clase)` si existe pero no se puede usar (no se reescribe:

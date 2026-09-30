@@ -1,8 +1,7 @@
 //! Pruebas del supervisor con el lanzador falso y un servidor HTTP local (spec F0 §10.2).
 //! Sin sleeps fijos: tiempos cortos en `SupervisorConfig` y esperas por condición.
 
-use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -444,36 +443,7 @@ async fn modo_externo_mal_configurado_es_dev_unreachable() {
 
 // ---------- logs: token y líneas no reconocidas ----------
 
-#[derive(Clone, Default)]
-struct LogBuffer(Arc<Mutex<Vec<u8>>>);
-
-impl LogBuffer {
-    fn text(&self) -> String {
-        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
-    }
-}
-
-impl io::Write for LogBuffer {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-fn capture_logs() -> (LogBuffer, tracing::subscriber::DefaultGuard) {
-    let buffer = LogBuffer::default();
-    let writer = buffer.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_ansi(false)
-        .with_writer(move || writer.clone())
-        .finish();
-    let guard = tracing::subscriber::set_default(subscriber);
-    (buffer, guard)
-}
+use crate::test_logs::capture as capture_logs;
 
 async fn wait_until(mut cond: impl FnMut() -> bool) {
     let deadline = Instant::now() + WAIT;
@@ -506,7 +476,11 @@ async fn el_token_no_aparece_en_ningun_log() {
     proc2.exit(0);
     shutdown.await.unwrap();
 
-    wait_until(|| logs.text().contains("engine.ready")).await;
+    wait_until(|| {
+        let text = logs.text();
+        text.contains("engine.ready") && text.contains("estado del motor")
+    })
+    .await;
     let text = logs.text();
     assert!(text.contains("estado del motor"), "la captura no funciona");
     for token in [&token1, &token2] {
@@ -724,6 +698,11 @@ async fn la_llave_de_la_base_no_aparece_en_ningun_log() {
     proc2.exit(0);
     shutdown.await.unwrap();
 
+    wait_until(|| {
+        let text = logs.text();
+        text.contains("llave de la base preparada") && text.contains("estado del motor")
+    })
+    .await;
     let text = logs.text();
     assert!(
         text.contains("llave de la base preparada"),
