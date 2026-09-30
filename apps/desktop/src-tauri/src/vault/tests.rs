@@ -1,8 +1,7 @@
 //! Pruebas de la Bóveda con `MemoryStore` y servidor HTTP simulado (spec F0 §10.2).
 //! Sin claves reales ni proveedores reales.
 
-use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use secrecy::{ExposeSecret, SecretString};
@@ -635,38 +634,9 @@ fn vault_service_debug_no_expone_nada() {
 
 // ---------- logs ----------
 
-#[derive(Clone, Default)]
-struct LogBuffer(Arc<Mutex<Vec<u8>>>);
-
-impl LogBuffer {
-    fn text(&self) -> String {
-        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
-    }
-}
-
-impl io::Write for LogBuffer {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 #[tokio::test]
 async fn ningun_log_contiene_la_clave() {
-    let buffer = LogBuffer::default();
-    let writer = buffer.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_ansi(false)
-        .with_writer(move || writer.clone())
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
-    // Otras pruebas en paralelo pueden haber dejado en caché el interés de los
-    // callsites sin este subscriber.
-    tracing::callsite::rebuild_interest_cache();
+    let (buffer, _guard) = crate::test_logs::capture();
 
     let env = env().await;
     for p in Provider::ALL {

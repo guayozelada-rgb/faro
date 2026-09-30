@@ -9,6 +9,8 @@ pub mod error;
 pub mod logging;
 pub mod profile;
 pub mod state;
+#[cfg(test)]
+mod test_logs;
 pub mod vault;
 
 use std::sync::Arc;
