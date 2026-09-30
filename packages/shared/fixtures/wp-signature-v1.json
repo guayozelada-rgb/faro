@@ -1,0 +1,162 @@
+{
+  "version": 1,
+  "description": "Vectores de prueba de la firma v1 de Faro (ADR 0011 §2). Datos de prueba evidentes, no secretos reales. Los usan PHPUnit (packages/wp-plugin) y pytest (apps/engine); no se incluyen en el zip del plugin.",
+  "algorithm": {
+    "canonical": "METHOD \"\n\" ROUTE \"\n\" TIMESTAMP \"\n\" NONCE \"\n\" hex(sha256(body))",
+    "route": "Ruta REST sin barra final. Si hay parámetros de consulta distintos de rest_route: \"?\" + pares rawurlencode(clave) \"=\" rawurlencode(valor) (RFC 3986: solo A-Z a-z 0-9 - _ . ~ sin codificar, hex en mayúsculas), ordenados por clave codificada y después por valor codificado, comparando bytes, unidos con \"&\". La consulta son los valores ya decodificados que recibe el servidor.",
+    "signature": "base64 estándar (con relleno) de HMAC-SHA256 con clave = base64url_decode(hmac_secret) (32 bytes) sobre la canónica en UTF-8.",
+    "headers": [
+      "X-Faro-Connection",
+      "X-Faro-Token",
+      "X-Faro-Timestamp",
+      "X-Faro-Nonce",
+      "X-Faro-Signature"
+    ]
+  },
+  "cases": [
+    {
+      "name": "status_sin_cuerpo",
+      "description": "GET /status sin consulta ni cuerpo.",
+      "hmac_secret": "dGVzdC1mYXJvLWhtYWMtc2VjcmV0LW5vdC1yZWFsLTE",
+      "method": "GET",
+      "route": "/faro/v1/status",
+      "query": {},
+      "body": "",
+      "timestamp": "1790000000",
+      "nonce": "dGVzdC1ub25jZS0wMDAwMQ",
+      "expected_canonical_route": "/faro/v1/status",
+      "expected_canonical": "GET\n/faro/v1/status\n1790000000\ndGVzdC1ub25jZS0wMDAwMQ\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expected_signature": "lwcDEveNvVxpbsIUkfZ9t2PIDF+PZvOcZzKlmAFbr/c="
+    },
+    {
+      "name": "posts_paginacion",
+      "description": "GET /posts con page y per_page (el orden de entrada no importa).",
+      "hmac_secret": "dGVzdC1mYXJvLWhtYWMtc2VjcmV0LW5vdC1yZWFsLTE",
+      "method": "GET",
+      "route": "/faro/v1/posts",
+      "query": {
+        "per_page": "50",
+        "page": "2"
+      },
+      "body": "",
+      "timestamp": "1790000100",
+      "nonce": "dGVzdC1ub25jZS0wMDAwMg",
+      "expected_canonical_route": "/faro/v1/posts?page=2&per_page=50",
+      "expected_canonical": "GET\n/faro/v1/posts?page=2&per_page=50\n1790000100\ndGVzdC1ub25jZS0wMDAwMg\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expected_signature": "5d4/zfCMTc/TsTfcpXblj23xa69sI2BjJAtdUYPeZT8="
+    },
+    {
+      "name": "posts_barra_final",
+      "description": "La barra final de la ruta se quita.",
+      "hmac_secret": "dGVzdC1mYXJvLWhtYWMtc2VjcmV0LW5vdC1yZWFsLTE",
+      "method": "GET",
+      "route": "/faro/v1/posts/",
+      "query": {
+        "page": "1"
+      },
+      "body": "",
+      "timestamp": "1790000200",
+      "nonce": "dGVzdC1ub25jZS0wMDAwMw",
+      "expected_canonical_route": "/faro/v1/posts?page=1",
+      "expected_canonical": "GET\n/faro/v1/posts?page=1\n1790000200\ndGVzdC1ub25jZS0wMDAwMw\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expected_signature": "xKEmPw0Dmit2E2DzpNzbnMf7CSO31raxF8I9GHUSt1c="
+    },
+    {
+      "name": "orden_por_bytes",
+      "description": "Varias claves: orden por clave codificada en bytes (mayúsculas antes que minúsculas).",
+      "hmac_secret": "dGVzdC1mYXJvLWhtYWMtc2VjcmV0LW5vdC1yZWFsLTE",
+      "method": "GET",
+      "route": "/faro/v1/pages",
+      "query": {
+        "b": "1",
+        "B": "2",
+        "a": "3",
+        "per_page": "100"
+      },
+      "body": "",
+      "timestamp": "1790000300",
+      "nonce": "dGVzdC1ub25jZS0wMDAwNA",
+      "expected_canonical_route": "/faro/v1/pages?B=2&a=3&b=1&per_page=100",
+      "expected_canonical": "GET\n/faro/v1/pages?B=2&a=3&b=1&per_page=100\n1790000300\ndGVzdC1ub25jZS0wMDAwNA\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expected_signature": "W6172s8q9LCbIOdpXs4eoyvF33GZOMlmHUW3g1BL/Nk="
+    },
+    {
+      "name": "caracteres_especiales",
+      "description": "Valores con espacios, acentos, reservados y vacíos: rawurlencode (RFC 3986, hex en mayúsculas).",
+      "hmac_secret": "dGVzdC1mYXJvLWhtYWMtc2VjcmV0LW5vdC1yZWFsLTE",
+      "method": "GET",
+      "route": "/faro/v1/products",
+      "query": {
+        "filter": "ñandú & co/?=+%~*'()!",
+        "empty": "",
+        "page": "1"
+      },
+      "body": "",
+      "timestamp": "1790000400",
+      "nonce": "dGVzdC1ub25jZS0wMDAwNQ",
+      "expected_canonical_route": "/faro/v1/products?empty=&filter=%C3%B1and%C3%BA%20%26%20co%2F%3F%3D%2B%25~%2A%27%28%29%21&page=1",
+      "expected_canonical": "GET\n/faro/v1/products?empty=&filter=%C3%B1and%C3%BA%20%26%20co%2F%3F%3D%2B%25~%2A%27%28%29%21&page=1\n1790000400\ndGVzdC1ub25jZS0wMDAwNQ\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expected_signature": "fXLHnhLDabNR2sTubMEhU9vO1uUWryvT1mw+cJlCAD0="
+    },
+    {
+      "name": "modo_rest_route",
+      "description": "Sitio sin enlaces permanentes (?rest_route=): rest_route no entra en la canónica.",
+      "hmac_secret": "dGVzdC1mYXJvLWhtYWMtc2VjcmV0LW5vdC1yZWFsLTE",
+      "method": "GET",
+      "route": "/faro/v1/pages",
+      "query": {
+        "rest_route": "/faro/v1/pages",
+        "page": "3",
+        "per_page": "25"
+      },
+      "body": "",
+      "timestamp": "1790000500",
+      "nonce": "dGVzdC1ub25jZS0wMDAwNg",
+      "expected_canonical_route": "/faro/v1/pages?page=3&per_page=25",
+      "expected_canonical": "GET\n/faro/v1/pages?page=3&per_page=25\n1790000500\ndGVzdC1ub25jZS0wMDAwNg\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expected_signature": "X38iCB3zZrgMF81HgrSot1AP22l90gBLxmCYeMX/6oA="
+    },
+    {
+      "name": "delete_connection",
+      "description": "DELETE /connection sin cuerpo.",
+      "hmac_secret": "dGVzdC1mYXJvLWhtYWMtc2VjcmV0LW5vdC1yZWFsLTE",
+      "method": "DELETE",
+      "route": "/faro/v1/connection",
+      "query": {},
+      "body": "",
+      "timestamp": "1790000600",
+      "nonce": "dGVzdC1ub25jZS0wMDAwNw",
+      "expected_canonical_route": "/faro/v1/connection",
+      "expected_canonical": "DELETE\n/faro/v1/connection\n1790000600\ndGVzdC1ub25jZS0wMDAwNw\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expected_signature": "XH1Z6YH04aFKSKADRcwMI4dpo1PNDjPRht8boM+1HMk="
+    },
+    {
+      "name": "post_con_cuerpo",
+      "description": "POST con cuerpo JSON crudo (UTF-8); se firma el hash de los bytes exactos.",
+      "hmac_secret": "dGVzdC1mYXJvLWhtYWMtc2VjcmV0LW5vdC1yZWFsLTE",
+      "method": "POST",
+      "route": "/faro/v1/drafts",
+      "query": {},
+      "body": "{\"title\":\"Guía de café\",\"content\":\"<p>Hola ñandú</p>\"}",
+      "timestamp": "1790000700",
+      "nonce": "dGVzdC1ub25jZS0wMDAwOA",
+      "expected_canonical_route": "/faro/v1/drafts",
+      "expected_canonical": "POST\n/faro/v1/drafts\n1790000700\ndGVzdC1ub25jZS0wMDAwOA\n02073ba6ca759a8e97d9e51a18f9e859aabd5c995587a89efa96a5b6a6fb5d6f",
+      "expected_signature": "XpdlO0eyiTVrukksr6q2nBekA3oBwQqY74kuKM79NYU="
+    },
+    {
+      "name": "otro_secreto",
+      "description": "Misma petición que status_sin_cuerpo con otro secreto: la firma cambia.",
+      "hmac_secret": "dGVzdC1mYXJvLWhtYWMtc2VjcmV0LW5vdC1yZWFsLTI",
+      "method": "GET",
+      "route": "/faro/v1/status",
+      "query": {},
+      "body": "",
+      "timestamp": "1790000000",
+      "nonce": "dGVzdC1ub25jZS0wMDAwMQ",
+      "expected_canonical_route": "/faro/v1/status",
+      "expected_canonical": "GET\n/faro/v1/status\n1790000000\ndGVzdC1ub25jZS0wMDAwMQ\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expected_signature": "0EKBwLsffTmK7Dq0aMcC0sSmR+FS4ma9GTIlpTF/6cE="
+    }
+  ]
+}
