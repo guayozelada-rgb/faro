@@ -2,6 +2,8 @@
   {
     "operationId": "getHealth",
     "method": "GET",
-    "path": "/health"
+    "path": "/health",
+    "timeout_seconds": 10,
+    "secrets": []
   }
 ]
