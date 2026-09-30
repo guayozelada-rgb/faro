@@ -20,13 +20,17 @@ from fastapi import FastAPI
 
 from faro_engine import __main__ as entry
 from faro_engine.core import protocol
+from faro_engine.core.audit import AuditLog
+from faro_engine.core.db.database import Database
 from faro_engine.core.db.profile import dev_data_dir, profile_db_path
+from faro_engine.core.secrets import SecretBroker
 from tests.db.helpers import (
     DB_KEY_ERROR_LINE,
     TEST_KEY_HEX,
     TEST_PROFILE_ID,
     db_key_line,
     key,
+    open_db,
 )
 
 WAIT = 10.0
@@ -443,3 +447,104 @@ def test_open_database_without_data_dir_wipes_key() -> None:
 
 def test_dev_data_dir_is_inside_engine() -> None:
     assert dev_data_dir() == Path(entry.__file__).resolve().parents[1] / ".devdata"
+
+
+# --- Reparto de eventos de stdin: `secret_response` y `audit` (ADR 0010) ---------------
+
+
+class RecordingBroker(SecretBroker):
+    def __init__(self) -> None:
+        super().__init__(None, unavailable_code="engine.secrets_unavailable")
+        self.responses: list[dict[str, Any]] = []
+        self.closed = 0
+
+    def handle_response(self, data: dict[str, Any]) -> None:
+        self.responses.append(dict(data))
+        data.clear()
+
+    def close(self, code: str = "vault.secret_timeout") -> None:
+        self.closed += 1
+        super().close(code)
+
+
+class RecordingAudit(AuditLog):
+    def __init__(self) -> None:
+        super().__init__(Database.unavailable("db.unavailable"))
+        self.events: list[dict[str, Any]] = []
+
+    def record_core_event(self, data: dict[str, Any]) -> bool:
+        self.events.append(dict(data))
+        data.clear()
+        return True
+
+
+def test_watch_stdin_dispatches_secret_responses_and_audit(pipe: Pipe) -> None:
+    server = _server()
+    controller = entry.ShutdownController(server, grace=WAIT, force_exit=lambda _c: None)
+    broker, audit = RecordingBroker(), RecordingAudit()
+    pipe.write(
+        b'{"event":"secret_response","id":"x","ok":true}\n'
+        b'{"event":"audit","action":"secret.used"}\n'
+        b'{"event":"otro"}\n'
+        b'{"event":"shutdown"}\n'
+    )
+    reader = protocol.StdinReader(pipe.read_fd)
+    reader.start()
+    entry.watch_stdin(reader, controller, secrets=broker, audit=audit)
+    controller.cancel()
+    assert server.should_exit is True
+    assert broker.responses == [{"event": "secret_response", "id": "x", "ok": True}]
+    assert audit.events == [{"event": "audit", "action": "secret.used"}]
+    assert broker.closed == 1  # al terminar, el canal de secretos se cierra
+
+
+def test_watch_stdin_without_handlers_treats_events_as_unknown(pipe: Pipe) -> None:
+    server = _server()
+    controller = entry.ShutdownController(server, grace=WAIT, force_exit=lambda _c: None)
+    pipe.write(b'{"event":"secret_response","id":"x","ok":true}\n{"event":"audit"}\n')
+    pipe.close_write()
+    reader = protocol.StdinReader(pipe.read_fd)
+    reader.start()
+    entry.watch_stdin(reader, controller)
+    controller.cancel()
+    assert server.should_exit is True
+
+
+def test_watch_stdin_eof_closes_secret_channel(pipe: Pipe) -> None:
+    controller = entry.ShutdownController(_server(), grace=WAIT, force_exit=lambda _c: None)
+    broker = RecordingBroker()
+    pipe.close_write()
+    reader = protocol.StdinReader(pipe.read_fd)
+    reader.start()
+    entry.watch_stdin(reader, controller, exit_on_eof=False, secrets=broker)
+    controller.cancel()
+    assert broker.closed == 1
+
+
+def test_run_writes_audit_events_from_stdin(pipe: Pipe, tmp_path: Path) -> None:
+    token = secrets.token_urlsafe(32)
+    pipe.write(token.encode("ascii") + NL + db_key_line())
+    sink = ReadySink()
+    thread, result = _run_in_thread(
+        argv=["--data-dir", str(tmp_path)], stdin_fd=pipe.read_fd, out=sink
+    )
+    assert sink.flushed.wait(WAIT)
+    event = {
+        "event": "audit",
+        "occurred_at": "2026-09-30T12:00:00.000Z",
+        "actor": "system",
+        "action": "secret.denied",
+        "secret_ref": None,
+        "run_id": None,
+        "result": "denied",
+        "details": {"reason": "vault.invalid_ref"},
+    }
+    pipe.write(json.dumps(event).encode("ascii") + NL + b'{"event":"shutdown"}' + NL)
+    thread.join(WAIT)
+    assert result == [entry.EXIT_OK]
+    conn = open_db(profile_db_path(tmp_path, TEST_PROFILE_ID))
+    try:
+        rows = conn.execute("SELECT action, result FROM audit_log").fetchall()
+    finally:
+        conn.close()
+    assert rows == [("secret.denied", "denied")]

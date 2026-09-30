@@ -91,6 +91,11 @@ strict_modules = [
     "faro_engine/core/protocol.py",
     "faro_engine/core/db/connection.py",
     "faro_engine/core/db/migrations.py",
+    # Canal de secretos, auditoría y filtro de logs (spec F1a T7, ADR 0010 y 0013).
+    "faro_engine/core/secrets.py",
+    "faro_engine/core/run_id.py",
+    "faro_engine/core/audit.py",
+    "faro_engine/core/redact.py",
 ]
 strict_fail_under = 95
 

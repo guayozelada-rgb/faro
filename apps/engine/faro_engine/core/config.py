@@ -16,6 +16,7 @@ HOST = "127.0.0.1"
 TOKEN_TIMEOUT_SECONDS = 10.0
 DB_KEY_TIMEOUT_SECONDS = 10.0  # 2.ª línea de stdin (ADR 0010 §1)
 SHUTDOWN_GRACE_SECONDS = 10.0
+SECRET_TIMEOUT_SECONDS = 10.0  # espera de cada `secret_response` (ADR 0010 §2)
 
 # Modo desarrollo "externo".
 DEFAULT_DEV_PORT = 8765
