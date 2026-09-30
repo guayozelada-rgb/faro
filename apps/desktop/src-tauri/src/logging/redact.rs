@@ -6,24 +6,26 @@
 //! y, al soltarse el escritor (o con `flush`), se redacta y se escribe de una vez.
 //!
 //! Por cada línea:
-//! 1. Si es JSON (el formato del archivo), se recorren sus valores: los campos con
-//!    nombre sensible se sustituyen por `[redactado]`, a los textos se les aplican los
-//!    patrones de valor y, si un texto es a su vez JSON (líneas del stderr del motor
-//!    reenviadas como mensaje), se redacta por dentro. La línea solo se vuelve a
-//!    serializar si algo cambió.
-//! 2. Siempre, sobre el texto final: patrones de valor y `nombre=valor` /
-//!    `"nombre": valor` con nombre sensible (formato legible de la consola).
+//! - **Línea JSON** (el formato del archivo): se recorren sus valores. Los campos con
+//!   nombre sensible se sustituyen por `[redactado]`; cada texto se redacta como texto
+//!   libre (valor y nombre) y, si es a su vez JSON (líneas del stderr del motor
+//!   reenviadas como mensaje), se redacta por dentro. La línea solo se vuelve a
+//!   serializar si algo cambió. Sobre la línea serializada se aplican **solo** los
+//!   patrones de valor (nunca los de nombre, que podrían romper el JSON).
+//! - **Otra línea** (la consola legible): patrones de valor y de nombre
+//!   (`nombre=valor`, `nombre: valor`, `"nombre": valor`, con valores entre comillas,
+//!   sueltos u objetos/listas equilibrados).
 //!
 //! Patrones de valor (ADR 0013 §2): `sk-…` (OpenAI, Anthropic `sk-ant-…`), `AIza…`
-//! (Google), `Bearer …`, JWT, 64 hex seguidos (llave de la base) y exactamente 43
-//! caracteres base64url seguidos (token de sesión, token y secreto del sitio).
-//! El código de vinculación no se filtra por valor (6 dígitos darían falsos positivos),
-//! solo por nombre (`pairing_code`).
+//! (Google), `Bearer …`, `Basic …`, JWT, 64 hex seguidos (llave de la base) y
+//! exactamente 43 caracteres base64url seguidos (token de sesión, token y secreto del
+//! sitio). El código de vinculación no se filtra por valor (6 dígitos darían falsos
+//! positivos), solo por nombre (`pairing_code`).
 
 use std::io::{self, Write};
 use std::sync::LazyLock;
 
-use regex::{Captures, Regex};
+use regex::Regex;
 use serde_json::Value;
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -54,6 +56,22 @@ pub const SENSITIVE_NAMES: &[&str] = &[
     "x-faro-signature",
 ];
 
+/// Además de la lista exacta, son sensibles los nombres que terminan así (con `_` o
+/// `-`: `access_token`, `client_secret`, `x-api-key`) o que contienen `password`.
+const SENSITIVE_SUFFIXES: &[&str] = &["_token", "_secret", "_key", "-token", "-secret", "-key"];
+
+/// Nombres que encajarían por sufijo pero no llevan secretos: referencias al llavero,
+/// claves públicas o de ordenación/caché. Se comparan sin distinguir mayúsculas.
+pub const NON_SENSITIVE_NAMES: &[&str] = &[
+    "secret_ref",
+    "public_key",
+    "cache_key",
+    "sort_key",
+    "primary_key",
+    "foreign_key",
+    "idempotency_key",
+];
+
 /// Longitud del token de sesión y del token/secreto del sitio en base64url sin relleno.
 const BASE64URL_TOKEN_LEN: usize = 43;
 /// Longitud en hex de la llave de la base (32 bytes).
@@ -66,47 +84,45 @@ struct Patterns {
     base64url_run: Regex,
     /// Secuencias máximas de caracteres de palabra ASCII (se redactan las de 64 hex).
     word_run: Regex,
-    /// `nombre=valor` con nombre sensible (formato legible de `tracing`).
-    name_equals: Regex,
-    /// `"nombre": valor` con nombre sensible (JSON dentro de un texto).
-    name_json: Regex,
+    /// Un nombre seguido de `=` o `:` (con o sin comillas); el valor se lee a mano.
+    name_prefix: Regex,
 }
 
 impl Patterns {
     fn compile() -> Result<Self, regex::Error> {
-        let names = SENSITIVE_NAMES
-            .iter()
-            .map(|name| regex::escape(name))
-            .collect::<Vec<_>>()
-            .join("|");
         Ok(Self {
             whole: vec![
                 // JWT antes que el resto: sus segmentos podrían parecer otros patrones.
                 Regex::new(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")?,
-                Regex::new(r"sk-[A-Za-z0-9_-]{16,}")?,
+                // Con límite de palabra: no redacta `task-queue-…` ni `disk-…`.
+                Regex::new(r"\bsk-[A-Za-z0-9_-]{16,}")?,
                 Regex::new(r"AIza[0-9A-Za-z_-]{35}")?,
                 // ADR 0013: `Bearer\s+\S+`. Sin comillas ni barra invertida en el valor
                 // para no romper la línea JSON (un token Bearer nunca las lleva).
                 Regex::new(r#"Bearer\s+[^\s"\\]+"#)?,
+                // `Authorization: Basic <base64 de usuario:contraseña>`.
+                Regex::new(r"Basic\s+[A-Za-z0-9+/_-]{8,}={0,2}")?,
             ],
             base64url_run: Regex::new(r"[A-Za-z0-9_-]+")?,
             word_run: Regex::new(r"[A-Za-z0-9_]+")?,
-            name_equals: Regex::new(&format!(
-                r#"(?i)(^|[^A-Za-z0-9_.-])({names})=("(?:[^"\\]|\\.)*"|[^\s"\\]+)"#
-            ))?,
-            name_json: Regex::new(&format!(
-                r#"(?i)("(?:{names})"\s*:\s*)("(?:[^"\\]|\\.)*"|[^\s,}}\]]+)"#
-            ))?,
+            name_prefix: Regex::new(r#"(?:^|[^A-Za-z0-9_.-])"?([A-Za-z0-9_-]+)"?\s*[=:]\s*"#)?,
         })
     }
 }
 
 static PATTERNS: LazyLock<Option<Patterns>> = LazyLock::new(|| Patterns::compile().ok());
 
-fn is_sensitive_name(name: &str) -> bool {
-    SENSITIVE_NAMES
-        .iter()
-        .any(|sensitive| sensitive.eq_ignore_ascii_case(name))
+/// ¿Un campo con este nombre puede llevar un secreto?
+pub fn is_sensitive_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if NON_SENSITIVE_NAMES.contains(&lower.as_str()) {
+        return false;
+    }
+    SENSITIVE_NAMES.contains(&lower.as_str())
+        || SENSITIVE_SUFFIXES
+            .iter()
+            .any(|suffix| lower.ends_with(suffix))
+        || lower.contains("password")
 }
 
 /// Redacta una o varias líneas completas de registro.
@@ -132,25 +148,44 @@ pub fn redact(text: &str) -> String {
             },
             None => (line, ""),
         };
-        let body = redact_json_line(patterns, body).unwrap_or_else(|| body.to_owned());
-        out.push_str(&redact_text(patterns, &body));
+        let redacted = match redact_json_line(patterns, body) {
+            // JSON: sobre el texto serializado, solo patrones de valor.
+            JsonLine::Changed(json) => redact_values(patterns, &json),
+            JsonLine::Unchanged => redact_values(patterns, body),
+            JsonLine::NotJson => redact_text(patterns, body),
+        };
+        out.push_str(&redacted);
         out.push_str(newline);
     }
     out
 }
 
+/// Resultado de intentar redactar una línea como JSON.
+enum JsonLine {
+    /// No es un objeto ni un arreglo JSON.
+    NotJson,
+    /// Es JSON y no había nada que redactar por dentro.
+    Unchanged,
+    /// Es JSON y se redactó: la línea serializada de nuevo.
+    Changed(String),
+}
+
 /// Si la línea es un objeto o arreglo JSON, lo redacta por nombre y por valor.
-/// Devuelve `None` si no es JSON o si no hubo nada que cambiar.
-fn redact_json_line(patterns: &Patterns, line: &str) -> Option<String> {
+fn redact_json_line(patterns: &Patterns, line: &str) -> JsonLine {
     let trimmed = line.trim_start();
     if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
-        return None;
+        return JsonLine::NotJson;
     }
-    let mut value: Value = serde_json::from_str(line).ok()?;
-    if redact_value(patterns, &mut value) {
-        serde_json::to_string(&value).ok()
-    } else {
-        None
+    let Ok(mut value) = serde_json::from_str::<Value>(line) else {
+        return JsonLine::NotJson;
+    };
+    if !redact_value(patterns, &mut value) {
+        return JsonLine::Unchanged;
+    }
+    match serde_json::to_string(&value) {
+        Ok(json) => JsonLine::Changed(json),
+        // No debería pasar (se acaba de parsear); nunca se escribe el original.
+        Err(_) => JsonLine::Changed(OMITTED_LINE.to_owned()),
     }
 }
 
@@ -179,9 +214,13 @@ fn redact_value(patterns: &Patterns, value: &mut Value) -> bool {
             changed
         }
         Value::String(text) => {
-            let redacted = redact_json_line(patterns, text)
-                .map(|inner| redact_text(patterns, &inner))
-                .unwrap_or_else(|| redact_text(patterns, text));
+            // El texto ya está sin escapar: se trata como texto libre y el resultado se
+            // vuelve a serializar, así que los patrones de nombre no rompen el JSON.
+            let redacted = match redact_json_line(patterns, text) {
+                JsonLine::Changed(inner) => redact_values(patterns, &inner),
+                JsonLine::Unchanged => redact_values(patterns, text),
+                JsonLine::NotJson => redact_text(patterns, text),
+            };
             if redacted == *text {
                 false
             } else {
@@ -193,26 +232,109 @@ fn redact_value(patterns: &Patterns, value: &mut Value) -> bool {
     }
 }
 
-/// Patrones de valor y de nombre sobre texto libre.
-fn redact_text(patterns: &Patterns, text: &str) -> String {
+/// Solo patrones de valor (no cambian comillas, barras ni llaves: la línea JSON sigue
+/// siendo válida).
+fn redact_values(patterns: &Patterns, text: &str) -> String {
     let mut out = text.to_owned();
     for pattern in &patterns.whole {
         out = pattern.replace_all(&out, REDACTED).into_owned();
     }
     out = redact_hex_keys(patterns, &out);
-    out = redact_base64url_tokens(patterns, &out);
-    out = patterns
-        .name_equals
-        .replace_all(&out, |caps: &Captures<'_>| {
-            format!("{}{}={REDACTED}", &caps[1], &caps[2])
-        })
-        .into_owned();
-    patterns
-        .name_json
-        .replace_all(&out, |caps: &Captures<'_>| {
-            format!("{}\"{REDACTED}\"", &caps[1])
-        })
-        .into_owned()
+    redact_base64url_tokens(patterns, &out)
+}
+
+/// Texto libre (no JSON): patrones de valor y de nombre.
+fn redact_text(patterns: &Patterns, text: &str) -> String {
+    redact_named_values(patterns, &redact_values(patterns, text))
+}
+
+/// Sustituye el valor de cada `nombre=valor`, `nombre: valor` o `"nombre": valor` con
+/// nombre sensible. El valor puede ir entre comillas, ser un objeto o lista (se redacta
+/// hasta el cierre equilibrado o el final del texto) o ir suelto (hasta un espacio o
+/// separador).
+fn redact_named_values(patterns: &Patterns, text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut search = 0;
+    while let Some(caps) = patterns.name_prefix.captures_at(text, search) {
+        let (Some(whole), Some(name)) = (caps.get(0), caps.get(1)) else {
+            break;
+        };
+        let value_start = whole.end();
+        let value_end = value_start + value_len(&text[value_start..]);
+        if is_sensitive_name(name.as_str()) && value_end > value_start {
+            out.push_str(&text[copied..value_start]);
+            if text[value_start..].starts_with('"') {
+                out.push('"');
+                out.push_str(REDACTED);
+                out.push('"');
+            } else {
+                out.push_str(REDACTED);
+            }
+            copied = value_end;
+            search = value_end;
+        } else {
+            // Sigue justo después del nombre, por si el "valor" contiene otro par.
+            search = name.end();
+        }
+        if search >= text.len() {
+            break;
+        }
+    }
+    out.push_str(&text[copied..]);
+    out
+}
+
+/// Longitud en bytes del valor que empieza al principio de `rest`.
+fn value_len(rest: &str) -> usize {
+    let bytes = rest.as_bytes();
+    match bytes.first() {
+        None => 0,
+        Some(b'"') => {
+            let mut escaped = false;
+            for (i, &b) in bytes.iter().enumerate().skip(1) {
+                match b {
+                    _ if escaped => escaped = false,
+                    b'\\' => escaped = true,
+                    b'"' => return i + 1,
+                    _ => {}
+                }
+            }
+            bytes.len()
+        }
+        Some(b'{' | b'[') => {
+            let mut depth = 0usize;
+            let mut in_string = false;
+            let mut escaped = false;
+            for (i, &b) in bytes.iter().enumerate() {
+                if in_string {
+                    match b {
+                        _ if escaped => escaped = false,
+                        b'\\' => escaped = true,
+                        b'"' => in_string = false,
+                        _ => {}
+                    }
+                    continue;
+                }
+                match b {
+                    b'"' => in_string = true,
+                    b'{' | b'[' => depth += 1,
+                    b'}' | b']' => {
+                        depth = depth.saturating_sub(1);
+                        if depth == 0 {
+                            return i + 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            bytes.len()
+        }
+        Some(_) => bytes
+            .iter()
+            .position(|b| b.is_ascii_whitespace() || b",;}])\"".contains(b))
+            .unwrap_or(bytes.len()),
+    }
 }
 
 /// `\b[0-9a-fA-F]{64}\b`: una secuencia máxima de caracteres de palabra que sea
@@ -455,5 +577,109 @@ mod tests {
         }
         let out = String::from_utf8(sink).unwrap();
         assert_eq!(out, format!("clave {REDACTED}\n"));
+    }
+
+    /// Hallazgo de revisor-seguridad: un mensaje que termina en `nombre=` no puede
+    /// tragarse la comilla de cierre y romper la línea JSON.
+    #[test]
+    fn mensaje_que_termina_en_nombre_igual_no_rompe_el_json() {
+        for name in ["key", "token", "value", "api_key"] {
+            let line = format!(r#"{{"fields":{{"message":"falta {name}=","otro":"x"}}}}"#);
+            let out = redact(&line);
+            let value: Value = serde_json::from_str(&out)
+                .unwrap_or_else(|e| panic!("JSON inválido para {name}: {e}: {out}"));
+            assert_eq!(value["fields"]["message"], format!("falta {name}="));
+            assert_eq!(value["fields"]["otro"], "x");
+        }
+        // Con un secreto en otro campo (la línea se vuelve a serializar) también.
+        let line = r#"{"fields":{"message":"falta key=","token":"t1","otro":"x"}}"#;
+        let value: Value = serde_json::from_str(&redact(line)).unwrap();
+        assert_eq!(value["fields"]["message"], "falta key=");
+        assert_eq!(value["fields"]["token"], REDACTED);
+        assert_eq!(value["fields"]["otro"], "x");
+        // Dentro del texto de un campo JSON sí se redacta `nombre=valor`, y el JSON sigue
+        // siendo válido.
+        let line = r#"{"fields":{"message":"usa token=\"abc def\" y value=v1","otro":"x"}}"#;
+        let out = redact(line);
+        let value: Value = serde_json::from_str(&out).unwrap();
+        let message = value["fields"]["message"].as_str().unwrap();
+        assert!(
+            !message.contains("abc def") && !message.contains("v1"),
+            "{out}"
+        );
+        assert_eq!(value["fields"]["otro"], "x");
+    }
+
+    #[test]
+    fn nombres_sensibles_por_sufijo_y_excepciones() {
+        for name in [
+            "access_token",
+            "client_secret",
+            "x-api-key",
+            "private_key",
+            "user_password",
+            "PasswordHash",
+            "Authorization",
+        ] {
+            assert!(is_sensitive_name(name), "{name}");
+        }
+        for name in [
+            "secret_ref",
+            "public_key",
+            "cache_key",
+            "code",
+            "provider",
+            "op",
+            "kind",
+            "keys",
+        ] {
+            assert!(!is_sensitive_name(name), "{name}");
+        }
+        let line = r#"{"fields":{"access_token":"a1","secret_ref":"llm/openai/default"}}"#;
+        let value: Value = serde_json::from_str(&redact(line)).unwrap();
+        assert_eq!(value["fields"]["access_token"], REDACTED);
+        assert_eq!(value["fields"]["secret_ref"], "llm/openai/default");
+    }
+
+    #[test]
+    fn formas_de_texto_libre_debug_y_objetos() {
+        // `Debug` de estructuras: `nombre: "valor"` y `nombre: valor`.
+        let out = redact(r#"Input { provider: OpenAi, secret: "s1-ficticio", client_secret: s2 }"#);
+        assert!(!out.contains("s1-ficticio") && !out.contains("s2"), "{out}");
+        assert!(out.contains("provider: OpenAi"), "{out}");
+        // `"nombre": {…}` en texto no JSON: hasta el cierre equilibrado.
+        let out = redact(r#"cuerpo previo "headers": {"a": "h1", "b": ["h2"]} fin"#);
+        assert!(!out.contains("h1") && !out.contains("h2"), "{out}");
+        assert!(out.ends_with(" fin"), "{out}");
+        // Sin cierre: hasta el final de la línea.
+        let out = redact(r#"truncado "value": {"a": "v1", "b"#);
+        assert!(!out.contains("v1"), "{out}");
+        // `nombre=` al final no se come nada.
+        assert_eq!(redact("falta key="), "falta key=");
+        // Prosa y horas no se tocan.
+        let prose = "Error: no se pudo abrir a las 01:03:13 https://ejemplo.com/x";
+        assert_eq!(redact(prose), prose);
+    }
+
+    #[test]
+    fn authorization_basic_se_redacta() {
+        // base64 de "usuario:clave-ficticia".
+        let basic = format!("Basic {}", "dXN1YXJpbzpjbGF2ZS1maWN0aWNpYQ=="); // gitleaks:allow
+        let out = redact(&format!("Authorization: {basic}"));
+        assert!(!out.contains("dXN1YXJpbzpjbGF2ZS1maWN0aWNpYQ"), "{out}");
+        let out = redact(&format!("cabecera {basic} enviada"));
+        assert!(!out.contains("dXN1YXJpbzpjbGF2ZS1maWN0aWNpYQ"), "{out}");
+    }
+
+    #[test]
+    fn sk_solo_con_limite_de_palabra() {
+        for text in [
+            "task-queue-de-trabajos-largos",
+            "disk-usage-monitor-principal",
+        ] {
+            assert_eq!(redact(text), text);
+        }
+        let out = redact(&format!("clave:{}", fake_openai()));
+        assert!(!out.contains(&fake_openai()), "{out}");
     }
 }

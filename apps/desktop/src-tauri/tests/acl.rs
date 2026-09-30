@@ -233,3 +233,159 @@ fn permisos_de_core_no_concedidos_son_rechazados() {
         );
     }
 }
+
+/// Las mismas comprobaciones que `build.rs`, ejecutadas en cada `cargo test` aunque
+/// cargo no vuelva a correr el script de compilación.
+mod config {
+    #![allow(dead_code)]
+    include!("../acl_checks.rs");
+
+    use std::path::PathBuf;
+
+    fn manifest_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    }
+
+    fn copy_dir(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap().flatten() {
+            let path = entry.path();
+            let target = to.join(entry.file_name());
+            if path.is_dir() {
+                copy_dir(&path, &target);
+            } else {
+                fs::copy(&path, &target).unwrap();
+            }
+        }
+    }
+
+    /// Copia de lo que lee `check_acl` en una carpeta temporal.
+    fn copy_of_real_config() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = manifest_dir();
+        copy_dir(&root.join("src"), &tmp.path().join("src"));
+        copy_dir(&root.join("capabilities"), &tmp.path().join("capabilities"));
+        fs::create_dir_all(tmp.path().join("permissions")).unwrap();
+        for entry in fs::read_dir(root.join("permissions")).unwrap().flatten() {
+            if entry.path().is_file() {
+                fs::copy(
+                    entry.path(),
+                    tmp.path().join("permissions").join(entry.file_name()),
+                )
+                .unwrap();
+            }
+        }
+        fs::copy(
+            root.join("tauri.conf.json"),
+            tmp.path().join("tauri.conf.json"),
+        )
+        .unwrap();
+        tmp
+    }
+
+    fn edit_capability(root: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+        let path = root.join("capabilities").join(CAPABILITY_FILE);
+        let mut value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        edit(&mut value);
+        fs::write(&path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn la_configuracion_real_pasa_las_comprobaciones() {
+        let problems = check_acl(&manifest_dir());
+        assert!(problems.is_empty(), "{problems:#?}");
+        let copy = copy_of_real_config();
+        let problems = check_acl(copy.path());
+        assert!(problems.is_empty(), "{problems:#?}");
+    }
+
+    #[test]
+    fn configuraciones_de_tauri_por_plataforma_o_alternativas_fallan() {
+        for name in [
+            "tauri.windows.conf.json",
+            "tauri.macos.conf.json5",
+            "tauri.conf.json5",
+            "Tauri.toml",
+            "Tauri.linux.toml",
+        ] {
+            let copy = copy_of_real_config();
+            fs::write(copy.path().join(name), "{}").unwrap();
+            let problems = check_acl(copy.path());
+            assert!(
+                problems.iter().any(|p| p.contains(name)),
+                "{name}: {problems:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn capability_con_claves_o_ventanas_no_permitidas_falla() {
+        type Edit = fn(&mut serde_json::Value);
+        let cases: [(&str, Edit); 7] = [
+            ("remote", |v| {
+                v["remote"] = serde_json::json!({ "urls": ["https://ejemplo.com"] })
+            }),
+            ("webviews", |v| v["webviews"] = serde_json::json!(["main"])),
+            ("platforms", |v| {
+                v["platforms"] = serde_json::json!(["windows"])
+            }),
+            ("local", |v| v["local"] = serde_json::json!(false)),
+            ("identifier", |v| {
+                v["identifier"] = serde_json::json!("otra")
+            }),
+            ("windows", |v| {
+                v["windows"] = serde_json::json!(["main", "otra"])
+            }),
+            ("windows", |v| v["windows"] = serde_json::json!(["*"])),
+        ];
+        for (key, edit) in cases {
+            let copy = copy_of_real_config();
+            edit_capability(copy.path(), edit);
+            let problems = check_acl(copy.path());
+            assert!(
+                problems.iter().any(|p| p.contains(&format!("`{key}`"))),
+                "{key}: {problems:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn core_default_y_capabilities_extra_fallan() {
+        let copy = copy_of_real_config();
+        edit_capability(copy.path(), |v| {
+            v["permissions"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!("core:default"))
+        });
+        let problems = check_acl(copy.path());
+        assert!(
+            problems.iter().any(|p| p.contains("core:default")),
+            "{problems:#?}"
+        );
+
+        let copy = copy_of_real_config();
+        fs::write(copy.path().join("capabilities").join("extra.json"), "{}").unwrap();
+        let problems = check_acl(copy.path());
+        assert!(
+            problems.iter().any(|p| p.contains("extra.json")),
+            "{problems:#?}"
+        );
+
+        let copy = copy_of_real_config();
+        let conf = copy.path().join("tauri.conf.json");
+        let text = fs::read_to_string(&conf).unwrap().replace(
+            r#""capabilities": ["main"]"#,
+            r#""capabilities": ["main", "otra"]"#,
+        );
+        fs::write(&conf, text).unwrap();
+        let problems = check_acl(copy.path());
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("app.security.capabilities")),
+            "{problems:#?}"
+        );
+    }
+}

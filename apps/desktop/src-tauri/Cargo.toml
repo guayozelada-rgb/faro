@@ -49,6 +49,8 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 tempfile = "3"
 # `test`: runtime simulado para comprobar el ACL real en `tests/acl.rs`. Solo en pruebas.
 tauri = { version = "2.12.0", features = ["test"] }
+# `tests/acl.rs` incluye `acl_checks.rs` (lee `permissions/*.toml`); ya está en el árbol.
+toml = "1"
 
 [lints.rust]
 unsafe_code = "forbid"
