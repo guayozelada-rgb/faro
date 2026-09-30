@@ -29,6 +29,10 @@ use tokio::time::{timeout, Instant};
 
 const READY_WAIT: Duration = Duration::from_secs(30);
 const GONE_WAIT: Duration = Duration::from_secs(15);
+/// Espera de la salida tras `shutdown`. El protocolo da al motor hasta 10 s para
+/// apagarse (luego `os._exit`); esperar justo 10 s perdía la carrera en runners lentos
+/// de CI. 20 s deja 10 s de margen sobre ese plazo sin cambiarlo.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(20);
 
 fn process_alive(pid: u32) -> bool {
     let output = Command::new("tasklist")
@@ -146,9 +150,9 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
     // Apagado ordenado.
     stdin.write_all(protocol::SHUTDOWN_LINE).await.unwrap();
     stdin.flush().await.unwrap();
-    let code = timeout(Duration::from_secs(10), control.wait())
+    let code = timeout(SHUTDOWN_WAIT, control.wait())
         .await
-        .expect("el motor no salió en 10 s");
+        .expect("el motor no salió en 20 s");
     assert_eq!(code, Some(0));
     control.kill();
     let mut all = tree.clone();

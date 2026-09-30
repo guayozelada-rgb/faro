@@ -226,7 +226,7 @@ jobs:
 
       - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
-          tool: cargo-audit
+          tool: cargo-audit@0.22.2
 
       # Se invoca el binario directamente para no instalar la toolchain de rust-toolchain.toml.
       # Se ejecuta desde src-tauri para que cargo-audit lea `.cargo/audit.toml` (ignorados

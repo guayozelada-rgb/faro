@@ -30,6 +30,8 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 tracing-appender = "0.2.5"
+# Filtro de secretos por valor en los logs (ADR 0013).
+regex = "1.13.1"
 tokio = { version = "1.53.1", features = ["process", "io-util", "time", "sync", "macros", "rt-multi-thread", "net"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
 # `serde`: `AddKeyInput.secret` se deserializa directamente a `SecretString` (Bóveda, T6).

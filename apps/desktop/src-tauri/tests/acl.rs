@@ -50,6 +50,15 @@ fn invoke(
     cmd: &str,
     url: &str,
 ) -> Result<serde_json::Value, serde_json::Value> {
+    invoke_with(window, cmd, url, serde_json::Value::Null)
+}
+
+fn invoke_with(
+    window: &WebviewWindow<MockRuntime>,
+    cmd: &str,
+    url: &str,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, serde_json::Value> {
     get_ipc_response(
         window,
         InvokeRequest {
@@ -57,7 +66,11 @@ fn invoke(
             callback: CallbackFn(0),
             error: CallbackFn(1),
             url: url.parse().unwrap(),
-            body: InvokeBody::default(),
+            body: if body.is_null() {
+                InvokeBody::default()
+            } else {
+                InvokeBody::Json(body)
+            },
             headers: Default::default(),
             invoke_key: INVOKE_KEY.to_string(),
         },
@@ -126,5 +139,97 @@ fn origen_remoto_es_rechazado() {
     for cmd in COMMANDS {
         let result = invoke(&main, cmd, "https://ejemplo-malicioso.com/");
         assert!(rejected_by_acl(&result), "`{cmd}`: {result:?}");
+    }
+}
+
+/// Lo que hace `listen()` de `@tauri-apps/api/event` al escuchar `engine://status`.
+fn listen_body() -> serde_json::Value {
+    serde_json::json!({
+        "event": "engine://status",
+        "target": { "kind": "Any" },
+        "handler": 7
+    })
+}
+
+#[test]
+fn listen_y_unlisten_de_eventos_funcionan_desde_main() {
+    let app = real_app();
+    let main = window(&app, "main");
+    let listened = invoke_with(&main, "plugin:event|listen", LOCAL_URL, listen_body());
+    let event_id = listened
+        .as_ref()
+        .ok()
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_else(|| panic!("listen debería funcionar: {listened:?}"));
+    let unlistened = invoke_with(
+        &main,
+        "plugin:event|unlisten",
+        LOCAL_URL,
+        serde_json::json!({ "event": "engine://status", "eventId": event_id }),
+    );
+    assert!(
+        unlistened.is_ok(),
+        "unlisten debería funcionar: {unlistened:?}"
+    );
+}
+
+#[test]
+fn listen_desde_otra_ventana_u_origen_remoto_es_rechazado() {
+    let app = real_app();
+    let other = window(&app, "otra");
+    let result = invoke_with(&other, "plugin:event|listen", LOCAL_URL, listen_body());
+    assert!(rejected_by_acl(&result), "{result:?}");
+    let main = window(&app, "main");
+    let result = invoke_with(
+        &main,
+        "plugin:event|listen",
+        "https://ejemplo-malicioso.com/",
+        listen_body(),
+    );
+    assert!(rejected_by_acl(&result), "{result:?}");
+}
+
+/// Sin `core:default`: los permisos de core que la interfaz no usa se rechazan.
+#[test]
+fn permisos_de_core_no_concedidos_son_rechazados() {
+    let app = real_app();
+    let main = window(&app, "main");
+    let cases = [
+        // La interfaz no emite eventos: solo el núcleo emite `engine://status`.
+        (
+            "plugin:event|emit",
+            serde_json::json!({ "event": "engine://status", "payload": { "state": "ready" } }),
+        ),
+        (
+            "plugin:window|title",
+            serde_json::json!({ "label": "main" }),
+        ),
+        (
+            "plugin:window|close",
+            serde_json::json!({ "label": "main" }),
+        ),
+        (
+            "plugin:webview|print",
+            serde_json::json!({ "label": "main" }),
+        ),
+        (
+            "plugin:image|new",
+            serde_json::json!({ "rgba": [0, 0, 0, 0], "width": 1, "height": 1 }),
+        ),
+        ("plugin:app|version", serde_json::Value::Null),
+        (
+            "plugin:path|resolve_directory",
+            serde_json::json!({ "directory": 1 }),
+        ),
+        ("plugin:menu|new", serde_json::json!({ "kind": "Menu" })),
+        ("plugin:tray|new", serde_json::json!({ "options": {} })),
+        ("plugin:resources|close", serde_json::json!({ "rid": 1 })),
+    ];
+    for (cmd, body) in cases {
+        let result = invoke_with(&main, cmd, LOCAL_URL, body);
+        assert!(
+            rejected_by_acl(&result),
+            "`{cmd}` no debería pasar el ACL: {result:?}"
+        );
     }
 }
