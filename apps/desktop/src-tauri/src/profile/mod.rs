@@ -491,7 +491,10 @@ fn profiles_with_data(profiles_dir: &Path) -> io::Result<BTreeSet<String>> {
     Ok(found)
 }
 
-/// Nombres (UTF-8) de las entradas de `dir`; vacío si la carpeta no existe.
+/// Nombres (UTF-8) de las entradas de `dir`, en minúsculas ASCII; vacío si la carpeta no
+/// existe. Windows y macOS no distinguen mayúsculas: `0192ABCD-….db` es el mismo archivo
+/// que el motor abre como `0192abcd-….db`, así que cuenta como datos de ese perfil (y el
+/// id se devuelve siempre en minúsculas). También normaliza `.DB`, `-WAL` y `-V`.
 fn dir_names(dir: &Path) -> io::Result<Vec<String>> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -501,7 +504,7 @@ fn dir_names(dir: &Path) -> io::Result<Vec<String>> {
     let mut names = Vec::new();
     for entry in entries {
         if let Ok(name) = entry?.file_name().into_string() {
-            names.push(name);
+            names.push(name.to_ascii_lowercase());
         }
     }
     Ok(names)

@@ -271,6 +271,47 @@ fn sin_profiles_json_se_adopta_tambien_con_solo_una_copia() {
 }
 
 #[test]
+fn nombres_en_mayusculas_cuentan_como_datos_del_perfil() {
+    for data in [
+        "{ID}.db",
+        "{ID}.DB-WAL",
+        "backups/{ID}-v0001-20260930T120000Z.db",
+        "backups/{ID}-V0001-20260930T120000Z.DB",
+    ] {
+        let (dir, store, keys) = setup();
+        let profile_id = keys.prepare().profile_id().to_owned();
+        store.delete(&db_key_ref(&profile_id)).unwrap();
+        touch_data(
+            dir.path(),
+            &data.replace("{ID}", &profile_id.to_ascii_uppercase()),
+        );
+        let message = keys.prepare();
+        assert_eq!(message.outcome(), KeyOutcome::KeyMissing, "{data}");
+        assert!(store.refs().is_empty(), "no debe generar llave: {data}");
+    }
+}
+
+#[test]
+fn sin_profiles_json_se_adopta_el_perfil_en_mayusculas_con_id_en_minusculas() {
+    for data in ["{ID}.db", "backups/{ID}-v0001-20260930T120000Z.db"] {
+        let (dir, store, keys) = setup();
+        let first = keys.prepare();
+        let profile_id = first.profile_id().to_owned();
+        std::fs::remove_file(dir.path().join(PROFILES_FILE)).unwrap();
+        touch_data(
+            dir.path(),
+            &data.replace("{ID}", &profile_id.to_ascii_uppercase()),
+        );
+        let message = keys.prepare();
+        assert_eq!(message.outcome(), KeyOutcome::Adopted, "{data}");
+        assert_eq!(message.profile_id(), profile_id);
+        assert_eq!(key_of(&message), key_of(&first));
+        assert_eq!(read_file(dir.path()).active_profile_id, profile_id);
+        assert_eq!(store.refs(), vec![db_key_ref(&profile_id)]);
+    }
+}
+
+#[test]
 fn sin_profiles_json_con_dos_perfiles_no_se_crea_nada() {
     let (dir, store, keys) = setup();
     touch_data(dir.path(), "0192f0a0-0000-7000-8000-000000000001.db");
