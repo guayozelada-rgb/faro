@@ -16,15 +16,16 @@ apps/desktop/src-tauri/
   capabilities/
     main.json          # permisos de la ventana principal
   permissions/         # permisos propios de comandos de Faro
-  build.rs             # COMMANDS + AppManifest + comprobación de ACL
+  acl_checks.rs        # COMMANDS y comprobaciones de ACL (incluido en build.rs y en tests/acl.rs)
+  build.rs             # AppManifest(COMMANDS) + check_acl al compilar
   tests/acl.rs         # pruebas de rechazo del ACL con el contexto real
   tauri.conf.json
 ```
 
 ## Agregar un comando: 4 sitios obligatorios
-El build falla si falta cualquiera (comprobación `check_acl` en `build.rs`):
+El build y `cargo test` fallan si falta cualquiera (comprobaciones de `acl_checks.rs`, que usan `build.rs` y `tests/acl.rs`):
 1. `register_commands` en `src/lib.rs` (único `tauri::generate_handler![`).
-2. La lista `COMMANDS` de `build.rs` (se pasa a `AppManifest`, así el ACL existe aunque falten los `.toml`).
+2. La lista `COMMANDS` de `acl_checks.rs` (se pasa a `AppManifest`, así el ACL existe aunque falten los `.toml`).
 3. Un permiso escrito a mano `allow-<comando>` en `permissions/<dominio>.toml`.
 4. Ese permiso en `capabilities/main.json`.
 Añade el caso del comando a `tests/acl.rs` si cambia quién puede invocarlo.
@@ -121,7 +122,7 @@ commands.allow = ["vault_add_key"]
   ]
 }
 ```
-Nunca `core:default` ni otros conjuntos amplios: solo los permisos de core que la interfaz usa de verdad (hoy, escuchar eventos). `build.rs` falla si `capabilities/` tiene algo distinto de `main.json`, si `tauri.conf.json` no fija `"capabilities": ["main"]` o si `main` concede un permiso ajeno fuera de `ALLOWED_FOREIGN_PERMISSIONS`.
+Nunca `core:default` ni otros conjuntos amplios: solo los permisos de core que la interfaz usa de verdad (hoy, escuchar eventos). `acl_checks.rs` hace fallar el build y las pruebas si `capabilities/` tiene algo distinto de `main.json`; si `main.json` tiene claves fuera de `$schema`, `identifier`, `description`, `windows` y `permissions`, o `windows` distinto de `["main"]`; si `tauri.conf.json` no fija `"capabilities": ["main"]`; si existe cualquier configuración por plataforma o alternativa (`tauri.*.conf.json`, `.json5`, `Tauri*.toml`); o si `main` concede un permiso ajeno fuera de `ALLOWED_FOREIGN_PERMISSIONS`.
 
 ## Prohibido sin ADR y revisión de seguridad
 - `shell:allow-execute` / `shell:allow-spawn` para cualquier cosa que no sea el sidecar `faro-engine` (con `"sidecar": true`).
