@@ -69,7 +69,7 @@ pub fn run() -> Result<(), tauri::Error> {
 
 /// Registra los comandos propios que la interfaz puede invocar.
 ///
-/// Cada comando necesita: estar en `COMMANDS` de `build.rs` (manifiesto `__app-acl__`),
+/// Cada comando necesita: estar en `COMMANDS` de `acl_checks.rs` (manifiesto `__app-acl__`),
 /// un permiso escrito a mano en `permissions/*.toml` y ese permiso en
 /// `capabilities/main.json`. `build.rs` falla la compilación si algo no cuadra.
 /// Público para que las pruebas del ACL (`tests/acl.rs`) usen el registro real.

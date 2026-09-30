@@ -29,6 +29,13 @@ use tokio::time::{timeout, Instant};
 
 const READY_WAIT: Duration = Duration::from_secs(30);
 const GONE_WAIT: Duration = Duration::from_secs(15);
+/// Límite del `timeout` tras `shutdown`. El protocolo da al motor hasta 10 s para
+/// apagarse (luego `os._exit(0)`); esperar justo 10 s perdía la carrera en runners
+/// lentos de CI. 20 s deja 10 s de margen sobre ese plazo sin cambiarlo.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(20);
+/// Un apagado **ordenado** debe terminar antes del plazo de 10 s del protocolo; si
+/// tarda más, fue el apagado forzado (que también sale con código 0).
+const ORDERLY_SHUTDOWN_MAX: Duration = Duration::from_secs(9);
 
 fn process_alive(pid: u32) -> bool {
     let output = Command::new("tasklist")
@@ -80,10 +87,19 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
         .launch()
         .expect("no se pudo lanzar el motor; ¿existe apps/engine/.venv?");
 
-    tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(_)) = lines.next_line().await {}
-    });
+    // Se guarda el stderr para comprobar después que el apagado no fue forzado.
+    let stderr_log = Arc::new(std::sync::Mutex::new(String::new()));
+    let stderr_task = {
+        let stderr_log = stderr_log.clone();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let mut log = stderr_log.lock().unwrap();
+                log.push_str(&line);
+                log.push('\n');
+            }
+        })
+    };
 
     let token = protocol::generate_token().unwrap();
     stdin
@@ -146,10 +162,27 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
     // Apagado ordenado.
     stdin.write_all(protocol::SHUTDOWN_LINE).await.unwrap();
     stdin.flush().await.unwrap();
-    let code = timeout(Duration::from_secs(10), control.wait())
+    let started = Instant::now();
+    let code = timeout(SHUTDOWN_WAIT, control.wait())
         .await
-        .expect("el motor no salió en 10 s");
+        .expect("el motor no salió en 20 s");
+    let elapsed = started.elapsed();
     assert_eq!(code, Some(0));
+    assert!(
+        elapsed < ORDERLY_SHUTDOWN_MAX,
+        "el apagado tardó {elapsed:?}: no fue ordenado (plazo del protocolo: 10 s)"
+    );
+    // El stderr se cierra con el proceso; se espera a leerlo entero.
+    let _ = timeout(Duration::from_secs(5), stderr_task).await;
+    let stderr_text = stderr_log.lock().unwrap().clone();
+    assert!(
+        stderr_text.contains("engine.stopped"),
+        "sin engine.stopped en el stderr del motor"
+    );
+    assert!(
+        !stderr_text.contains("engine.shutdown_forced"),
+        "el motor tuvo que forzar el apagado"
+    );
     control.kill();
     let mut all = tree.clone();
     all.push(ready.pid);
