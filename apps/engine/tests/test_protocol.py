@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import queue
@@ -388,16 +389,16 @@ def _pipe_reader(data: bytes, *, max_line: int = protocol.MAX_LINE_BYTES) -> pro
 
 def test_stdin_reader_splits_lines_and_signals_eof() -> None:
     reader = _pipe_reader(b"uno\r\ndos\ntres")
-    assert reader.get(timeout=5) == b"uno"
-    assert reader.get(timeout=5) == b"dos"
-    assert reader.get(timeout=5) == b"tres"
+    assert reader.get(timeout=5) == bytearray(b"uno")
+    assert reader.get(timeout=5) == bytearray(b"dos")
+    assert reader.get(timeout=5) == bytearray(b"tres")
     assert reader.get(timeout=5) is None
 
 
 def test_stdin_reader_discards_too_long_lines() -> None:
     reader = _pipe_reader(b"x" * 50 + b"\nok\n" + b"y" * 50, max_line=10)
-    assert reader.get(timeout=5) == b""
-    assert reader.get(timeout=5) == b"ok"
+    assert reader.get(timeout=5) == bytearray(b"")
+    assert reader.get(timeout=5) == bytearray(b"ok")
     assert reader.get(timeout=5) is None
 
 
@@ -425,9 +426,15 @@ def test_read_token_cases() -> None:
     os.close(read_fd)
 
 
+def test_stdin_reader_last_line_without_newline_drops_cr() -> None:
+    reader = _pipe_reader(b"uno\r")
+    assert reader.get(timeout=5) == bytearray(b"uno")
+    assert reader.get(timeout=5) is None
+
+
 def test_stdin_reader_eof_is_sticky() -> None:
     reader = _pipe_reader(b"uno\n")
-    assert reader.get(timeout=5) == b"uno"
+    assert reader.get(timeout=5) == bytearray(b"uno")
     assert reader.get(timeout=5) is None
     assert reader.get(timeout=0) is None  # ya no espera: el EOF se recuerda
 
@@ -526,3 +533,143 @@ def test_read_db_key_second_line_eof_and_timeout() -> None:
         os.close(write_fd)
     assert reader.get(timeout=5) is None
     os.close(read_fd)
+
+
+# --- Canal de secretos y auditoría por stdin (ADR 0010 §2 y §4) -----------------------
+
+AUDIT_RUN_ID = "01920000-0000-7000-8000-0000000000aa"
+AUDIT_SITE_ID = "01920000-0000-7000-8000-0000000000bb"
+
+
+def _audit_line(**overrides: Any) -> bytes:
+    event: dict[str, Any] = {
+        "event": "audit",
+        "occurred_at": "2026-09-30T12:00:00Z",
+        "actor": "user",
+        "action": "secret.added",
+        "secret_ref": "llm/anthropic/default",
+        "run_id": None,
+        "result": "ok",
+        "details": {"provider": "anthropic"},
+    }
+    event.update(overrides)
+    return json.dumps(event, separators=(",", ":")).encode("ascii") + b"\n"
+
+
+def test_audit_events_and_secret_responses_over_stdin(spawn: Any, tmp_path: Path) -> None:
+    token = secrets.token_urlsafe(32)
+    fake_value = "test-" + "v" * 38  # 43 caracteres: también lo taparía el filtro por valor
+    data_dir = tmp_path / "data"
+    engine = spawn("--data-dir", str(data_dir))
+    engine.send(token.encode("ascii") + b"\n" + db_key_line())
+    engine.ready()
+    engine.send(_audit_line())
+    engine.send(_audit_line(actor="root", details={"reason": fake_value}))  # inválido
+    response = {"event": "secret_response", "id": AUDIT_RUN_ID, "value": fake_value}
+    engine.send(json.dumps(response).encode("ascii") + b"\n")  # `id` desconocido
+    engine.send(b'{"event":"shutdown"}\n')
+    assert engine.wait() == 0
+    assert engine.remaining_stdout() == []  # el motor no escribió nada más en stdout
+
+    logs = engine.stderr()
+    assert fake_value not in logs
+    assert "audit.invalid_event" in logs
+    assert "unknown_id" in logs
+    conn = open_db(profile_db_path(data_dir, TEST_PROFILE_ID))
+    try:
+        rows = conn.execute("SELECT actor, action, secret_ref, result, details FROM audit_log")
+        assert rows.fetchall() == [
+            ("user", "secret.added", "llm/anthropic/default", "ok", '{"provider":"anthropic"}')
+        ]
+    finally:
+        conn.close()
+
+
+class _Out(io.BytesIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.flushes = 0
+
+    def flush(self) -> None:
+        self.flushes += 1
+
+
+def test_protocol_writer_writes_whole_lines() -> None:
+    out = _Out()
+    writer = protocol.ProtocolWriter(out)
+    writer.write_line(b'{"event":"x"}\n')
+    writer.write_line(bytearray(b'{"event":"y"}\n'))
+    assert out.getvalue() == b'{"event":"x"}\n{"event":"y"}\n'
+    assert out.flushes == 2
+    for bad in (b'{"event":"x"}', b"a\nb\n", b""):
+        with pytest.raises(ValueError, match="salto de línea"):
+            writer.write_line(bad)
+    assert not writer.broken
+
+
+def test_protocol_writer_is_atomic_across_threads() -> None:
+    out = _Out()
+    writer = protocol.ProtocolWriter(out)
+    lines = [
+        json.dumps({"event": "e", "n": n, "pad": "x" * 500}).encode() + b"\n" for n in range(50)
+    ]
+    threads = [threading.Thread(target=writer.write_line, args=(line,)) for line in lines]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    written = out.getvalue().splitlines(keepends=True)
+    assert sorted(written) == sorted(lines)
+
+
+class _BrokenOut(io.BytesIO):
+    def write(self, _data: Any) -> int:
+        raise OSError("pipe")
+
+
+def test_protocol_writer_marks_broken_pipe() -> None:
+    writer = protocol.ProtocolWriter(_BrokenOut())
+    with pytest.raises(BrokenPipeError):
+        writer.write_line(b"{}\n")
+    assert writer.broken
+    with pytest.raises(BrokenPipeError):
+        writer.write_line(b"{}\n")
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (b'{"event":"audit","a":1}', {"event": "audit", "a": 1}),
+        (b'{"event":1}', None),
+        (b'{"a":1}', None),
+        (b"[]", None),
+        (b"x", None),
+    ],
+)
+def test_parse_message(line: bytes, expected: dict[str, Any] | None) -> None:
+    assert protocol.parse_message(line) == expected
+
+
+def test_read_db_key_wipes_the_received_line() -> None:
+    lines: list[bytearray] = []
+    reader = _pipe_reader(db_key_line())
+    original_get = reader.get
+
+    def spy(timeout: float | None = None) -> bytearray | None:
+        line = original_get(timeout)
+        if line is not None:
+            lines.append(line)
+        return line
+
+    reader.get = spy  # type: ignore[method-assign]
+    result = protocol.read_db_key(reader, timeout=5)
+    assert result.key == bytearray(TEST_KEY_HEX, "ascii")
+    result.wipe()
+    [line] = lines
+    assert line == bytearray(len(line))
+
+
+def test_wipe_line() -> None:
+    line = bytearray(b"secreto")
+    protocol.wipe_line(line)
+    assert line == bytearray(7)

@@ -12,13 +12,15 @@ use tauri::test::{get_ipc_response, mock_builder, MockRuntime, INVOKE_KEY};
 use tauri::webview::InvokeRequest;
 use tauri::{App, Manager, WebviewWindow, WebviewWindowBuilder};
 
-const COMMANDS: [&str; 6] = [
+const COMMANDS: [&str; 8] = [
     "engine_status",
     "engine_restart",
+    "engine_call",
     "vault_list_keys",
     "vault_add_key",
     "vault_test_key",
     "vault_delete_key",
+    "wp_plugin_export",
 ];
 
 /// Origen local en desarrollo (`build.devUrl`); las pruebas no activan `custom-protocol`.
@@ -232,6 +234,54 @@ fn permisos_de_core_no_concedidos_son_rechazados() {
             "`{cmd}` no debería pasar el ACL: {result:?}"
         );
     }
+}
+
+/// `tauri-plugin-opener` se usa solo desde Rust (`wp_plugin_export`): la interfaz no
+/// puede abrir URLs, archivos ni carpetas (spec F1a §5.5).
+#[test]
+fn comandos_de_opener_son_rechazados() {
+    let app = real_app();
+    let main = window(&app, "main");
+    let cases = [
+        (
+            "plugin:opener|open_url",
+            serde_json::json!({ "url": "https://ejemplo.com" }),
+        ),
+        (
+            "plugin:opener|open_path",
+            serde_json::json!({ "path": "C:/Windows/System32/calc.exe" }),
+        ),
+        (
+            "plugin:opener|reveal_item_in_dir",
+            serde_json::json!({ "paths": ["C:/"] }),
+        ),
+    ];
+    for (cmd, body) in cases {
+        let result = invoke_with(&main, cmd, LOCAL_URL, body);
+        assert!(
+            rejected_by_acl(&result),
+            "`{cmd}` no debería pasar el ACL: {result:?}"
+        );
+    }
+}
+
+/// `engine_call` y `wp_plugin_export` con argumentos pasan el ACL pero, sin `AppState`,
+/// no se ejecutan (nunca copian el zip ni llaman al motor en esta prueba).
+#[test]
+fn comandos_nuevos_con_argumentos_no_se_ejecutan_sin_estado() {
+    let app = real_app();
+    let main = window(&app, "main");
+    let result = invoke_with(
+        &main,
+        "engine_call",
+        LOCAL_URL,
+        serde_json::json!({ "request": { "operation": "getHealth" } }),
+    );
+    assert!(!rejected_by_acl(&result), "{result:?}");
+    assert!(result.is_err(), "{result:?}");
+    let result = invoke(&main, "wp_plugin_export", LOCAL_URL);
+    assert!(!rejected_by_acl(&result), "{result:?}");
+    assert!(result.is_err(), "{result:?}");
 }
 
 /// Las mismas comprobaciones que `build.rs`, ejecutadas en cada `cargo test` aunque

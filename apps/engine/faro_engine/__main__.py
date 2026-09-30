@@ -9,8 +9,12 @@ Protocolo (spec F0 §4.4, skill `tauri-sidecar-python`, ADR 0004):
 4. Abre la base del perfil y aplica migraciones (ADR 0009 §4). Si falla, sigue con la base
    no disponible (lo informa `/health`); nunca sale por eso. La llave se sobrescribe.
 5. Abre el socket, escribe una sola línea `ready` en stdout y hace flush.
-6. Sirve con uvicorn sobre ese socket (sin access log).
+6. Sirve con uvicorn sobre ese socket (sin access log). Mientras sirve, el hilo de stdin
+   reparte `secret_response` (al cliente del canal de secretos) y `audit` (a `audit_log`),
+   y las rutas escriben `secret_request` en stdout por el mismo `ProtocolWriter` que
+   `ready` (ADR 0010). En `--dev` no hay canal: `engine.secrets_unavailable`.
 7. `{"event":"shutdown"}` o EOF en stdin → salida ordenada; 10 s máx., luego `os._exit`.
+   Las solicitudes de secretos pendientes fallan con `vault.secret_timeout`.
    Con `--dev` el EOF se ignora (no hay núcleo que supervise por stdin); se detiene con
    Ctrl+C / SIGINT / SIGTERM / CTRL_BREAK. En ambos modos esas señales salen con código 0.
 
@@ -39,6 +43,7 @@ import uvicorn
 from faro_engine import __version__
 from faro_engine.core import protocol
 from faro_engine.core.app import create_app
+from faro_engine.core.audit import AuditLog
 from faro_engine.core.config import (
     DB_KEY_TIMEOUT_SECONDS,
     HOST,
@@ -54,6 +59,7 @@ from faro_engine.core.db.database import Database, open_profile_database
 from faro_engine.core.db.profile import dev_data_dir
 from faro_engine.core.errors import DB_KEY_MISSING, DB_UNAVAILABLE
 from faro_engine.core.logging import configure_logging
+from faro_engine.core.secrets import SecretBroker
 
 EXIT_OK = 0
 EXIT_BIND_FAILED = 1
@@ -136,26 +142,62 @@ class ShutdownController:
         self._force_exit(EXIT_OK)
 
 
+def _dispatch(line: bytearray, secrets: SecretBroker | None, audit: AuditLog | None) -> str | None:
+    """Reparte una línea de stdin. Devuelve el nombre del evento reconocido o `None`."""
+    data = protocol.parse_message(line)
+    if data is None:
+        return None
+    event: str = data["event"]
+    if event == protocol.EVENT_SHUTDOWN:
+        data.clear()
+        return event
+    if event == protocol.EVENT_SECRET_RESPONSE and secrets is not None:
+        secrets.handle_response(data)  # vacía `data`
+        return event
+    if event == protocol.EVENT_AUDIT and audit is not None:
+        audit.record_core_event(data)  # vacía `data`
+        return event
+    data.clear()
+    return None
+
+
 def watch_stdin(
-    reader: protocol.StdinReader, controller: ShutdownController, *, exit_on_eof: bool = True
+    reader: protocol.StdinReader,
+    controller: ShutdownController,
+    *,
+    exit_on_eof: bool = True,
+    secrets: SecretBroker | None = None,
+    audit: AuditLog | None = None,
 ) -> None:
     """Consume eventos de stdin hasta `shutdown` o EOF. Nunca registra el contenido.
+
+    Reparte `secret_response` y `audit`; cada línea se sobrescribe tras procesarla. Al
+    terminar (EOF o `shutdown`) cierra el canal de secretos.
 
     Con `exit_on_eof=False` (modo `--dev`, sin núcleo que supervise por stdin) el EOF no
     apaga el motor: se detiene con Ctrl+C / SIGINT / SIGTERM / CTRL_BREAK.
     """
-    while True:
-        line = reader.get()
-        if line is None:
-            if exit_on_eof:
-                controller.request_exit("stdin_closed")
-            else:
-                log.info("engine.dev_stdin_eof_ignored", stop_with="ctrl_c")
-            return
-        if protocol.parse_event(line) == protocol.EVENT_SHUTDOWN:
-            controller.request_exit("shutdown_event")
-            return
-        log.warning("protocol.unknown_line")
+    try:
+        while True:
+            line = reader.get()
+            if line is None:
+                if exit_on_eof:
+                    controller.request_exit("stdin_closed")
+                else:
+                    log.info("engine.dev_stdin_eof_ignored", stop_with="ctrl_c")
+                return
+            try:
+                event = _dispatch(line, secrets, audit)
+            finally:
+                protocol.wipe_line(line)
+            if event == protocol.EVENT_SHUTDOWN:
+                controller.request_exit("shutdown_event")
+                return
+            if event is None:
+                log.warning("protocol.unknown_line")
+    finally:
+        if secrets is not None:
+            secrets.close()
 
 
 def _stop_signals() -> list[signal.Signals]:
@@ -281,6 +323,7 @@ def run(
 
     reader = protocol.StdinReader(sys.stdin.fileno() if stdin_fd is None else stdin_fd)
     reader.start()
+    writer = protocol.ProtocolWriter(out)
 
     startup = read_startup(
         args,
@@ -307,9 +350,12 @@ def run(
         token=token, port=real_port, version=__version__, dev=args.dev, data_dir=data_dir
     )
     del token
+    # En `--dev` (modo externo) no hay núcleo al otro lado de stdout (ADR 0010 §5).
+    secrets = SecretBroker.unavailable() if args.dev else SecretBroker(writer)
+    audit = AuditLog(database)
     server = uvicorn.Server(
         uvicorn.Config(
-            create_app(settings, database),
+            create_app(settings, database, secrets=secrets, audit=audit),
             log_config=None,
             access_log=False,
             server_header=False,
@@ -321,13 +367,12 @@ def run(
     threading.Thread(
         target=watch_stdin,
         args=(reader, controller),
-        kwargs={"exit_on_eof": not args.dev},
+        kwargs={"exit_on_eof": not args.dev, "secrets": secrets, "audit": audit},
         name="faro-protocol",
         daemon=True,
     ).start()
 
-    out.write(protocol.ready_line(port=real_port, version=__version__, pid=os.getpid()))
-    out.flush()
+    writer.write_line(protocol.ready_line(port=real_port, version=__version__, pid=os.getpid()))
     log.info("engine.ready", port=real_port, pid=os.getpid(), dev=args.dev)
 
     try:

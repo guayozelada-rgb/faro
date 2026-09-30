@@ -35,6 +35,21 @@ DB_UNAVAILABLE: Final = "db.unavailable"
 # Llega en la línea `db_key` cuando el núcleo no pudo leer el llavero (ADR 0010 §1).
 VAULT_KEYRING_UNAVAILABLE: Final = "vault.keyring_unavailable"
 
+# Canal de secretos (ADR 0010 §2, spec F1a §5.1 y §5.6). Los seis primeros los puede
+# enviar el núcleo en `secret_response`; `vault.secret_timeout` y
+# `engine.secrets_unavailable` los decide el motor.
+VAULT_INVALID_REF: Final = "vault.invalid_ref"
+VAULT_SECRET_NOT_ALLOWED: Final = "vault.secret_not_allowed"  # noqa: S105
+VAULT_NOT_FOUND: Final = "vault.not_found"
+VAULT_ALREADY_EXISTS: Final = "vault.already_exists"
+VAULT_INVALID_INPUT: Final = "vault.invalid_input"
+VAULT_SECRET_TIMEOUT: Final = "vault.secret_timeout"  # noqa: S105
+ENGINE_SECRETS_UNAVAILABLE: Final = "engine.secrets_unavailable"
+
+_CREDENTIAL_UNUSABLE_MESSAGE: Final = (
+    "Faro no pudo usar una credencial guardada. Reinicia Faro e intenta de nuevo."
+)
+
 MESSAGES: Final[Mapping[str, str]] = {
     ENGINE_UNAUTHORIZED: "El motor rechazó la conexión. Reinicia Faro.",
     ENGINE_FORBIDDEN_HOST: "El motor rechazó la conexión. Reinicia Faro.",
@@ -57,6 +72,19 @@ MESSAGES: Final[Mapping[str, str]] = {
     DB_UNAVAILABLE: "Tus datos de Faro no están disponibles ahora. Reinicia Faro.",
     VAULT_KEYRING_UNAVAILABLE: (
         "No pudimos abrir el llavero de tu computadora. Reinicia Faro e intenta de nuevo."
+    ),
+    VAULT_INVALID_REF: _CREDENTIAL_UNUSABLE_MESSAGE,
+    VAULT_SECRET_NOT_ALLOWED: _CREDENTIAL_UNUSABLE_MESSAGE,
+    VAULT_SECRET_TIMEOUT: _CREDENTIAL_UNUSABLE_MESSAGE,
+    VAULT_NOT_FOUND: "No encontramos esa clave. Puede que ya la hayas borrado.",
+    VAULT_ALREADY_EXISTS: (
+        "Ya tienes una clave de este proveedor. Reemplázala si quieres usar otra."
+    ),
+    VAULT_INVALID_INPUT: (
+        "Esa clave no tiene el formato esperado. Cópiala de nuevo desde la página del proveedor."
+    ),
+    ENGINE_SECRETS_UNAVAILABLE: (
+        "Esta acción no está disponible en el modo de desarrollo externo."
     ),
 }
 

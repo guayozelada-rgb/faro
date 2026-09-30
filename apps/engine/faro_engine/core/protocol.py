@@ -1,10 +1,17 @@
 """Protocolo núcleo ↔ motor por stdin/stdout (skill `tauri-sidecar-python`, ADR 0004 y 0010).
 
 - stdin: 1.ª línea = token de sesión; 2.ª = `db_key` con la llave de la base del perfil
-  (o el error del núcleo); después, eventos JSON (`{"event":"shutdown"}`).
-- stdout: solo eventos JSON del protocolo, una línea cada uno (`ready`).
+  (o el error del núcleo); después, eventos JSON: `shutdown`, `secret_response` y `audit`.
+- stdout: solo eventos JSON del protocolo, una línea cada uno (`ready`, `secret_request`),
+  siempre por `ProtocolWriter` (candado + una sola escritura + `flush`).
 
 Nunca se registra el contenido de ninguna línea de stdin.
+
+Copias de secretos en memoria (inevitables en Python, igual que en T5): el `bytes` que
+devuelve `os.read`, el `str` que crea `json.loads` al decodificar la línea y el `str` del
+valor dentro del diccionario. Las líneas se entregan como `bytearray` y quien las consume
+las sobrescribe (`wipe_line`); el búfer del lector se pone a cero antes de descartar lo
+ya leído.
 """
 
 from __future__ import annotations
@@ -15,7 +22,7 @@ import queue
 import re
 import threading
 from dataclasses import dataclass, field
-from typing import Final
+from typing import Any, BinaryIO, Final
 
 from faro_engine.core.db.connection import is_valid_key_hex, wipe
 from faro_engine.core.db.profile import is_valid_profile_id
@@ -28,6 +35,10 @@ _UTF8_BOM: Final = b"\xef\xbb\xbf"
 
 EVENT_SHUTDOWN: Final = "shutdown"
 EVENT_DB_KEY: Final = "db_key"
+EVENT_READY: Final = "ready"
+EVENT_SECRET_REQUEST: Final = "secret_request"  # noqa: S105 - nombre de evento
+EVENT_SECRET_RESPONSE: Final = "secret_response"  # noqa: S105 - nombre de evento
+EVENT_AUDIT: Final = "audit"
 # Errores que el núcleo puede enviar en lugar de la llave (ADR 0010 §1, spec F1a §5.1).
 DB_KEY_ERRORS: Final = frozenset({DB_KEY_MISSING, VAULT_KEYRING_UNAVAILABLE})
 
@@ -38,20 +49,68 @@ def is_valid_token(value: bytes) -> bool:
 
 
 def ready_line(*, port: int, version: str, pid: int) -> bytes:
-    payload = {"event": "ready", "port": port, "version": version, "pid": pid}
+    payload = {"event": EVENT_READY, "port": port, "version": version, "pid": pid}
     return json.dumps(payload, separators=(",", ":")).encode("ascii") + b"\n"
 
 
-def parse_event(line: bytes) -> str | None:
-    """Devuelve el nombre del evento o `None` si la línea no es un evento válido."""
+def wipe_line(line: bytearray) -> None:
+    """Sobrescribe con ceros una línea recibida (puede llevar un secreto)."""
+    line[:] = bytes(len(line))
+
+
+def parse_message(line: bytes | bytearray) -> dict[str, Any] | None:
+    """Objeto JSON con `"event"` de texto, o `None` si la línea no es un evento válido."""
     try:
         data = json.loads(line)
     except ValueError:
         return None
     if not isinstance(data, dict):
         return None
-    event = data.get("event")
-    return event if isinstance(event, str) else None
+    if not isinstance(data.get("event"), str):
+        data.clear()
+        return None
+    return data
+
+
+def parse_event(line: bytes | bytearray) -> str | None:
+    """Devuelve el nombre del evento o `None` si la línea no es un evento válido."""
+    data = parse_message(line)
+    if data is None:
+        return None
+    event: str = data["event"]
+    data.clear()
+    return event
+
+
+class ProtocolWriter:
+    """Único escritor de stdout: cada evento es una línea JSON completa, escrita de una vez
+    bajo un candado y con `flush`, sin mezclarse con otras (ni con logs, que van a stderr).
+
+    Tras un error de escritura (el núcleo cerró la tubería) queda cerrado y cada intento
+    siguiente lanza `BrokenPipeError` sin tocar la salida.
+    """
+
+    def __init__(self, out: BinaryIO) -> None:
+        self._out = out
+        self._lock = threading.Lock()
+        self._broken = False
+
+    @property
+    def broken(self) -> bool:
+        return self._broken
+
+    def write_line(self, line: bytes | bytearray) -> None:
+        if not line.endswith(b"\n") or line.count(b"\n") != 1:
+            raise ValueError("una línea del protocolo termina en un único salto de línea")
+        with self._lock:
+            if self._broken:
+                raise BrokenPipeError("stdout cerrado")
+            try:
+                self._out.write(line)
+                self._out.flush()
+            except (OSError, ValueError) as exc:
+                self._broken = True
+                raise BrokenPipeError("stdout cerrado") from exc
 
 
 class StdinReader:
@@ -59,20 +118,21 @@ class StdinReader:
 
     Lee con `os.read` sobre el descriptor para no bloquear el lock de `sys.stdin`
     al cerrar el intérprete. Al llegar a EOF (o error de lectura) encola `None`.
-    Una línea más larga que `max_line` se descarta y se entrega como `b""` (inválida).
+    Una línea más larga que `max_line` se descarta y se entrega vacía (inválida).
+    Cada línea es un `bytearray` nuevo: quien la consume la sobrescribe con `wipe_line`.
     """
 
     def __init__(self, fd: int, *, max_line: int = MAX_LINE_BYTES) -> None:
         self._fd = fd
         self._max_line = max_line
-        self._queue: queue.Queue[bytes | None] = queue.Queue()
+        self._queue: queue.Queue[bytearray | None] = queue.Queue()
         self._eof = False
         self._thread = threading.Thread(target=self._run, name="faro-stdin", daemon=True)
 
     def start(self) -> None:
         self._thread.start()
 
-    def get(self, timeout: float | None = None) -> bytes | None:
+    def get(self, timeout: float | None = None) -> bytearray | None:
         """Siguiente línea (sin `\\r\\n`), o `None` en EOF. Lanza `queue.Empty` si vence.
 
         Tras el EOF, todas las llamadas siguientes devuelven `None` al momento: quien lea
@@ -94,21 +154,33 @@ class StdinReader:
                 if not chunk:
                     break
                 buf += chunk
+                del chunk
                 while (index := buf.find(b"\n")) >= 0:
-                    line = bytes(buf[:index]).rstrip(b"\r")
+                    line = buf[:index]
+                    if line.endswith(b"\r"):
+                        del line[-1]
+                    # Ceros antes de descartar: `del` al principio de un bytearray solo
+                    # mueve su inicio y dejaría la línea en la memoria reservada.
+                    buf[: index + 1] = bytes(index + 1)
                     del buf[: index + 1]
                     if discarding or len(line) > self._max_line:
                         discarding = False
-                        self._queue.put(b"")
+                        wipe_line(line)
+                        self._queue.put(bytearray())
                     else:
                         self._queue.put(line)
                 if len(buf) > self._max_line:
+                    wipe_line(buf)
                     buf.clear()
                     discarding = True
         except OSError:
             pass
         if buf and not discarding:
-            self._queue.put(bytes(buf).rstrip(b"\r"))
+            line = bytearray(buf)
+            if line.endswith(b"\r"):
+                del line[-1]
+            self._queue.put(line)
+        wipe_line(buf)
         self._queue.put(None)
 
 
@@ -121,8 +193,9 @@ def read_token(reader: StdinReader, timeout: float) -> bytes | None:
     if line is None:
         return None
     # Algunos escritores (p. ej. StreamWriter de .NET) anteponen un BOM UTF-8.
-    line = line.removeprefix(_UTF8_BOM)
-    return line if is_valid_token(line) else None
+    token = bytes(line.removeprefix(_UTF8_BOM))
+    wipe_line(line)
+    return token if is_valid_token(token) else None
 
 
 @dataclass(slots=True)
@@ -150,7 +223,7 @@ def _missing(reason: str) -> DbKeyLine:
     return DbKeyLine(error_code=DB_KEY_MISSING, reason=reason)
 
 
-def parse_db_key(line: bytes) -> DbKeyLine:
+def parse_db_key(line: bytes | bytearray) -> DbKeyLine:
     """`{"event":"db_key","profile":"<uuid>","key":"<64 hex>"}` o con `"error"` en lugar de
     `"key"`. Cualquier otra forma cuenta como llave ausente (`db.key_missing`)."""
     try:
@@ -190,4 +263,7 @@ def read_db_key(reader: StdinReader, timeout: float) -> DbKeyLine:
         return _missing("timeout")
     if line is None:
         return _missing("eof")
-    return parse_db_key(line)
+    try:
+        return parse_db_key(line)
+    finally:
+        wipe_line(line)

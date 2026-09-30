@@ -3,6 +3,7 @@
 //! El núcleo es el único que conoce el puerto y el token del motor. La interfaz
 //! solo ve [`EngineStatus`] (comando `engine_status` y evento `engine://status`).
 
+pub mod call;
 pub mod client;
 pub mod launcher;
 pub mod protocol;
@@ -89,6 +90,16 @@ impl EngineStatus {
             database_error: None,
         }
     }
+}
+
+/// Conexión con el motor listo, para `engine_call`. Solo existe en estado `ready`.
+///
+/// `generation` identifica el proceso (o la conexión externa) actual: una concesión de
+/// secretos creada para otra generación se rechaza (`engine.not_ready`).
+#[derive(Debug, Clone)]
+pub struct EngineLink {
+    pub client: client::EngineClient,
+    pub generation: u64,
 }
 
 /// Motor externo de desarrollo (ADR 0004): URL ya validada y token.

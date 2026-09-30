@@ -8,10 +8,12 @@ pub mod engine;
 pub mod error;
 pub mod logging;
 pub mod profile;
+pub mod secrets;
 pub mod state;
 #[cfg(test)]
 mod test_logs;
 pub mod vault;
+pub mod wp_plugin;
 
 use std::sync::Arc;
 
@@ -20,9 +22,12 @@ use tauri::{Emitter, Manager};
 use crate::engine::{EngineStatus, EngineSupervisor, StatusSink, SupervisorConfig};
 use crate::logging::LogGuard;
 use crate::profile::ProfileKeys;
+use crate::secrets::audit::AuditQueue;
+use crate::secrets::SecretBroker;
 use crate::state::AppState;
-use crate::vault::store::KeyringStore;
+use crate::vault::store::{KeyringStore, SecretStore};
 use crate::vault::VaultService;
+use crate::wp_plugin::PluginExporter;
 
 /// Arranca la aplicación. Devuelve error solo si Tauri no pudo iniciar.
 pub fn run() -> Result<(), tauri::Error> {
@@ -36,29 +41,37 @@ pub fn run() -> Result<(), tauri::Error> {
             "Faro iniciado"
         );
 
+        let runtime = tauri::async_runtime::handle().inner().clone();
+        // Auditoría del núcleo con búfer (ADR 0010 §4): Bóveda y canal de secretos.
+        let audit = AuditQueue::spawn(&runtime);
         // Antes del motor: si la Bóveda no pudiera crearse, no queda un motor huérfano.
-        let vault = VaultService::system()?;
+        let vault = VaultService::system()?.with_audit(audit.clone());
 
         let data_dir = app.path().app_data_dir()?;
+        let keyring: Arc<dyn SecretStore> = Arc::new(KeyringStore::new());
+        // Concesiones y solicitudes de secretos del motor (ADR 0010 §3).
+        let secrets = Arc::new(SecretBroker::new(Arc::clone(&keyring), &data_dir, audit));
         // Perfil activo (`profiles.json`) y llave de su base en el llavero (ADR 0009 §3).
-        let db_key = Arc::new(ProfileKeys::new(
-            data_dir.clone(),
-            Arc::new(KeyringStore::new()),
-        ));
+        let db_key = Arc::new(ProfileKeys::new(data_dir.clone(), keyring));
         let emitter = app.handle().clone();
         let sink: StatusSink = Arc::new(move |status: &EngineStatus| {
             if emitter.emit(engine::STATUS_EVENT, status).is_err() {
                 tracing::warn!("no se pudo emitir el estado del motor");
             }
         });
-        let runtime = tauri::async_runtime::handle().inner().clone();
         let supervisor = EngineSupervisor::spawn(
             &runtime,
             SupervisorConfig::default(),
             engine::default_mode(data_dir, db_key),
             sink,
+            Arc::clone(&secrets),
         );
-        app.manage(AppState::new(supervisor, vault));
+        app.manage(AppState::new(
+            supervisor,
+            vault,
+            secrets,
+            PluginExporter::system(),
+        ));
         Ok(())
     });
     let app = register_commands(builder).build(tauri::generate_context!())?;
@@ -87,10 +100,12 @@ pub fn register_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri
     builder.invoke_handler(tauri::generate_handler![
         commands::engine::engine_status,
         commands::engine::engine_restart,
+        commands::engine::engine_call,
         commands::vault::vault_list_keys,
         commands::vault::vault_add_key,
         commands::vault::vault_test_key,
         commands::vault::vault_delete_key,
+        commands::wp_plugin::wp_plugin_export,
     ])
 }
 

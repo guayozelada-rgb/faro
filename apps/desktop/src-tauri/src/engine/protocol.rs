@@ -1,15 +1,17 @@
 //! Protocolo núcleo ↔ motor por stdin/stdout (skill `tauri-sidecar-python`, ADR 0004).
 //!
 //! - stdin: primera línea = token de sesión (32 bytes CSPRNG, base64url sin relleno,
-//!   43 caracteres); después, eventos JSON (`{"event":"shutdown"}`).
-//! - stdout: solo eventos JSON del protocolo (`ready`), una línea cada uno.
+//!   43 caracteres); 2.ª = `db_key`; después, eventos JSON (`shutdown`,
+//!   `secret_response`, `audit`; ADR 0010 §1).
+//! - stdout: solo eventos JSON del protocolo (`ready`, `secret_request`), una línea cada uno.
 //!
-//! Nunca se registra el contenido de una línea de stdout ni el token.
+//! Nunca se registra el contenido de una línea de stdout ni el token. Para clasificar una
+//! línea solo se lee `event` (el resto se descarta sin copiarlo): una `secret_request`
+//! puede llevar un secreto y se entrega entera a `secrets::SecretBroker`.
 
 use base64::Engine as _;
 use secrecy::SecretString;
 use serde::Deserialize;
-use serde_json::Value;
 
 use crate::error::AppError;
 
@@ -41,10 +43,18 @@ pub enum StdoutLine {
     Ready(Ready),
     /// `{"event":"ready",...}` con campos inválidos o puerto fuera de rango.
     BadReady,
+    /// `{"event":"secret_request",...}`: la valida `secrets::SecretBroker`.
+    SecretRequest,
     /// JSON con otro `event` (reservado para fases futuras): se ignora.
     OtherEvent,
     /// No es un evento JSON: se ignora sin registrar su contenido.
     Unrecognized,
+}
+
+/// Solo `event`; los demás campos se ignoran sin copiarse.
+#[derive(Deserialize)]
+struct EventOnly {
+    event: String,
 }
 
 #[derive(Deserialize)]
@@ -56,16 +66,19 @@ struct RawReady {
 
 /// Clasifica una línea de stdout. No registra nada: eso lo decide quien llama.
 pub fn parse_stdout_line(line: &str) -> StdoutLine {
-    let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+    let line = line.trim();
+    if !line.starts_with('{') {
         return StdoutLine::Unrecognized;
-    };
-    let Some(event) = value.get("event").and_then(Value::as_str) else {
-        return StdoutLine::Unrecognized;
-    };
-    if event != "ready" {
-        return StdoutLine::OtherEvent;
     }
-    let Ok(raw) = serde_json::from_value::<RawReady>(value) else {
+    let Ok(EventOnly { event }) = serde_json::from_str::<EventOnly>(line) else {
+        return StdoutLine::Unrecognized;
+    };
+    match event.as_str() {
+        "ready" => {}
+        "secret_request" => return StdoutLine::SecretRequest,
+        _ => return StdoutLine::OtherEvent,
+    }
+    let Ok(raw) = serde_json::from_str::<RawReady>(line) else {
         return StdoutLine::BadReady;
     };
     let Some(port) = valid_port(raw.port) else {
@@ -113,6 +126,7 @@ pub fn is_valid_token(value: &str) -> bool {
 mod tests {
     use super::*;
     use secrecy::ExposeSecret;
+    use serde_json::Value;
 
     #[test]
     fn ready_valido() {
@@ -171,7 +185,16 @@ mod tests {
         }
         assert_eq!(
             parse_stdout_line(r#"{"event":"secret_request","id":"x"}"#),
+            StdoutLine::SecretRequest
+        );
+        assert_eq!(
+            parse_stdout_line(r#"{"event":"otro","id":"x"}"#),
             StdoutLine::OtherEvent
+        );
+        // Un arreglo no se interpreta como evento aunque su primer elemento lo parezca.
+        assert_eq!(
+            parse_stdout_line(r#"["ready",1,"x",1]"#),
+            StdoutLine::Unrecognized
         );
     }
 

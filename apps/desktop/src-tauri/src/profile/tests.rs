@@ -550,3 +550,137 @@ fn db_key_keyring_real() {
         std::panic::resume_unwind(panic);
     }
 }
+
+// ---------- fallos de disco y del llavero (cobertura de F1a T8) ----------
+
+/// `MemoryStore` que puede fallar solo en `set` o en `delete`.
+struct PartialStore {
+    inner: MemoryStore,
+    fail_set: bool,
+    fail_delete: bool,
+}
+
+impl SecretStore for PartialStore {
+    fn get(&self, secret_ref: &str) -> Result<Option<SecretString>, AppError> {
+        self.inner.get(secret_ref)
+    }
+    fn set(&self, secret_ref: &str, secret: &SecretString) -> Result<(), AppError> {
+        if self.fail_set {
+            return Err(AppError::vault_keyring_unavailable());
+        }
+        self.inner.set(secret_ref, secret)
+    }
+    fn delete(&self, secret_ref: &str) -> Result<(), AppError> {
+        if self.fail_delete {
+            return Err(AppError::vault_keyring_unavailable());
+        }
+        self.inner.delete(secret_ref)
+    }
+}
+
+fn partial(fail_set: bool, fail_delete: bool) -> Arc<PartialStore> {
+    Arc::new(PartialStore {
+        inner: MemoryStore::new(),
+        fail_set,
+        fail_delete,
+    })
+}
+
+#[test]
+fn mensaje_sin_perfil_conocido() {
+    let message = DbKeyMessage::unavailable();
+    assert_eq!(message.profile_id(), NIL_PROFILE_ID);
+    assert_eq!(message.error_code(), Some(KEYRING_UNAVAILABLE));
+    assert!(!message.has_key());
+    assert_eq!(message.outcome(), KeyOutcome::KeyringUnavailable);
+    assert!(format!("{message:?}").contains(KEYRING_UNAVAILABLE));
+    assert_eq!(line_json(&message)["error"], KEYRING_UNAVAILABLE);
+}
+
+#[test]
+fn carpeta_de_perfiles_ilegible_nunca_genera_llave() {
+    // Sin profiles.json: `profiles` es un archivo → no se puede revisar → no se crea nada.
+    let (dir, store, keys) = setup();
+    std::fs::write(dir.path().join(PROFILES_DIR), b"x").unwrap();
+    let message = keys.prepare();
+    assert_eq!(message.outcome(), KeyOutcome::OrphanData);
+    assert_eq!(message.error_code(), Some(DB_KEY_MISSING));
+    assert!(store.refs().is_empty());
+
+    // Con profiles.json y sin llave: si no se puede comprobar la base, cuenta como que hay datos.
+    let (dir, store, keys) = setup();
+    let first = keys.prepare();
+    let profile = first.profile_id().to_owned();
+    store.delete(&db_key_ref(&profile)).unwrap();
+    std::fs::write(dir.path().join(PROFILES_DIR), b"x").unwrap();
+    let message = keys.prepare();
+    assert_eq!(message.outcome(), KeyOutcome::KeyMissing);
+    assert!(store.refs().is_empty(), "no debe generar otra llave");
+
+    // `backups` ilegible también cuenta como datos.
+    let (dir, store, keys) = setup();
+    let first = keys.prepare();
+    let profile = first.profile_id().to_owned();
+    store.delete(&db_key_ref(&profile)).unwrap();
+    std::fs::create_dir_all(dir.path().join(PROFILES_DIR)).unwrap();
+    std::fs::write(dir.path().join(PROFILES_DIR).join(BACKUPS_DIR), b"x").unwrap();
+    assert_eq!(keys.prepare().outcome(), KeyOutcome::KeyMissing);
+    assert!(store.refs().is_empty());
+}
+
+#[test]
+fn profiles_json_que_no_se_puede_leer_es_profile_unavailable() {
+    let (dir, store, keys) = setup();
+    std::fs::create_dir(dir.path().join(PROFILES_FILE)).unwrap();
+    let message = keys.prepare();
+    assert_eq!(message.outcome(), KeyOutcome::ProfileUnavailable);
+    assert_eq!(message.profile_id(), NIL_PROFILE_ID);
+    assert!(store.refs().is_empty());
+}
+
+#[test]
+fn perfil_adoptado_se_entrega_aunque_no_se_pueda_guardar_profiles_json() {
+    let (dir, store, keys) = setup();
+    let first = keys.prepare();
+    let profile = first.profile_id().to_owned();
+    touch_db(&keys, &profile);
+    std::fs::remove_file(dir.path().join(PROFILES_FILE)).unwrap();
+    // El temporal está ocupado por una carpeta: la escritura atómica falla.
+    std::fs::create_dir(dir.path().join(format!("{PROFILES_FILE}.tmp"))).unwrap();
+    let message = keys.prepare();
+    assert_eq!(message.outcome(), KeyOutcome::Adopted);
+    assert_eq!(key_of(&message), key_of(&first));
+    assert_eq!(store.refs().len(), 1);
+}
+
+#[test]
+fn perfil_nuevo_sin_profiles_json_y_llave_que_no_se_puede_retirar() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = partial(false, true);
+    let keys = ProfileKeys::new(dir.path().to_path_buf(), store.clone());
+    std::fs::create_dir(dir.path().join(format!("{PROFILES_FILE}.tmp"))).unwrap();
+    let message = keys.prepare();
+    assert_eq!(message.outcome(), KeyOutcome::ProfileUnavailable);
+    assert_eq!(message.error_code(), Some(DB_KEY_MISSING));
+    assert!(!dir.path().join(PROFILES_FILE).exists());
+}
+
+#[test]
+fn llave_nueva_que_no_se_puede_guardar_es_keyring_unavailable() {
+    // Perfil existente, sin llave ni datos, y el llavero rechaza `set`.
+    let dir = tempfile::tempdir().unwrap();
+    let profile = new_uuid_v7().unwrap();
+    write_profiles_atomic(
+        dir.path(),
+        &ProfilesFile {
+            version: PROFILES_VERSION,
+            active_profile_id: profile.clone(),
+        },
+    )
+    .unwrap();
+    let keys = ProfileKeys::new(dir.path().to_path_buf(), partial(true, false));
+    let message = keys.prepare();
+    assert_eq!(message.profile_id(), profile);
+    assert_eq!(message.error_code(), Some(KEYRING_UNAVAILABLE));
+    assert_eq!(message.outcome(), KeyOutcome::KeyringUnavailable);
+}

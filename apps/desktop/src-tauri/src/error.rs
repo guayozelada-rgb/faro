@@ -91,6 +91,52 @@ impl AppError {
         )
     }
 
+    pub fn engine_not_ready() -> Self {
+        Self::new(
+            "engine.not_ready",
+            "El motor de Faro todavía no está listo. Espera unos segundos e intenta de nuevo.",
+        )
+    }
+
+    pub fn engine_operation_not_allowed() -> Self {
+        Self::new(
+            "engine.operation_not_allowed",
+            "Esta acción no está permitida. Reinicia Faro; si se repite, escríbenos.",
+        )
+    }
+
+    /// `details.reason`: `path` | `query` | `body` | `body_too_large`.
+    pub fn engine_invalid_request(reason: &'static str) -> Self {
+        Self::new(
+            "engine.invalid_request",
+            "La solicitud no es válida. Intenta de nuevo.",
+        )
+        .with_detail("reason", reason)
+    }
+
+    pub fn engine_timeout() -> Self {
+        Self::new(
+            "engine.timeout",
+            "Faro tardó demasiado en responder. Intenta de nuevo.",
+        )
+    }
+
+    // --- plugin de WordPress (spec F1a §5.4) ---
+
+    pub fn plugin_package_missing() -> Self {
+        Self::new(
+            "plugin.package_missing",
+            "Esta versión de Faro no incluye el plugin de WordPress.",
+        )
+    }
+
+    pub fn plugin_export_failed() -> Self {
+        Self::new(
+            "plugin.export_failed",
+            "No pudimos guardar el plugin en tu carpeta Descargas. Revisa que haya espacio e intenta de nuevo.",
+        )
+    }
+
     // --- db (informados por el motor en `/health`, spec F1a §5.6) ---
 
     pub fn db_key_missing() -> Self {
@@ -195,6 +241,22 @@ impl AppError {
         )
     }
 
+    /// Canal de secretos (ADR 0010 §3): la referencia no cumple la gramática.
+    pub fn vault_invalid_ref() -> Self {
+        Self::new(
+            "vault.invalid_ref",
+            "Faro no pudo usar una credencial guardada. Reinicia Faro e intenta de nuevo.",
+        )
+    }
+
+    /// Canal de secretos (ADR 0010 §3): la operación en curso no tiene esa concesión.
+    pub fn vault_secret_not_allowed() -> Self {
+        Self::new(
+            "vault.secret_not_allowed",
+            "Faro no pudo usar una credencial guardada. Reinicia Faro e intenta de nuevo.",
+        )
+    }
+
     pub fn vault_provider_unreachable() -> Self {
         Self::new(
             "vault.provider_unreachable",
@@ -229,6 +291,70 @@ impl serde::Serialize for AppError {
             st.serialize_field("details", &Map::new())?;
         }
         st.end()
+    }
+}
+
+/// Error con la forma común `{code, message, details}` cuyo `code` no es fijo: los que el
+/// motor devuelve y `engine_call` reenvía **sin cambios** (ADR 0002, spec F1a §4.3), o un
+/// [`AppError`] del núcleo.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, thiserror::Error)]
+#[error("{code}")]
+pub struct ErrorData {
+    pub code: String,
+    pub message: String,
+    /// Siempre un objeto JSON.
+    pub details: Value,
+}
+
+impl ErrorData {
+    /// Valida un error del motor: objeto con exactamente `code` (`dominio.motivo`, en
+    /// minúsculas, ≤ 64), `message` (texto ≤ 1000) y `details` (objeto; también se acepta
+    /// ausente, como en `ErrorOut`). Cualquier otra forma → `None`.
+    pub fn from_engine(value: Value) -> Option<Self> {
+        let Value::Object(mut map) = value else {
+            return None;
+        };
+        let details = map
+            .remove("details")
+            .unwrap_or_else(|| Value::Object(Map::new()));
+        let message = map.remove("message")?;
+        let code = map.remove("code")?;
+        if !map.is_empty() || !details.is_object() {
+            return None;
+        }
+        let (Value::String(code), Value::String(message)) = (code, message) else {
+            return None;
+        };
+        let code_ok = code.len() <= 64
+            && code.split_once('.').is_some_and(|(domain, reason)| {
+                let part = |s: &str| {
+                    !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+                };
+                part(domain) && part(reason)
+            });
+        if !code_ok || message.chars().count() > 1000 {
+            return None;
+        }
+        Some(Self {
+            code,
+            message,
+            details,
+        })
+    }
+}
+
+impl From<AppError> for ErrorData {
+    fn from(err: AppError) -> Self {
+        let details = if err.details.is_object() {
+            err.details
+        } else {
+            Value::Object(Map::new())
+        };
+        Self {
+            code: err.code.to_owned(),
+            message: err.message,
+            details,
+        }
     }
 }
 
@@ -297,6 +423,53 @@ mod tests {
     }
 
     #[test]
+    fn error_del_motor_valido_se_conserva_sin_cambios() {
+        let raw = json!({
+            "code": "site.pairing_code_invalid",
+            "message": "El código no coincide.",
+            "details": {"attempts_left": 3}
+        });
+        let err = ErrorData::from_engine(raw.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&err).unwrap(), raw);
+        // `details` ausente → objeto vacío.
+        let err =
+            ErrorData::from_engine(json!({"code": "site.not_found", "message": "x"})).unwrap();
+        assert_eq!(err.details, json!({}));
+        assert_eq!(err.to_string(), "site.not_found");
+    }
+
+    #[test]
+    fn error_del_motor_con_otra_forma_se_rechaza() {
+        for raw in [
+            json!(null),
+            json!("site.not_found"),
+            json!({"code": "site.not_found"}),
+            json!({"code": 5, "message": "x"}),
+            json!({"code": "site.not_found", "message": 5}),
+            json!({"code": "site.not_found", "message": "x", "details": []}),
+            json!({"code": "site.not_found", "message": "x", "details": {}, "extra": 1}),
+            json!({"code": "sin_punto", "message": "x"}),
+            json!({"code": "Site.Mayus", "message": "x"}),
+            json!({"code": ".motivo", "message": "x"}),
+            json!({"code": "a.b.c", "message": "x"}),
+            json!({"code": format!("a.{}", "b".repeat(70)), "message": "x"}),
+            json!({"code": "a.b", "message": "x".repeat(1001)}),
+        ] {
+            assert!(ErrorData::from_engine(raw.clone()).is_none(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn app_error_se_convierte_a_error_data() {
+        let data = ErrorData::from(AppError::engine_invalid_request("path"));
+        assert_eq!(data.code, "engine.invalid_request");
+        assert_eq!(data.details, json!({"reason": "path"}));
+        let mut odd = AppError::engine_timeout();
+        odd.details = Value::Null;
+        assert_eq!(ErrorData::from(odd).details, json!({}));
+    }
+
+    #[test]
     fn display_muestra_solo_el_codigo() {
         assert_eq!(
             AppError::vault_not_found().to_string(),
@@ -328,11 +501,19 @@ mod tests {
             AppError::db_migration_tampered(),
             AppError::db_too_new(),
             AppError::db_unavailable(),
+            AppError::engine_not_ready(),
+            AppError::engine_operation_not_allowed(),
+            AppError::engine_invalid_request("path"),
+            AppError::engine_timeout(),
+            AppError::vault_invalid_ref(),
+            AppError::vault_secret_not_allowed(),
+            AppError::plugin_package_missing(),
+            AppError::plugin_export_failed(),
         ];
         for err in all {
             let (domain, reason) = err.code.split_once('.').unwrap();
             assert!(
-                ["internal", "engine", "vault", "db"].contains(&domain),
+                ["internal", "engine", "vault", "db", "plugin"].contains(&domain),
                 "{}",
                 err.code
             );

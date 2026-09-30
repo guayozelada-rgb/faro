@@ -1,7 +1,15 @@
 """Logs estructurados en JSON a stderr (stdout está reservado al protocolo).
 
 Prohibido registrar cabeceras, tokens, claves o cuerpos de peticiones. Como defensa
-adicional, `drop_sensitive_keys` elimina del evento cualquier clave con nombre sensible.
+adicional (ADR 0013):
+
+1. `drop_sensitive_keys` elimina del evento los campos de primer nivel con nombre
+   sensible (`core.redact.is_sensitive_name`).
+2. `redact_event` redacta por nombre y por valor lo que quede, también anidado y en el
+   texto de las excepciones.
+3. `redact_rendered` aplica los patrones de valor a la línea JSON final.
+
+Los tres pasos se aplican igual a `structlog` y al `logging` estándar (uvicorn).
 """
 
 from __future__ import annotations
@@ -17,22 +25,15 @@ import structlog
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from faro_engine.core.ids import new_id
-
-SENSITIVE_KEYS: Final = frozenset(
-    {
-        "authorization",
-        "headers",
-        "token",
-        "secret",
-        "cookie",
-        "password",
-        "api_key",
-        # Llave de la base del perfil (ADR 0009/0010): nunca debe llegar a un log.
-        "key",
-        "db_key",
-        "key_hex",
-    },
+from faro_engine.core.redact import (
+    SENSITIVE_NAMES,
+    is_sensitive_name,
+    redact_event,
+    redact_rendered,
 )
+
+# Nombres exactos que se eliminan (además de los sufijos de `is_sensitive_name`).
+SENSITIVE_KEYS: Final = SENSITIVE_NAMES
 
 log = structlog.get_logger(__name__)
 
@@ -40,7 +41,7 @@ log = structlog.get_logger(__name__)
 def drop_sensitive_keys(
     _logger: Any, _method: str, event_dict: MutableMapping[str, Any]
 ) -> MutableMapping[str, Any]:
-    for key in [k for k in event_dict if k.lower() in SENSITIVE_KEYS]:
+    for key in [k for k in event_dict if is_sensitive_name(k)]:
         del event_dict[key]
     return event_dict
 
@@ -68,7 +69,9 @@ def configure_logging(level: int = logging.INFO, stream: TextIO | None = None) -
         processors=[
             *shared,
             structlog.processors.format_exc_info,
+            redact_event,
             structlog.processors.JSONRenderer(),
+            redact_rendered,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(level),
         logger_factory=structlog.WriteLoggerFactory(file=out),
@@ -82,7 +85,9 @@ def configure_logging(level: int = logging.INFO, stream: TextIO | None = None) -
             processors=[
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,
                 structlog.processors.format_exc_info,
+                redact_event,
                 structlog.processors.JSONRenderer(),
+                redact_rendered,
             ],
         ),
     )
