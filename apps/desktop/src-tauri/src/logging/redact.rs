@@ -80,6 +80,8 @@ const HEX_KEY_LEN: usize = 64;
 struct Patterns {
     /// Patrones que se sustituyen enteros por `[redactado]`, en este orden.
     whole: Vec<Regex>,
+    /// Claves `sk-…` (OpenAI, Anthropic); el grupo 1 es el borde que se conserva.
+    sk_key: Regex,
     /// Secuencias máximas de caracteres base64url (se redactan las de 43).
     base64url_run: Regex,
     /// Secuencias máximas de caracteres de palabra ASCII (se redactan las de 64 hex).
@@ -94,8 +96,6 @@ impl Patterns {
             whole: vec![
                 // JWT antes que el resto: sus segmentos podrían parecer otros patrones.
                 Regex::new(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")?,
-                // Con límite de palabra: no redacta `task-queue-…` ni `disk-…`.
-                Regex::new(r"\bsk-[A-Za-z0-9_-]{16,}")?,
                 Regex::new(r"AIza[0-9A-Za-z_-]{35}")?,
                 // ADR 0013: `Bearer\s+\S+`. Sin comillas ni barra invertida en el valor
                 // para no romper la línea JSON (un token Bearer nunca las lleva).
@@ -103,6 +103,9 @@ impl Patterns {
                 // `Authorization: Basic <base64 de usuario:contraseña>`.
                 Regex::new(r"Basic\s+[A-Za-z0-9+/_-]{8,}={0,2}")?,
             ],
+            // Con límite de palabra (no redacta `task-queue-…` ni `disk-…`) o justo tras
+            // un escape textual `\n`, `\r`, `\t`. El grupo 1 (el borde) se conserva.
+            sk_key: Regex::new(r"(^|[^A-Za-z0-9_]|\\[nrt])sk-[A-Za-z0-9_-]{16,}")?,
             base64url_run: Regex::new(r"[A-Za-z0-9_-]+")?,
             word_run: Regex::new(r"[A-Za-z0-9_]+")?,
             name_prefix: Regex::new(r#"(?:^|[^A-Za-z0-9_.-])"?([A-Za-z0-9_-]+)"?\s*[=:]\s*"#)?,
@@ -112,17 +115,46 @@ impl Patterns {
 
 static PATTERNS: LazyLock<Option<Patterns>> = LazyLock::new(|| Patterns::compile().ok());
 
+/// Minúsculas y sin `_` ni `-`, para comparar `secret_ref`, `secretRef` y `secret-ref`.
+fn normalized_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| *c != '_' && *c != '-')
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
 /// ¿Un campo con este nombre puede llevar un secreto?
+///
+/// Sensibles: la lista exacta, los sufijos con separador, `…token` y `…secret` sin
+/// separador (`accessToken`, `clientSecret`), `…Key` con límite camelCase (`apiKey`,
+/// pero no `monkey` ni `hotkey`) y cualquier nombre con `password`. Las excepciones de
+/// `NON_SENSITIVE_NAMES` valen en cualquier forma (`secret_ref`, `secretRef`).
 pub fn is_sensitive_name(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    if NON_SENSITIVE_NAMES.contains(&lower.as_str()) {
+    let normalized = normalized_name(name);
+    if NON_SENSITIVE_NAMES
+        .iter()
+        .any(|exception| normalized_name(exception) == normalized)
+    {
         return false;
     }
+    let lower = name.to_ascii_lowercase();
     SENSITIVE_NAMES.contains(&lower.as_str())
         || SENSITIVE_SUFFIXES
             .iter()
             .any(|suffix| lower.ends_with(suffix))
+        || lower.ends_with("token")
+        || lower.ends_with("secret")
+        || is_camel_case_key(name)
         || lower.contains("password")
+}
+
+/// `…Key` con una minúscula o un dígito justo antes (`apiKey`, `dbKey`, `x2Key`).
+fn is_camel_case_key(name: &str) -> bool {
+    name.strip_suffix("Key").is_some_and(|head| {
+        head.chars()
+            .last()
+            .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+    })
 }
 
 /// Redacta una o varias líneas completas de registro.
@@ -239,6 +271,12 @@ fn redact_values(patterns: &Patterns, text: &str) -> String {
     for pattern in &patterns.whole {
         out = pattern.replace_all(&out, REDACTED).into_owned();
     }
+    out = patterns
+        .sk_key
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            format!("{}{REDACTED}", caps.get(1).map_or("", |m| m.as_str()))
+        })
+        .into_owned();
     out = redact_hex_keys(patterns, &out);
     redact_base64url_tokens(patterns, &out)
 }
@@ -261,8 +299,20 @@ fn redact_named_values(patterns: &Patterns, text: &str) -> String {
             break;
         };
         let value_start = whole.end();
-        let value_end = value_start + value_len(&text[value_start..]);
-        if is_sensitive_name(name.as_str()) && value_end > value_start {
+        // `value_len` solo con nombre sensible: recorrerlo con cada nombre sería
+        // cuadrático en líneas con muchos `{` sin cerrar.
+        let value_end = if is_sensitive_name(name.as_str()) {
+            let rest = &text[value_start..];
+            let len = if name.as_str().eq_ignore_ascii_case("authorization") {
+                authorization_len(rest)
+            } else {
+                value_len(rest)
+            };
+            value_start + len
+        } else {
+            value_start
+        };
+        if value_end > value_start {
             out.push_str(&text[copied..value_start]);
             if text[value_start..].starts_with('"') {
                 out.push('"');
@@ -285,56 +335,95 @@ fn redact_named_values(patterns: &Patterns, text: &str) -> String {
     out
 }
 
+/// Valor de `authorization`: entre comillas, o hasta el final de la línea o del texto
+/// entre comillas que lo contiene (cubre `Token x`, `Digest …` y esquemas raros).
+fn authorization_len(rest: &str) -> usize {
+    let bytes = rest.as_bytes();
+    if bytes.first() == Some(&b'"') {
+        return quoted_len(bytes);
+    }
+    match bytes.iter().position(|b| matches!(b, b'"' | b'\n' | b'\r')) {
+        // `\"` de un texto escapado: se corta antes de la barra.
+        Some(i) if i > 0 && bytes[i] == b'"' && bytes[i - 1] == b'\\' => i - 1,
+        Some(i) => i,
+        None => bytes.len(),
+    }
+}
+
 /// Longitud en bytes del valor que empieza al principio de `rest`.
 fn value_len(rest: &str) -> usize {
     let bytes = rest.as_bytes();
     match bytes.first() {
         None => 0,
-        Some(b'"') => {
-            let mut escaped = false;
-            for (i, &b) in bytes.iter().enumerate().skip(1) {
-                match b {
-                    _ if escaped => escaped = false,
-                    b'\\' => escaped = true,
-                    b'"' => return i + 1,
-                    _ => {}
-                }
+        Some(b'"') => quoted_len(bytes),
+        Some(b'{' | b'[' | b'(') => balanced_len(bytes),
+        Some(_) => {
+            // `Some("…")`, `String("…")`, `Tipo { … }` (Debug): identificador y luego
+            // `(` o `{`, con o sin espacio → hasta el cierre equilibrado.
+            let ident = bytes
+                .iter()
+                .position(|b| !(b.is_ascii_alphanumeric() || *b == b'_' || *b == b':'))
+                .unwrap_or(bytes.len());
+            let after = ident
+                + bytes[ident..]
+                    .iter()
+                    .position(|b| *b != b' ')
+                    .unwrap_or(bytes.len() - ident);
+            if ident > 0 && matches!(bytes.get(after), Some(b'(' | b'{')) {
+                return after + balanced_len(&bytes[after..]);
             }
-            bytes.len()
+            bytes
+                .iter()
+                .position(|b| b.is_ascii_whitespace() || b",;}])\"".contains(b))
+                .unwrap_or(bytes.len())
         }
-        Some(b'{' | b'[') => {
-            let mut depth = 0usize;
-            let mut in_string = false;
-            let mut escaped = false;
-            for (i, &b) in bytes.iter().enumerate() {
-                if in_string {
-                    match b {
-                        _ if escaped => escaped = false,
-                        b'\\' => escaped = true,
-                        b'"' => in_string = false,
-                        _ => {}
-                    }
-                    continue;
-                }
-                match b {
-                    b'"' => in_string = true,
-                    b'{' | b'[' => depth += 1,
-                    b'}' | b']' => {
-                        depth = depth.saturating_sub(1);
-                        if depth == 0 {
-                            return i + 1;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            bytes.len()
-        }
-        Some(_) => bytes
-            .iter()
-            .position(|b| b.is_ascii_whitespace() || b",;}])\"".contains(b))
-            .unwrap_or(bytes.len()),
     }
+}
+
+/// Texto entre comillas que empieza en `bytes[0]`, hasta la comilla de cierre no
+/// escapada (o el final).
+fn quoted_len(bytes: &[u8]) -> usize {
+    let mut escaped = false;
+    for (i, &b) in bytes.iter().enumerate().skip(1) {
+        match b {
+            _ if escaped => escaped = false,
+            b'\\' => escaped = true,
+            b'"' => return i + 1,
+            _ => {}
+        }
+    }
+    bytes.len()
+}
+
+/// Desde un `{`, `[` o `(` en `bytes[0]` hasta su cierre equilibrado (respetando el
+/// texto entre comillas) o el final.
+fn balanced_len(bytes: &[u8]) -> usize {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_string {
+            match b {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' | b'[' | b'(' => depth += 1,
+            b'}' | b']' | b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    bytes.len()
 }
 
 /// `\b[0-9a-fA-F]{64}\b`: una secuencia máxima de caracteres de palabra que sea
@@ -681,5 +770,112 @@ mod tests {
         }
         let out = redact(&format!("clave:{}", fake_openai()));
         assert!(!out.contains(&fake_openai()), "{out}");
+    }
+
+    /// N1: valores `Debug` con constructor (`Some(…)`, `String(…)`, `Tipo { … }`) y
+    /// `authorization` con cualquier esquema.
+    #[test]
+    fn valores_debug_con_constructor_se_redactan_enteros() {
+        let out = redact(r#"cfg token: Some("s1-ficticio") listo"#);
+        assert_eq!(out, format!("cfg token: {REDACTED} listo"));
+        let out = redact(r#"Object {"token": String("s2-ficticio"), "op": String("get")}"#);
+        assert!(!out.contains("s2-ficticio"), "{out}");
+        assert!(out.contains(r#""op": String("get")"#), "{out}");
+        let out = redact(r#"Cfg { token: Some("s3-ficticio"), op: "get" }"#);
+        assert!(!out.contains("s3-ficticio"), "{out}");
+        assert!(out.contains(r#"op: "get""#), "{out}");
+        let out = redact(r#"estado secret: Datos { a: Some("s4-ficticio") } fin"#);
+        assert_eq!(out, format!("estado secret: {REDACTED} fin"));
+        let out = redact(r#"api_key: Some ("s5-ficticio")"#);
+        assert!(!out.contains("s5-ficticio"), "{out}");
+        // Dentro del archivo JSON (campo registrado con `?`).
+        let line = r#"{"fields":{"cfg":"Cfg { token: Some(\"s6-ficticio\") }","otro":"x"}}"#;
+        let out = redact(line);
+        let value: Value = serde_json::from_str(&out).unwrap();
+        assert!(!out.contains("s6-ficticio"), "{out}");
+        assert_eq!(value["fields"]["otro"], "x");
+        // `authorization` con un esquema cualquiera: hasta el final de la línea.
+        for header in [
+            "Authorization: Token t7-ficticio",
+            "authorization=Digest a=1, b=2",
+        ] {
+            let out = redact(header);
+            assert!(
+                !out.contains("t7-ficticio") && !out.contains("a=1"),
+                "{out}"
+            );
+        }
+        // …o hasta el final del texto entre comillas que lo contiene.
+        let out = redact(r#"msg="authorization: Token t8-ficticio" otro=1"#);
+        assert!(!out.contains("t8-ficticio"), "{out}");
+        assert!(out.ends_with(r#"" otro=1"#), "{out}");
+    }
+
+    /// N2: nombres camelCase.
+    #[test]
+    fn nombres_camel_case_sensibles() {
+        for name in [
+            "apiKey",
+            "accessToken",
+            "refreshToken",
+            "clientSecret",
+            "developerToken",
+            "sessionToken",
+            "dbKey",
+            "csrftoken",
+        ] {
+            assert!(is_sensitive_name(name), "{name}");
+        }
+        for name in [
+            "monkey",
+            "hotkey",
+            "secretRef",
+            "secret-ref",
+            "publicKey",
+            "cacheKey",
+            "idempotencyKey",
+            "tokens",
+            "max_tokens",
+        ] {
+            assert!(!is_sensitive_name(name), "{name}");
+        }
+        // Ninguna excepción es sensible en ninguna de sus formas.
+        for exception in NON_SENSITIVE_NAMES {
+            assert!(!is_sensitive_name(exception), "{exception}");
+            assert!(!is_sensitive_name(&exception.to_uppercase()), "{exception}");
+        }
+        let line = r#"{"fields":{"apiKey":"k1","sessionToken":"k2","monkey":"banana"}}"#;
+        let value: Value = serde_json::from_str(&redact(line)).unwrap();
+        assert_eq!(value["fields"]["apiKey"], REDACTED);
+        assert_eq!(value["fields"]["sessionToken"], REDACTED);
+        assert_eq!(value["fields"]["monkey"], "banana");
+    }
+
+    /// N3: `sk-…` justo tras un escape textual.
+    #[test]
+    fn sk_tras_escape_textual() {
+        let key = fake_openai();
+        for escape in [r"\n", r"\r", r"\t"] {
+            let out = redact(&format!("linea{escape}{key} fin"));
+            assert!(!out.contains(&key), "{out}");
+            assert_eq!(out, format!("linea{escape}{REDACTED} fin"));
+        }
+    }
+
+    /// N4: sin coste cuadrático con muchos `{` sin cerrar.
+    #[test]
+    fn linea_larga_con_llaves_sin_cerrar_es_rapida() {
+        let non_sensitive = "a:{".repeat(64 * 1024 / 3);
+        let sensitive = "token:{a:{".repeat(64 * 1024 / 10);
+        for line in [non_sensitive, sensitive] {
+            let started = std::time::Instant::now();
+            let out = redact(&line);
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < std::time::Duration::from_secs(1),
+                "tardó {elapsed:?}"
+            );
+            assert!(!out.is_empty());
+        }
     }
 }
