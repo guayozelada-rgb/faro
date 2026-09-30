@@ -171,9 +171,148 @@ class Test_Faro_Pairing extends Faro_Test_Case {
 	public function test_https_site_outside_local_can_pair(): void {
 		Faro_Pairing::set_environment_type( 'production' );
 		$this->force_scheme( 'https' );
-		$code = Faro_Pairing::create_code();
+		$_SERVER['HTTPS'] = 'on';
+		$code             = Faro_Pairing::create_code();
 
 		$this->assertSame( 200, $this->pair_request( $this->pair_body( $code ) )->get_status() );
+	}
+
+	public function test_https_site_but_request_not_over_https_cannot_pair(): void {
+		Faro_Pairing::set_environment_type( 'production' );
+		$this->force_scheme( 'https' );
+		$_SERVER['HTTP_X_FORWARDED_PROTO'] = 'https';
+		$code                              = Faro_Pairing::create_code();
+
+		$response = $this->pair_request( $this->pair_body( $code ) );
+		unset( $_SERVER['HTTP_X_FORWARDED_PROTO'] );
+
+		$this->assertSame( 403, $response->get_status(), 'is_ssl() es obligatorio fuera de local; X-Forwarded-Proto no se confía.' );
+		$this->assertSame( 'wp.insecure_site', $this->error_code( $response ) );
+		$this->assertIsArray( Faro_Pairing::get_pending(), 'El código no se consume.' );
+	}
+
+	public function test_requests_without_pending_code_count_for_ip_limit(): void {
+		for ( $i = 0; $i < 10; $i++ ) {
+			$response = $this->pair_request( $this->pair_body( '123456' ) );
+			$this->assertSame( 410, $response->get_status() );
+		}
+
+		$code     = Faro_Pairing::create_code();
+		$response = $this->pair_request( $this->pair_body( $code ) );
+
+		$this->assertSame( 429, $response->get_status() );
+		$this->assertSame( 'wp.rate_limited', $this->error_code( $response ) );
+	}
+
+	public function test_ip_failures_are_counted_exactly(): void {
+		Faro_Pairing::record_ip_failure();
+		Faro_Pairing::record_ip_failure();
+
+		$state = get_transient( Faro_Pairing::IP_TRANSIENT_PREFIX . hash( 'sha256', '203.0.113.10' ) );
+		$this->assertIsArray( $state );
+		$this->assertSame( 2, $state['count'] );
+	}
+
+	/**
+	 * Estado del código con un intento menos, serializado como en la base.
+	 *
+	 * @param string $raw Valor guardado.
+	 * @return string
+	 */
+	private function decremented( string $raw ): string {
+		$pending = maybe_unserialize( $raw );
+		--$pending['attempts_left'];
+
+		return maybe_serialize( $pending );
+	}
+
+	public function test_race_stale_write_after_redeem_does_not_revive_code(): void {
+		$code  = Faro_Pairing::create_code();
+		$stale = (string) Faro_Pairing::read_raw();
+
+		$this->assertSame( 200, $this->pair_request( $this->pair_body( $code ) )->get_status() );
+
+		// Una petición fallida que leyó antes del canje intenta escribir su descuento tarde.
+		$this->assertFalse( Faro_Pairing::compare_and_swap( $stale, $this->decremented( $stale ) ) );
+		$this->assertNull( Faro_Pairing::read_raw(), 'El código canjeado no revive.' );
+		$this->assertSame( 410, $this->pair_request( $this->pair_body( $code ) )->get_status() );
+	}
+
+	public function test_race_two_decrements_from_same_read_count_both(): void {
+		Faro_Pairing::create_code();
+		$read = (string) Faro_Pairing::read_raw();
+
+		$this->assertTrue( Faro_Pairing::compare_and_swap( $read, $this->decremented( $read ) ) );
+		$this->assertFalse( Faro_Pairing::compare_and_swap( $read, $this->decremented( $read ) ), 'La segunda escritura con la misma lectura pierde.' );
+		$this->assertSame( 4, Faro_Pairing::get_pending()['attempts_left'] ?? null );
+
+		$this->assertSame( 403, $this->pair_request( $this->pair_body( $this->wrong_code() ) )->get_status() );
+		$this->assertSame( 3, Faro_Pairing::get_pending()['attempts_left'] ?? null );
+	}
+
+	public function test_race_concurrent_attempt_during_redeem_is_not_lost(): void {
+		Faro_Pairing::create_code();
+		$this->inject_before_pairing_update(
+			static function (): void {
+				$raw     = (string) Faro_Pairing::read_raw();
+				$pending = maybe_unserialize( $raw );
+				--$pending['attempts_left'];
+				Faro_Pairing::compare_and_swap( $raw, maybe_serialize( $pending ) );
+			}
+		);
+
+		$response = $this->pair_request( $this->pair_body( $this->wrong_code() ) );
+
+		$this->assertSame( 403, $response->get_status() );
+		$this->assertSame( 3, $response->get_data()['data']['attempts_left'], 'Se cuentan el intento simultáneo y el propio.' );
+		$this->assertSame( 3, Faro_Pairing::get_pending()['attempts_left'] ?? null );
+	}
+
+	public function test_race_code_redeemed_by_another_request_during_attempt(): void {
+		$code = Faro_Pairing::create_code();
+		$this->inject_before_pairing_update(
+			static function (): void {
+				delete_option( Faro_Pairing::OPTION ); // Otra petición canjeó el código.
+			}
+		);
+
+		$response = $this->pair_request( $this->pair_body( $code ) );
+
+		$this->assertSame( 410, $response->get_status(), 'Solo gana una petición.' );
+		$this->assertNull( Faro_Pairing::read_raw() );
+		$this->assertNull( Faro_Connection::get() );
+	}
+
+	/**
+	 * Código incorrecto para el código pendiente.
+	 *
+	 * @return string
+	 */
+	private function wrong_code(): string {
+		$pending = Faro_Pairing::get_pending();
+		$this->assertIsArray( $pending );
+
+		return hash_equals( $pending['code_hash'], Faro_Pairing::hash_code( '000000' ) ) ? '111111' : '000000';
+	}
+
+	/**
+	 * Ejecuta una acción justo antes del primer UPDATE de faro_pairing (simula otra petición simultánea).
+	 *
+	 * @param callable $action Acción.
+	 * @return void
+	 */
+	private function inject_before_pairing_update( callable $action ): void {
+		$done = false;
+		add_filter(
+			'query',
+			static function ( $query ) use ( &$done, $action ) {
+				if ( ! $done && is_string( $query ) && str_starts_with( ltrim( $query ), 'UPDATE' ) && str_contains( $query, "'faro_pairing'" ) ) {
+					$done = true;
+					$action();
+				}
+				return $query;
+			}
+		);
 	}
 
 	public function test_invalid_input_is_rejected_after_authorization(): void {

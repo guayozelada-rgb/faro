@@ -25,11 +25,15 @@ final class Faro_Clock {
 	 * @return int
 	 */
 	public static function now(): int {
-		return self::$frozen ?? time();
+		if ( null !== self::$frozen && defined( 'FARO_TESTING' ) && true === constant( 'FARO_TESTING' ) ) {
+			return self::$frozen;
+		}
+
+		return time();
 	}
 
 	/**
-	 * Fija la hora (solo pruebas). Con null vuelve a la hora real.
+	 * Fija la hora. Solo para pruebas: sin la constante FARO_TESTING no tiene efecto. Con null vuelve a la hora real.
 	 *
 	 * @param int|null $timestamp Hora Unix o null.
 	 * @return void

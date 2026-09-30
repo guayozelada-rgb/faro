@@ -27,13 +27,17 @@ Faro es una app de escritorio (Windows y macOS) que te ayuda a atraer más clien
 3. Ve a Ajustes → Faro y pulsa Generar código de conexión.
 4. Abre Faro en tu computadora, ve a Configuración → Sitios conectados y escribe la dirección de tu sitio y el código.
 
-Tu sitio debe usar HTTPS.
+Tu sitio debe usar HTTPS, y WordPress debe detectar que la petición llega por HTTPS. Si tu hosting usa un proxy o CDN que termina HTTPS antes de llegar a WordPress, configura WordPress para que lo detecte (por ejemplo, con la opción de tu hosting o en wp-config.php); Faro no confía en la cabecera X-Forwarded-Proto por su cuenta.
 
 == Frequently Asked Questions ==
 
 = ¿Faro guarda mi contraseña? =
 
 No. Faro nunca te pide tu contraseña de WordPress.
+
+= ¿Qué pasa si mi sitio está detrás de un CDN o proxy? =
+
+El límite de intentos de conexión se cuenta por dirección IP, y Faro usa la dirección que recibe WordPress (no confía en X-Forwarded-For, que cualquiera puede falsificar). Detrás de un CDN o proxy, todas las peticiones pueden llegar con la IP del proxy: entonces el límite es compartido y, si alguien hace muchos intentos, tendrás que esperar 15 minutos para conectar Faro.
 
 = ¿Qué pasa si cambian las claves de seguridad de WordPress? =
 
@@ -43,10 +47,11 @@ La conexión deja de funcionar. Genera un código nuevo en Ajustes → Faro y es
 
 * El plugin no hace peticiones a otros servidores ni envía datos por su cuenta: solo responde a las peticiones firmadas de la app Faro que tú conectaste.
 * No usa cookies ni rastreo.
-* Guarda en tu base de datos una conexión (opción faro_connection) con un identificador, un resumen (hash) de la credencial, un secreto cifrado con las claves de seguridad de tu WordPress, un identificador aleatorio de la app, la versión de la app y las fechas de conexión y de última lectura.
+* Guarda en tu base de datos una conexión (opción faro_connection) con un identificador, un resumen (hash) de la credencial, un secreto cifrado con las claves de seguridad de tu WordPress (AUTH_KEY y AUTH_SALT), un identificador aleatorio de la app, la versión de la app y las fechas de conexión y de última lectura.
 * Mientras generas un código guarda su resumen (opción faro_pairing) durante 10 minutos, y guarda datos temporales para evitar repeticiones y limitar intentos (transients faro_*). Del límite de intentos solo guarda un resumen (hash) de la dirección IP, durante 15 minutos.
 * La app Faro lee títulos, direcciones, slugs y fechas de modificación de tus páginas, entradas y productos publicados, y datos generales del sitio (nombre, dirección, versiones de WordPress y WooCommerce, número de páginas, entradas y productos, y si usas Yoast SEO o Rank Math). No lee pedidos, clientes ni otros datos personales.
-* Al borrar el plugin se eliminan todas sus opciones y datos temporales.
+* Si AUTH_KEY y AUTH_SALT están definidas en wp-config.php, una copia solo de la base de datos no basta para usar la conexión con Faro. Si no lo están, WordPress guarda esas claves en la propia base de datos y una copia de la base sí bastaría; la pantalla Ajustes → Faro te avisa en ese caso.
+* Al borrar el plugin se eliminan sus opciones y datos temporales (también en cada sitio de una red multisitio).
 
 == Changelog ==
 

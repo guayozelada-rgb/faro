@@ -43,6 +43,8 @@ abstract class Faro_Test_Case extends WP_UnitTestCase {
 		Faro_Pairing::set_environment_type( null );
 		Faro_Admin::reset();
 		remove_all_filters( 'salt' );
+		remove_all_filters( 'query' );
+		unset( $_SERVER['HTTPS'] );
 		$_POST    = array();
 		$_REQUEST = array();
 		parent::tear_down();

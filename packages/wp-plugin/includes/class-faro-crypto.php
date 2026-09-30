@@ -98,6 +98,28 @@ final class Faro_Crypto {
 	}
 
 	/**
+	 * Indica si AUTH_KEY y AUTH_SALT vienen de constantes propias de wp-config.php.
+	 * Si no, wp_salt( 'auth' ) se genera y guarda en la base de datos, y un volcado de la base
+	 * sí bastaría para descifrar el secreto HMAC.
+	 *
+	 * @return bool
+	 */
+	public static function salts_from_config(): bool {
+		return self::is_configured_salt( defined( 'AUTH_KEY' ) ? constant( 'AUTH_KEY' ) : null )
+			&& self::is_configured_salt( defined( 'AUTH_SALT' ) ? constant( 'AUTH_SALT' ) : null );
+	}
+
+	/**
+	 * Indica si un valor de salt está definido y no es el texto por defecto de wp-config-sample.php.
+	 *
+	 * @param mixed $value Valor de la constante, o null si no está definida.
+	 * @return bool
+	 */
+	public static function is_configured_salt( $value ): bool {
+		return is_string( $value ) && '' !== trim( $value ) && 'put your unique phrase here' !== $value;
+	}
+
+	/**
 	 * Llave de 32 bytes derivada de wp_salt( 'auth' ).
 	 *
 	 * @return string

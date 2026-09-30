@@ -14,6 +14,8 @@ if ( false === $faro_tests_dir || '' === $faro_tests_dir ) {
 	$faro_tests_dir = '/wordpress-phpunit';
 }
 
+// Activa los ganchos de prueba del plugin (Faro_Clock::freeze, Faro_Pairing::set_environment_type).
+define( 'FARO_TESTING', true );
 define( 'WP_TESTS_PHPUNIT_POLYFILLS_PATH', dirname( __DIR__ ) . '/vendor/yoast/phpunit-polyfills' );
 define( 'FARO_TEST_HPOS', '0' !== getenv( 'FARO_TEST_HPOS' ) );
 

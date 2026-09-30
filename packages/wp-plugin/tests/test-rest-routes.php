@@ -161,4 +161,22 @@ class Test_Faro_Rest_Routes extends Faro_Test_Case {
 		$this->assertSame( array( 'status' => 401 ), $data['data'] );
 		$this->assertSame( 'La conexión con Faro no es válida.', $data['message'] );
 	}
+
+	public function test_route_case_does_not_change_content_type(): void {
+		$credentials = $this->pair();
+		$page_id     = self::factory()->post->create(
+			array(
+				'post_type'   => 'page',
+				'post_status' => 'publish',
+			)
+		);
+		$post_id     = self::factory()->post->create( array( 'post_status' => 'publish' ) );
+
+		$response = $this->dispatch( $this->signed_request( $credentials, 'GET', '/faro/v1/PAGES', array( 'per_page' => '100' ) ) );
+
+		$this->assertSame( 200, $response->get_status() );
+		$ids = wp_list_pluck( $response->get_data()['items'], 'id' );
+		$this->assertContains( $page_id, $ids );
+		$this->assertNotContains( $post_id, $ids, '/PAGES devuelve páginas, no entradas.' );
+	}
 }

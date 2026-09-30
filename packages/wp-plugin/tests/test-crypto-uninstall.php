@@ -76,12 +76,25 @@ class Test_Faro_Crypto_Uninstall extends Faro_Test_Case {
 		$left = $wpdb->get_col( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			$wpdb->prepare(
 				"SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s",
-				'%faro\_%',
-				'%faro_nonce%',
+				'faro_connection',
+				'%faro_nonce_%',
 				'%faro_pair%'
 			)
 		);
 		$this->assertSame( array(), $left );
 		$this->assertSame( 'se queda', get_option( 'otro_plugin_opcion' ) );
+		$this->assertSame( 'x', get_option( 'faro_otra_opcion' ), 'Solo se borran las opciones y transients propios, no cualquier faro_*.' );
+	}
+
+	public function test_salt_configuration_check(): void {
+		$this->assertTrue( Faro_Crypto::is_configured_salt( 'una-frase-larga-y-unica' ) );
+		$this->assertFalse( Faro_Crypto::is_configured_salt( null ) );
+		$this->assertFalse( Faro_Crypto::is_configured_salt( '' ) );
+		$this->assertFalse( Faro_Crypto::is_configured_salt( '   ' ) );
+		$this->assertFalse( Faro_Crypto::is_configured_salt( 'put your unique phrase here' ) );
+		$this->assertSame(
+			Faro_Crypto::is_configured_salt( defined( 'AUTH_KEY' ) ? AUTH_KEY : null ) && Faro_Crypto::is_configured_salt( defined( 'AUTH_SALT' ) ? AUTH_SALT : null ),
+			Faro_Crypto::salts_from_config()
+		);
 	}
 }

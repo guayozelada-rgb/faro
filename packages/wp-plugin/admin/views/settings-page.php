@@ -7,6 +7,7 @@
  * @var array<string, mixed>|null $faro_connection  Conexión guardada.
  * @var bool                      $faro_broken      La conexión no se puede descifrar (salts cambiadas).
  * @var bool                      $faro_secure      El sitio permite vincular (HTTPS o entorno local).
+ * @var bool                      $faro_salts_ok    AUTH_KEY y AUTH_SALT vienen de wp-config.php.
  * @var string|null               $faro_code        Código recién generado.
  * @var string|null               $faro_notice      Aviso de la acción.
  * @var string                    $faro_date_format Formato de fecha y hora.
@@ -25,6 +26,10 @@ defined( 'ABSPATH' ) || exit;
 
 	<?php if ( ! $faro_secure ) : ?>
 		<div class="notice notice-warning inline"><p><?php esc_html_e( 'Tu sitio no usa HTTPS. Faro solo se conecta a sitios con HTTPS.', 'faro' ); ?></p></div>
+	<?php endif; ?>
+
+	<?php if ( ! $faro_salts_ok ) : ?>
+		<div class="notice notice-warning inline"><p><?php esc_html_e( 'Las claves de seguridad AUTH_KEY y AUTH_SALT no están definidas en wp-config.php. Conviene definirlas: así, una copia de tu base de datos no basta para usar la conexión con Faro.', 'faro' ); ?></p></div>
 	<?php endif; ?>
 
 	<?php if ( $faro_broken ) : ?>

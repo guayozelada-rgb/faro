@@ -105,6 +105,8 @@ final class Faro_Signature {
 
 	/**
 	 * Permiso de las rutas firmadas. Actualiza last_seen_at si la firma es válida.
+	 * Se evalúa una sola vez por petición: WordPress repite los permisos para la cabecera Allow
+	 * (rest_send_allow_header) y una segunda verificación vería el nonce ya usado.
 	 *
 	 * @param WP_REST_Request $request Petición.
 	 * @return bool|WP_Error
@@ -112,6 +114,24 @@ final class Faro_Signature {
 	 * @phpstan-param WP_REST_Request<array<string, mixed>> $request
 	 */
 	public static function permission( WP_REST_Request $request ) {
+		return Faro_Rest::once(
+			$request,
+			'signature',
+			static function () use ( $request ) {
+				return self::check_permission( $request );
+			}
+		);
+	}
+
+	/**
+	 * Verifica la firma y actualiza last_seen_at (ver permission()).
+	 *
+	 * @param WP_REST_Request $request Petición.
+	 * @return bool|WP_Error
+	 *
+	 * @phpstan-param WP_REST_Request<array<string, mixed>> $request
+	 */
+	private static function check_permission( WP_REST_Request $request ) {
 		$result = self::verify( $request );
 		if ( is_wp_error( $result ) ) {
 			return $result;
@@ -181,6 +201,10 @@ final class Faro_Signature {
 		}
 
 		// 7. Nonce no usado; solo entonces se guarda.
+		// TODO F4: leer y guardar el nonce con transients no es atómico: dos peticiones idénticas en
+		// paralelo pueden pasar ambas. En F1a solo hay lecturas y DELETE /connection (idempotentes),
+		// pero las escrituras de F4 (/drafts, /seo-meta) deben reservar el nonce con una operación
+		// atómica (wp_cache_add con caché persistente, o INSERT en una tabla con clave única).
 		$nonce_key = self::NONCE_TRANSIENT_PREFIX . hash( 'sha256', $nonce );
 		if ( false !== get_transient( $nonce_key ) ) {
 			return Faro_Errors::get( 'wp.invalid_signature' );

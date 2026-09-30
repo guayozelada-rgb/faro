@@ -154,3 +154,7 @@ msgstr ""
 #: includes/class-faro-errors.php:48
 msgid "Hubo demasiados intentos. Espera 15 minutos e intenta de nuevo."
 msgstr ""
+
+#: admin/views/settings-page.php:32
+msgid "Las claves de seguridad AUTH_KEY y AUTH_SALT no están definidas en wp-config.php. Conviene definirlas: así, una copia de tu base de datos no basta para usar la conexión con Faro."
+msgstr ""

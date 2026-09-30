@@ -158,6 +158,7 @@ final class Faro_Admin {
 		$faro_connection  = Faro_Connection::get();
 		$faro_broken      = null !== $faro_connection && null === Faro_Connection::secret( $faro_connection );
 		$faro_secure      = Faro_Pairing::site_allows_pairing();
+		$faro_salts_ok    = Faro_Crypto::salts_from_config();
 		$faro_code        = self::$code;
 		$faro_notice      = self::$notice;
 		$faro_date_format = get_option( 'date_format' ) . ' ' . get_option( 'time_format' );

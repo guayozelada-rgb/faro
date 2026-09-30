@@ -30,6 +30,37 @@ final class Faro_Rest {
 	public const MAX_PAGE = 100000;
 
 	/**
+	 * Resultados de permisos ya evaluados, por petición.
+	 *
+	 * @var WeakMap<WP_REST_Request<array<string, mixed>>, array<string, bool|WP_Error>>|null
+	 */
+	private static ?WeakMap $permission_results = null;
+
+	/**
+	 * Evalúa un permiso una sola vez por petición y recuerda el resultado.
+	 *
+	 * @param WP_REST_Request $request Petición.
+	 * @param string          $key     Nombre del permiso.
+	 * @param callable        $check   Comprobación; devuelve bool o WP_Error.
+	 * @return bool|WP_Error
+	 *
+	 * @phpstan-param WP_REST_Request<array<string, mixed>> $request
+	 * @phpstan-param callable(): (bool|WP_Error) $check
+	 */
+	public static function once( WP_REST_Request $request, string $key, callable $check ) {
+		if ( null === self::$permission_results ) {
+			self::$permission_results = new WeakMap();
+		}
+		$results = self::$permission_results[ $request ] ?? array();
+		if ( ! array_key_exists( $key, $results ) ) {
+			$results[ $key ]                      = $check();
+			self::$permission_results[ $request ] = $results;
+		}
+
+		return $results[ $key ];
+	}
+
+	/**
 	 * Registra las rutas.
 	 *
 	 * @return void
@@ -81,7 +112,7 @@ final class Faro_Rest {
 				'/' . $kind,
 				array(
 					'methods'             => WP_REST_Server::READABLE,
-					'callback'            => array( self::class, 'list_content' ),
+					'callback'            => array( self::class, 'list_' . $kind ),
 					'permission_callback' => array( Faro_Signature::class, 'permission' ),
 					'args'                => array(
 						'page'     => array(
@@ -152,17 +183,53 @@ final class Faro_Rest {
 	}
 
 	/**
-	 * GET /pages, /posts, /products.
+	 * GET /pages.
 	 *
 	 * @param WP_REST_Request $request Petición.
 	 * @return WP_REST_Response
 	 *
 	 * @phpstan-param WP_REST_Request<array<string, mixed>> $request
 	 */
-	public static function list_content( WP_REST_Request $request ): WP_REST_Response {
-		$kind = ltrim( substr( untrailingslashit( $request->get_route() ), strlen( '/' . self::NAMESPACE ) ), '/' );
+	public static function list_pages( WP_REST_Request $request ): WP_REST_Response {
+		return self::list_content( 'pages', $request );
+	}
+
+	/**
+	 * GET /posts.
+	 *
+	 * @param WP_REST_Request $request Petición.
+	 * @return WP_REST_Response
+	 *
+	 * @phpstan-param WP_REST_Request<array<string, mixed>> $request
+	 */
+	public static function list_posts( WP_REST_Request $request ): WP_REST_Response {
+		return self::list_content( 'posts', $request );
+	}
+
+	/**
+	 * GET /products.
+	 *
+	 * @param WP_REST_Request $request Petición.
+	 * @return WP_REST_Response
+	 *
+	 * @phpstan-param WP_REST_Request<array<string, mixed>> $request
+	 */
+	public static function list_products( WP_REST_Request $request ): WP_REST_Response {
+		return self::list_content( 'products', $request );
+	}
+
+	/**
+	 * Lista una página de contenido de un tipo fijo (el tipo lo decide la ruta registrada, no la URL).
+	 *
+	 * @param string          $kind    "pages", "posts" o "products".
+	 * @param WP_REST_Request $request Petición.
+	 * @return WP_REST_Response
+	 *
+	 * @phpstan-param WP_REST_Request<array<string, mixed>> $request
+	 */
+	private static function list_content( string $kind, WP_REST_Request $request ): WP_REST_Response {
 		$page = Faro_Content::get_page(
-			in_array( $kind, Faro_Content::KINDS, true ) ? $kind : 'posts',
+			$kind,
 			max( 1, absint( $request->get_param( 'page' ) ) ),
 			max( 1, min( self::MAX_PER_PAGE, absint( $request->get_param( 'per_page' ) ) ) )
 		);

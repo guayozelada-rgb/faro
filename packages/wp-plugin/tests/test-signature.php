@@ -96,6 +96,7 @@ class Test_Faro_Signature extends Faro_Test_Case {
 		);
 
 		$this->assertSame( 200, $response->get_status() );
+		$this->assertStringContainsString( 'GET', (string) ( $response->get_headers()['Allow'] ?? '' ), 'El permiso se evalúa una vez por petición; la cabecera Allow no vuelve a verificar el nonce.' );
 	}
 
 	public function test_rest_route_mode_is_accepted(): void {
