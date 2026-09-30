@@ -19,7 +19,19 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from faro_engine.core.ids import new_id
 
 SENSITIVE_KEYS: Final = frozenset(
-    {"authorization", "headers", "token", "secret", "cookie", "password", "api_key"},
+    {
+        "authorization",
+        "headers",
+        "token",
+        "secret",
+        "cookie",
+        "password",
+        "api_key",
+        # Llave de la base del perfil (ADR 0009/0010): nunca debe llegar a un log.
+        "key",
+        "db_key",
+        "key_hex",
+    },
 )
 
 log = structlog.get_logger(__name__)

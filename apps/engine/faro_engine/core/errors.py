@@ -25,12 +25,39 @@ ENGINE_NOT_FOUND: Final = "engine.not_found"
 ENGINE_INVALID_REQUEST: Final = "engine.invalid_request"
 INTERNAL_UNEXPECTED: Final = "internal.unexpected"
 
+# Base de datos local cifrada (spec F1a §5.6, ADR 0009). Todos se devuelven con 503.
+DB_KEY_MISSING: Final = "db.key_missing"
+DB_WRONG_KEY: Final = "db.wrong_key"
+DB_MIGRATION_FAILED: Final = "db.migration_failed"
+DB_MIGRATION_TAMPERED: Final = "db.migration_tampered"
+DB_TOO_NEW: Final = "db.too_new"
+DB_UNAVAILABLE: Final = "db.unavailable"
+# Llega en la línea `db_key` cuando el núcleo no pudo leer el llavero (ADR 0010 §1).
+VAULT_KEYRING_UNAVAILABLE: Final = "vault.keyring_unavailable"
+
 MESSAGES: Final[Mapping[str, str]] = {
     ENGINE_UNAUTHORIZED: "El motor rechazó la conexión. Reinicia Faro.",
     ENGINE_FORBIDDEN_HOST: "El motor rechazó la conexión. Reinicia Faro.",
     ENGINE_NOT_FOUND: "No encontramos lo que buscabas.",
     ENGINE_INVALID_REQUEST: "La solicitud no es válida. Intenta de nuevo.",
     INTERNAL_UNEXPECTED: "Algo salió mal. Intenta de nuevo; si se repite, reinicia Faro.",
+    DB_KEY_MISSING: (
+        "No encontramos la llave de tus datos en el llavero de tu computadora. "
+        "Tus datos siguen guardados, pero Faro no puede abrirlos."
+    ),
+    DB_WRONG_KEY: "No pudimos abrir tus datos de Faro con la llave guardada en tu computadora.",
+    DB_MIGRATION_FAILED: (
+        "No pudimos actualizar tus datos de Faro. Tus datos anteriores están a salvo en una "
+        "copia. Intenta de nuevo."
+    ),
+    DB_MIGRATION_TAMPERED: (
+        "Los datos de Faro se modificaron fuera de la app y no es seguro abrirlos."
+    ),
+    DB_TOO_NEW: "Tus datos son de una versión más nueva de Faro. Actualiza Faro para abrirlos.",
+    DB_UNAVAILABLE: "Tus datos de Faro no están disponibles ahora. Reinicia Faro.",
+    VAULT_KEYRING_UNAVAILABLE: (
+        "No pudimos abrir el llavero de tu computadora. Reinicia Faro e intenta de nuevo."
+    ),
 }
 
 

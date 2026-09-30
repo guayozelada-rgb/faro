@@ -19,6 +19,21 @@ class ErrorOut(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class DatabaseHealth(BaseModel):
+    """Estado de la base del perfil (ADR 0009 §4). El motor sigue `ok` aunque no esté lista."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: Literal["ready", "unavailable"]
+    error_code: str | None = Field(
+        description="Código `db.*` (o `vault.keyring_unavailable`) si no está disponible.",
+        examples=["db.key_missing"],
+    )
+    newer_schema: bool = Field(
+        description="La base tiene migraciones de una versión más nueva de Faro (aviso).",
+    )
+
+
 class HealthOut(BaseModel):
     """Estado del motor."""
 
@@ -26,3 +41,4 @@ class HealthOut(BaseModel):
 
     status: Literal["ok"] = "ok"
     version: str = Field(examples=["0.1.0"])
+    database: DatabaseHealth

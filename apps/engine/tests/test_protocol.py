@@ -22,6 +22,15 @@ import pytest
 
 from faro_engine import __version__
 from faro_engine.core import protocol
+from faro_engine.core.db.profile import profile_db_path
+from tests.db.helpers import (
+    DB_KEY_ERROR_LINE,
+    TEST_KEY_HEX,
+    TEST_PROFILE_ID,
+    db_key_line,
+    open_db,
+    tables,
+)
 
 READY_TIMEOUT = 20.0
 EXIT_TIMEOUT = 10.0
@@ -119,7 +128,7 @@ def test_ready_health_and_shutdown_event(spawn: Any, tmp_path: Path) -> None:
     token = secrets.token_urlsafe(32)
     data_dir = tmp_path / "data" / "nested"
     engine = spawn("--host", "127.0.0.1", "--port", "0", "--data-dir", str(data_dir))
-    engine.send(token.encode("ascii") + b"\n")
+    engine.send(token.encode("ascii") + b"\n" + db_key_line())
 
     ready = engine.ready()
     assert ready["event"] == "ready"
@@ -136,7 +145,11 @@ def test_ready_health_and_shutdown_event(spawn: Any, tmp_path: Path) -> None:
     with _http(port) as http:
         ok = http.get("/health", headers={"Authorization": f"Bearer {token}"})
         assert ok.status_code == 200
-        assert ok.json() == {"status": "ok", "version": __version__}
+        assert ok.json() == {
+            "status": "ok",
+            "version": __version__,
+            "database": {"state": "ready", "error_code": None, "newer_schema": False},
+        }
         denied = http.get("/health", headers={"Authorization": "Bearer " + "B" * 43})
         assert denied.status_code == 401
         assert http.get("/health").status_code == 401
@@ -160,11 +173,49 @@ def test_ready_health_and_shutdown_event(spawn: Any, tmp_path: Path) -> None:
     assert "B" * 43 not in logs
     for line in logs.splitlines():
         json.loads(line)  # todo lo que va a stderr es JSON
+    assert TEST_KEY_HEX not in logs
+
+    # La base quedó creada, migrada y cifrada: sin llave no se lee.
+    db_file = profile_db_path(data_dir, TEST_PROFILE_ID)
+    assert not db_file.read_bytes().startswith(b"SQLite format 3\x00")
+    conn = open_db(db_file)
+    try:
+        assert {"sites", "site_connections", "audit_log"} <= tables(conn)
+    finally:
+        conn.close()
+
+
+def test_wrong_db_key_starts_with_database_unavailable(spawn: Any, tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    first = spawn("--data-dir", str(data_dir))
+    first.send(secrets.token_urlsafe(32).encode("ascii") + b"\n" + db_key_line())
+    first.ready()
+    first.close_stdin()
+    assert first.wait() == 0
+
+    token = secrets.token_urlsafe(32)
+    other = "ab" * 32
+    engine = spawn("--data-dir", str(data_dir))
+    engine.send(token.encode("ascii") + b"\n" + db_key_line(value=other))
+    port = engine.ready()["port"]
+    with _http(port) as http:
+        body = http.get("/health", headers={"Authorization": f"Bearer {token}"}).json()
+    assert body["database"] == {
+        "state": "unavailable",
+        "error_code": "db.wrong_key",
+        "newer_schema": False,
+    }
+    engine.send(b'{"event":"shutdown"}\n')
+    assert engine.wait() == 0
+    logs = engine.stderr()
+    assert other not in logs
+    for line in logs.splitlines():
+        json.loads(line)  # SQLCipher no escribió nada fuera del JSON (cipher_log_level)
 
 
 def test_stdin_eof_stops_engine(spawn: Any) -> None:
     engine = spawn()
-    engine.send(secrets.token_urlsafe(32).encode("ascii") + b"\n")
+    engine.send(secrets.token_urlsafe(32).encode("ascii") + b"\n" + DB_KEY_ERROR_LINE)
     port = engine.ready()["port"]
     with _http(port) as http:
         assert http.get("/health").status_code == 401
@@ -176,13 +227,15 @@ def test_stdin_eof_stops_engine(spawn: Any) -> None:
 
 
 def _dev_command(env_file: Path) -> list[str]:
-    """`python -m faro_engine --dev` leyendo un `.env.local` temporal (nunca el de la raíz)."""
+    """`python -m faro_engine --dev` leyendo un `.env.local` temporal (nunca el de la raíz)
+    y con datos en una carpeta temporal (nunca `apps/engine/.devdata`)."""
+    data_dir = env_file.parent / "devdata"
     code = (
         "import runpy, sys\n"
         "from pathlib import Path\n"
         "import faro_engine.core.config as config\n"
         f"config.default_env_file = lambda: Path({str(env_file)!r})\n"
-        "sys.argv = ['faro_engine', '--dev']\n"
+        f"sys.argv = ['faro_engine', '--dev', '--data-dir', {str(data_dir)!r}]\n"
         "runpy.run_module('faro_engine', run_name='__main__', alter_sys=True)\n"
     )
     return [sys.executable, "-c", code]
@@ -244,7 +297,7 @@ def test_dev_mode_survives_stdin_eof_and_stops_on_interrupt(spawn: Any, tmp_path
 def test_unknown_stdin_line_is_ignored(spawn: Any) -> None:
     token = secrets.token_urlsafe(32)
     engine = spawn()
-    engine.send(token.encode("ascii") + b"\n")
+    engine.send(token.encode("ascii") + b"\n" + DB_KEY_ERROR_LINE)
     port = engine.ready()["port"]
     engine.send(b"no es json\n")
     with _http(port) as http:
@@ -366,6 +419,109 @@ def test_read_token_cases() -> None:
         reader = protocol.StdinReader(read_fd)
         reader.start()
         assert protocol.read_token(reader, timeout=0.05) is None  # nada llega: vence el plazo
+    finally:
+        os.close(write_fd)
+    assert reader.get(timeout=5) is None
+    os.close(read_fd)
+
+
+def test_stdin_reader_eof_is_sticky() -> None:
+    reader = _pipe_reader(b"uno\n")
+    assert reader.get(timeout=5) == b"uno"
+    assert reader.get(timeout=5) is None
+    assert reader.get(timeout=0) is None  # ya no espera: el EOF se recuerda
+
+
+# --- Línea `db_key` (ADR 0010 §1) -----------------------------------------------------
+
+
+def _key_of(line: protocol.DbKeyLine) -> bytearray | None:
+    return line.key
+
+
+def test_parse_db_key_with_key() -> None:
+    result = protocol.parse_db_key(db_key_line().rstrip(b"\n"))
+    assert result.profile_id == TEST_PROFILE_ID
+    assert result.key == bytearray(TEST_KEY_HEX, "ascii")
+    assert result.error_code is None
+    assert TEST_KEY_HEX not in repr(result)
+    key = result.key
+    result.wipe()
+    assert key == bytearray(64)
+    assert _key_of(result) is None
+    result.wipe()  # idempotente
+
+
+def test_parse_db_key_accepts_bom_and_uppercase_hex() -> None:
+    line = b"\xef\xbb\xbf" + db_key_line(value="AB" * 32).rstrip(b"\n")
+    assert protocol.parse_db_key(line).key == bytearray("AB" * 32, "ascii")
+
+
+@pytest.mark.parametrize("code", ["db.key_missing", "vault.keyring_unavailable"])
+def test_parse_db_key_with_core_error(code: str) -> None:
+    line = json.dumps({"event": "db_key", "profile": TEST_PROFILE_ID, "error": code})
+    result = protocol.parse_db_key(line.encode())
+    assert result.key is None
+    assert result.error_code == code
+    assert result.profile_id == TEST_PROFILE_ID
+    assert result.reason == "core_error"
+
+
+def test_parse_db_key_shutdown_instead_of_key() -> None:
+    result = protocol.parse_db_key(b'{"event":"shutdown"}')
+    assert result.shutdown is True
+    assert result.key is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"no es json",
+        b"[1, 2]",
+        b'{"event":"otro","profile":"'
+        + TEST_PROFILE_ID.encode()
+        + b'","key":"'
+        + b"0" * 64
+        + b'"}',
+        json.dumps({"event": "db_key", "profile": "../../x", "key": "0" * 64}).encode(),
+        json.dumps(
+            {"event": "db_key", "profile": "01920000-0000-7000-8000-00000000ABCD", "key": "0" * 64}
+        ).encode(),
+        json.dumps({"event": "db_key", "profile": TEST_PROFILE_ID, "key": "0" * 63}).encode(),
+        json.dumps({"event": "db_key", "profile": TEST_PROFILE_ID, "key": "g" * 64}).encode(),
+        json.dumps({"event": "db_key", "profile": TEST_PROFILE_ID, "key": "ñ" * 64}).encode(),
+        json.dumps({"event": "db_key", "profile": TEST_PROFILE_ID, "key": 5}).encode(),
+        json.dumps({"event": "db_key", "profile": TEST_PROFILE_ID, "error": "otro.error"}).encode(),
+        json.dumps({"event": "db_key", "profile": TEST_PROFILE_ID}).encode(),
+        json.dumps(
+            {"event": "db_key", "profile": TEST_PROFILE_ID, "key": "0" * 64, "extra": 1}
+        ).encode(),
+        json.dumps({"event": "shutdown", "extra": 1}).encode(),
+    ],
+)
+def test_parse_db_key_invalid_is_key_missing(payload: bytes) -> None:
+    result = protocol.parse_db_key(payload)
+    assert result.key is None
+    assert result.error_code == "db.key_missing"
+    assert result.reason == "invalid"
+    assert result.shutdown is False
+
+
+def test_read_db_key_second_line_eof_and_timeout() -> None:
+    token = secrets.token_urlsafe(32).encode("ascii")
+    reader = _pipe_reader(token + b"\n" + db_key_line())
+    assert protocol.read_token(reader, timeout=5) == token
+    assert protocol.read_db_key(reader, timeout=5).key == bytearray(TEST_KEY_HEX, "ascii")
+
+    eof = protocol.read_db_key(_pipe_reader(b""), timeout=5)
+    assert (eof.error_code, eof.reason) == ("db.key_missing", "eof")
+
+    read_fd, write_fd = os.pipe()
+    try:
+        reader = protocol.StdinReader(read_fd)
+        reader.start()
+        late = protocol.read_db_key(reader, timeout=0.05)
+        assert (late.error_code, late.reason) == ("db.key_missing", "timeout")
     finally:
         os.close(write_fd)
     assert reader.get(timeout=5) is None

@@ -3,7 +3,9 @@
 //!
 //! 1. Genera un token de 32 bytes (CSPRNG del SO, base64url sin relleno) que solo vive
 //!    en memoria (`SecretString`).
-//! 2. Lanza el proceso, escribe `token + "\n"` en stdin y deja stdin abierto.
+//! 2. Prepara la llave de la base del perfil (`profile`, en `spawn_blocking`), lanza el
+//!    proceso y escribe en stdin, en este orden: `token + "\n"` y la línea `db_key`
+//!    (ADR 0010 §1). Deja stdin abierto.
 //! 3. Espera `ready` (≤ `ready_timeout`) y valida el puerto (1024–65535).
 //! 4. Primer `GET /health` correcto → `ready` (guarda `version`).
 //! 5. `GET /health` cada `health_interval` (timeout `health_timeout`); tras
@@ -12,6 +14,13 @@
 //! 6. stderr del motor → `tracing` nivel `debug`.
 //! 7. Cada cambio de estado se publica (evento `engine://status`).
 //! 8. Apagado: `{"event":"shutdown"}`, espera ≤ `shutdown_grace`, luego mata el árbol.
+//! 9. `/health` informa el estado de la base: `EngineStatus.database_error` se actualiza
+//!    en cada consulta; el estado sigue `ready` aunque la base no esté disponible.
+//!
+//! **Escritor de stdin único**: todo lo que va al stdin del motor (token, `db_key`,
+//! `shutdown` y, desde T8, `secret_response`/`audit`) pasa por una sola tarea
+//! ([`StdinWriter`]) que escribe cada línea completa y la vacía antes de la siguiente,
+//! así las líneas nunca se intercalan.
 //!
 //! Modo externo (solo debug): sin proceso ni reinicios; `max_health_failures` fallos →
 //! `error` con `engine.dev_unreachable`.
@@ -25,12 +34,14 @@ use secrecy::{ExposeSecret, SecretString};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{self, Instant, MissedTickBehavior};
+use zeroize::Zeroizing;
 
 use crate::engine::client::{EngineClient, HealthError};
 use crate::engine::launcher::{EngineLauncher, EngineProcess, ProcessControl, REAP_TIMEOUT};
 use crate::engine::protocol::{self, StdoutLine, MAX_LINE_BYTES, SHUTDOWN_LINE};
 use crate::engine::{EngineMode, EngineStatus};
 use crate::error::AppError;
+use crate::profile::{DbKeyMessage, DbKeyProvider};
 
 /// Mensaje que se registra (sin contenido) ante una línea de stdout no reconocida.
 pub const LOG_UNRECOGNIZED_LINE: &str = "línea de protocolo no reconocida";
@@ -188,9 +199,76 @@ impl EngineSupervisor {
     }
 }
 
+/// Una línea para el stdin del motor y el aviso de si se escribió.
+struct StdinLine {
+    bytes: Zeroizing<Vec<u8>>,
+    ack: oneshot::Sender<bool>,
+}
+
+/// Único escritor del stdin del motor: una tarea dueña de la tubería recibe las líneas
+/// por un canal y las escribe completas, en orden, con `flush` tras cada una. Al soltar
+/// todos los handles la tarea termina y cierra stdin. Tras un error de escritura deja
+/// de aceptar líneas (`send` devuelve `false`).
+#[derive(Clone)]
+pub(crate) struct StdinWriter {
+    tx: mpsc::Sender<StdinLine>,
+}
+
+impl StdinWriter {
+    pub(crate) fn spawn(mut stdin: Box<dyn AsyncWrite + Send + Unpin>) -> Self {
+        let (tx, mut rx) = mpsc::channel::<StdinLine>(32);
+        tokio::spawn(async move {
+            while let Some(line) = rx.recv().await {
+                let ok = stdin.write_all(&line.bytes).await.is_ok() && stdin.flush().await.is_ok();
+                drop(line.bytes);
+                let _ = line.ack.send(ok);
+                if !ok {
+                    break;
+                }
+            }
+        });
+        Self { tx }
+    }
+
+    /// Encola una línea (debe terminar en `\n`) y espera a que se escriba.
+    pub(crate) async fn send(&self, bytes: Zeroizing<Vec<u8>>) -> bool {
+        let (ack, done) = oneshot::channel();
+        if self.tx.send(StdinLine { bytes, ack }).await.is_err() {
+            return false;
+        }
+        done.await.unwrap_or(false)
+    }
+}
+
+/// Mueve el texto a bytes sin copiarlo (el búfer sigue bajo `Zeroizing`).
+fn into_bytes(mut line: Zeroizing<String>) -> Zeroizing<Vec<u8>> {
+    Zeroizing::new(std::mem::take(&mut *line).into_bytes())
+}
+
+fn token_line(token: &SecretString) -> Zeroizing<Vec<u8>> {
+    let mut line = Zeroizing::new(String::with_capacity(protocol::TOKEN_LEN + 1));
+    line.push_str(token.expose_secret());
+    line.push('\n');
+    into_bytes(line)
+}
+
+/// Prepara la línea `db_key` fuera del runtime (llavero y disco son bloqueantes).
+async fn prepare_db_key(provider: Arc<dyn DbKeyProvider>) -> DbKeyMessage {
+    // Mismo suscriptor de `tracing` que la tarea actual (en pruebas es local al hilo).
+    let dispatch = tracing::dispatcher::get_default(Clone::clone);
+    let task = move || tracing::dispatcher::with_default(&dispatch, || provider.db_key());
+    match tokio::task::spawn_blocking(task).await {
+        Ok(message) => message,
+        Err(_) => {
+            tracing::error!("falló la preparación de la llave de la base");
+            DbKeyMessage::unavailable()
+        }
+    }
+}
+
 /// Proceso en marcha.
 struct Proc {
-    stdin: Box<dyn AsyncWrite + Send + Unpin>,
+    stdin: StdinWriter,
     /// `None` cuando stdout se cerró.
     lines: Option<mpsc::Receiver<String>>,
     control: Box<dyn ProcessControl>,
@@ -200,6 +278,7 @@ struct Running {
     proc: Option<Proc>,
     client: EngineClient,
     version: String,
+    database_error: Option<AppError>,
 }
 
 enum StartError {
@@ -244,9 +323,10 @@ impl Actor {
                 self.set(status);
             }
             let started = match &self.mode {
-                EngineMode::Managed(launcher) => {
+                EngineMode::Managed { launcher, db_key } => {
                     let launcher = Arc::clone(launcher);
-                    self.start_managed(launcher).await
+                    let db_key = Arc::clone(db_key);
+                    self.start_managed(launcher, db_key).await
                 }
                 EngineMode::External(target) => {
                     let target = target
@@ -262,7 +342,10 @@ impl Actor {
                     self.set(EngineStatus::error(err));
                 }
                 Ok(running) => {
-                    self.set(EngineStatus::ready(running.version.clone()));
+                    self.set(EngineStatus::ready(
+                        running.version.clone(),
+                        running.database_error.clone(),
+                    ));
                     match self.supervise(running).await {
                         RunOutcome::Shutdown => break,
                         RunOutcome::Failed => {
@@ -354,8 +437,11 @@ impl Actor {
     async fn start_managed(
         &mut self,
         launcher: Arc<dyn EngineLauncher>,
+        db_key: Arc<dyn DbKeyProvider>,
     ) -> Result<Running, StartError> {
         let token = protocol::generate_token().map_err(StartError::Failed)?;
+        // Antes de lanzar (ADR 0009 §3): perfil y llave, en cada arranque y reinicio.
+        let db_key_line = into_bytes(prepare_db_key(db_key).await.to_line());
         let EngineProcess {
             stdin,
             stdout,
@@ -364,7 +450,7 @@ impl Actor {
         } = launcher.launch().map_err(StartError::Failed)?;
         spawn_stderr_forwarder(stderr);
         let mut proc = Proc {
-            stdin,
+            stdin: StdinWriter::spawn(stdin),
             lines: Some(spawn_line_reader(stdout)),
             control,
         };
@@ -377,9 +463,13 @@ impl Actor {
 
         let deadline = Instant::now() + self.config.ready_timeout;
 
-        let written = time::timeout_at(deadline, write_token(&mut proc.stdin, &token)).await;
+        // Orden fijo por el escritor único: token y después `db_key`.
+        let handshake = async {
+            proc.stdin.send(token_line(&token)).await && proc.stdin.send(db_key_line).await
+        };
+        let written = time::timeout_at(deadline, handshake).await;
         if !matches!(written, Ok(true)) {
-            tracing::warn!("no se pudo entregar el token al motor");
+            tracing::warn!("no se pudo entregar el token o la llave de la base al motor");
             terminate(&mut proc).await;
             return Err(StartError::Failed(AppError::engine_start_failed("exited")));
         }
@@ -433,9 +523,9 @@ impl Actor {
         };
 
         // 4. Primer /health correcto.
-        let version = loop {
+        let health = loop {
             match client.health().await {
-                Ok(ok) => break Ok(ok.version),
+                Ok(ok) => break Ok(ok),
                 Err(HealthError::Unauthorized) => break Err(AppError::engine_unauthorized()),
                 Err(HealthError::ForbiddenHost) => break Err(AppError::engine_forbidden_host()),
                 Err(err) => tracing::debug!(motivo = ?err, "el motor aún no responde a /health"),
@@ -459,20 +549,21 @@ impl Actor {
                 Some(cmd) = self.cmd_rx.recv() => self.reply_current(cmd),
             }
         };
-        let version = match version {
-            Ok(version) => version,
+        let health = match health {
+            Ok(health) => health,
             Err(err) => {
                 terminate(&mut proc).await;
                 return Err(StartError::Failed(err));
             }
         };
+        log_database(&health);
 
         let tree_pids = proc.control.tree_pids();
         tracing::info!(
             pid = launcher_pid,
             engine_pid = ready.pid,
             tree_pids = ?tree_pids,
-            version = %version,
+            version = %health.version,
             "motor listo"
         );
         self.set_diagnostics(EngineDiagnostics {
@@ -483,7 +574,8 @@ impl Actor {
         Ok(Running {
             proc: Some(proc),
             client,
-            version,
+            version: health.version,
+            database_error: health.database_error,
         })
     }
 
@@ -499,10 +591,12 @@ impl Actor {
             match client.health().await {
                 Ok(ok) => {
                     tracing::info!(version = %ok.version, "motor externo listo");
+                    log_database(&ok);
                     return Ok(Running {
                         proc: None,
                         client,
                         version: ok.version,
+                        database_error: ok.database_error,
                     });
                 }
                 Err(HealthError::Unauthorized) => {
@@ -571,11 +665,19 @@ impl Actor {
                     }
                 },
                 SuperviseEvent::Tick => match running.client.health().await {
-                    Ok(_) => {
+                    Ok(ok) => {
                         if failures > 0 {
                             tracing::info!("el motor vuelve a responder a /health");
                         }
                         failures = 0;
+                        if ok.database_error != running.database_error {
+                            log_database(&ok);
+                            running.database_error = ok.database_error;
+                            self.set(EngineStatus::ready(
+                                running.version.clone(),
+                                running.database_error.clone(),
+                            ));
+                        }
                     }
                     Err(err) => {
                         failures += 1;
@@ -613,11 +715,15 @@ async fn next_line(lines: Option<&mut mpsc::Receiver<String>>) -> Option<String>
     }
 }
 
-async fn write_token(stdin: &mut Box<dyn AsyncWrite + Send + Unpin>, token: &SecretString) -> bool {
-    let mut line = zeroize::Zeroizing::new(String::with_capacity(protocol::TOKEN_LEN + 1));
-    line.push_str(token.expose_secret());
-    line.push('\n');
-    stdin.write_all(line.as_bytes()).await.is_ok() && stdin.flush().await.is_ok()
+/// Registra el estado de la base (solo el código, nunca contenido del motor).
+fn log_database(health: &crate::engine::client::HealthOk) {
+    match &health.database_error {
+        Some(err) => tracing::warn!(code = err.code, "la base del perfil no está disponible"),
+        None => tracing::info!("base del perfil disponible"),
+    }
+    if health.newer_schema {
+        tracing::warn!("la base tiene migraciones de una versión más nueva de Faro");
+    }
 }
 
 /// Mata el árbol del proceso y lo recoge.
@@ -635,12 +741,12 @@ async fn terminate(proc: &mut Proc) {
 /// (siempre, para no dejar descendientes vivos).
 async fn graceful_stop(mut proc: Proc, config: &SupervisorConfig) {
     let deadline = Instant::now() + config.shutdown_grace;
-    let sent = time::timeout_at(deadline, async {
-        proc.stdin.write_all(SHUTDOWN_LINE).await?;
-        proc.stdin.flush().await
-    })
+    let sent = time::timeout_at(
+        deadline,
+        proc.stdin.send(Zeroizing::new(SHUTDOWN_LINE.to_vec())),
+    )
     .await;
-    if !matches!(sent, Ok(Ok(()))) {
+    if !matches!(sent, Ok(true)) {
         tracing::debug!("no se pudo enviar shutdown al motor");
     }
     match time::timeout_at(deadline, proc.control.wait()).await {

@@ -4,14 +4,18 @@ Protocolo (spec F0 §4.4, skill `tauri-sidecar-python`, ADR 0004):
 1. Argumentos `--host` (solo 127.0.0.1), `--port` (0 = libre), `--data-dir`, `--dev`.
 2. Sin `--dev`: token = primera línea de stdin (43 caracteres base64url, 10 s máx.).
    Con `--dev`: token y puerto desde `.env.local` (rechazado si `sys.frozen`).
-3. Abre el socket, escribe una sola línea `ready` en stdout y hace flush.
-4. Sirve con uvicorn sobre ese socket (sin access log).
-5. `{"event":"shutdown"}` o EOF en stdin → salida ordenada; 10 s máx., luego `os._exit`.
+3. Sin `--dev`: 2.ª línea de stdin = `db_key` (ADR 0010 §1, 10 s máx.). Con `--dev`:
+   llave y perfil de `.env.local` y datos en `apps/engine/.devdata/` por defecto.
+4. Abre la base del perfil y aplica migraciones (ADR 0009 §4). Si falla, sigue con la base
+   no disponible (lo informa `/health`); nunca sale por eso. La llave se sobrescribe.
+5. Abre el socket, escribe una sola línea `ready` en stdout y hace flush.
+6. Sirve con uvicorn sobre ese socket (sin access log).
+7. `{"event":"shutdown"}` o EOF en stdin → salida ordenada; 10 s máx., luego `os._exit`.
    Con `--dev` el EOF se ignora (no hay núcleo que supervise por stdin); se detiene con
    Ctrl+C / SIGINT / SIGTERM / CTRL_BREAK. En ambos modos esas señales salen con código 0.
 
 Códigos de salida: 0 = apagado normal, 1 = no se pudo abrir el socket, 2 = uso o token
-inválido.
+inválido. Un problema con la base nunca cambia el código de salida (ADR 0009 §4).
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from faro_engine import __version__
 from faro_engine.core import protocol
 from faro_engine.core.app import create_app
 from faro_engine.core.config import (
+    DB_KEY_TIMEOUT_SECONDS,
     HOST,
     MAX_PORT,
     SHUTDOWN_GRACE_SECONDS,
@@ -45,6 +50,9 @@ from faro_engine.core.config import (
     default_env_file,
     load_dev_config,
 )
+from faro_engine.core.db.database import Database, open_profile_database
+from faro_engine.core.db.profile import dev_data_dir
+from faro_engine.core.errors import DB_KEY_MISSING, DB_UNAVAILABLE
 from faro_engine.core.logging import configure_logging
 
 EXIT_OK = 0
@@ -182,6 +190,59 @@ def handle_stop_signals(controller: ShutdownController) -> Iterator[None]:
             signal.signal(sig, handler)
 
 
+def open_database(data_dir: Path | None, line: protocol.DbKeyLine) -> Database:
+    """Base del perfil según la línea `db_key` (o su equivalente de `--dev`).
+
+    Siempre sobrescribe la llave recibida, se use o no.
+    """
+    try:
+        if line.error_code is not None or line.key is None or line.profile_id is None:
+            code = line.error_code or DB_UNAVAILABLE
+            log.warning("db.unavailable", error_code=code, reason=line.reason)
+            return Database.unavailable(code)
+        if data_dir is None:
+            log.warning("db.unavailable", error_code=DB_UNAVAILABLE, reason="no_data_dir")
+            return Database.unavailable(DB_UNAVAILABLE)
+        return open_profile_database(data_dir, line.profile_id, line.key)
+    finally:
+        line.wipe()
+
+
+def read_startup(
+    args: argparse.Namespace,
+    reader: protocol.StdinReader,
+    *,
+    env_file: Path | None,
+    token_timeout: float,
+    db_key_timeout: float,
+) -> tuple[bytes, int, protocol.DbKeyLine] | int:
+    """Token, puerto y llave de la base; o el código de salida si no se puede arrancar.
+
+    Sin `--dev`: 1.ª línea de stdin = token, 2.ª = `db_key`. Con `--dev`: `.env.local`.
+    """
+    if args.dev:
+        try:
+            dev = load_dev_config(env_file if env_file is not None else default_env_file())
+        except DevConfigError as exc:
+            log.error("config.dev_env_invalid", reason=exc.reason)
+            return EXIT_USAGE
+        if dev.db_key is None or dev.profile_id is None:
+            key_line = protocol.DbKeyLine(error_code=DB_KEY_MISSING, reason="dev_key_missing")
+        else:
+            key_line = protocol.DbKeyLine(profile_id=dev.profile_id, key=dev.db_key)
+        return dev.token, args.port or dev.port, key_line
+
+    token = protocol.read_token(reader, token_timeout)
+    if token is None:
+        log.error("protocol.token_invalid", message="token ausente o inválido")
+        return EXIT_USAGE
+    key_line = protocol.read_db_key(reader, db_key_timeout)
+    if key_line.shutdown:
+        log.info("engine.shutdown_requested", reason="shutdown_event")
+        return EXIT_OK
+    return token, args.port, key_line
+
+
 def run(
     argv: Sequence[str] | None,
     *,
@@ -190,6 +251,7 @@ def run(
     env_file: Path | None = None,
     frozen: bool | None = None,
     token_timeout: float = TOKEN_TIMEOUT_SECONDS,
+    db_key_timeout: float = DB_KEY_TIMEOUT_SECONDS,
     shutdown_grace: float = SHUTDOWN_GRACE_SECONDS,
 ) -> int:
     configure_logging()
@@ -208,6 +270,8 @@ def run(
         return EXIT_USAGE
 
     data_dir: Path | None = args.data_dir
+    if data_dir is None and args.dev:
+        data_dir = dev_data_dir()
     if data_dir is not None:
         try:
             data_dir.mkdir(parents=True, exist_ok=True)
@@ -218,26 +282,24 @@ def run(
     reader = protocol.StdinReader(sys.stdin.fileno() if stdin_fd is None else stdin_fd)
     reader.start()
 
-    if args.dev:
-        try:
-            dev = load_dev_config(env_file if env_file is not None else default_env_file())
-        except DevConfigError as exc:
-            log.error("config.dev_env_invalid", reason=exc.reason)
-            return EXIT_USAGE
-        token = dev.token
-        port = args.port or dev.port
-    else:
-        read = protocol.read_token(reader, token_timeout)
-        if read is None:
-            log.error("protocol.token_invalid", message="token ausente o inválido")
-            return EXIT_USAGE
-        token = read
-        port = args.port
+    startup = read_startup(
+        args,
+        reader,
+        env_file=env_file,
+        token_timeout=token_timeout,
+        db_key_timeout=db_key_timeout,
+    )
+    if isinstance(startup, int):
+        return startup
+    token, port, key_line = startup
+    database = open_database(data_dir, key_line)
+    del key_line, startup
 
     try:
         sock = open_socket(port)
     except OSError:
         log.error("server.bind_failed", port=port)
+        database.close()
         return EXIT_BIND_FAILED
 
     real_port = int(sock.getsockname()[1])
@@ -247,7 +309,7 @@ def run(
     del token
     server = uvicorn.Server(
         uvicorn.Config(
-            create_app(settings),
+            create_app(settings, database),
             log_config=None,
             access_log=False,
             server_header=False,
@@ -274,6 +336,7 @@ def run(
     finally:
         controller.cancel()
         sock.close()
+        database.close()
     log.info("engine.stopped")
     return EXIT_OK
 

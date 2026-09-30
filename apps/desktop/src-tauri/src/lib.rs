@@ -7,6 +7,7 @@ pub mod commands;
 pub mod engine;
 pub mod error;
 pub mod logging;
+pub mod profile;
 pub mod state;
 pub mod vault;
 
@@ -16,7 +17,9 @@ use tauri::{Emitter, Manager};
 
 use crate::engine::{EngineStatus, EngineSupervisor, StatusSink, SupervisorConfig};
 use crate::logging::LogGuard;
+use crate::profile::ProfileKeys;
 use crate::state::AppState;
+use crate::vault::store::KeyringStore;
 use crate::vault::VaultService;
 
 /// Arranca la aplicación. Devuelve error solo si Tauri no pudo iniciar.
@@ -35,6 +38,11 @@ pub fn run() -> Result<(), tauri::Error> {
         let vault = VaultService::system()?;
 
         let data_dir = app.path().app_data_dir()?;
+        // Perfil activo (`profiles.json`) y llave de su base en el llavero (ADR 0009 §3).
+        let db_key = Arc::new(ProfileKeys::new(
+            data_dir.clone(),
+            Arc::new(KeyringStore::new()),
+        ));
         let emitter = app.handle().clone();
         let sink: StatusSink = Arc::new(move |status: &EngineStatus| {
             if emitter.emit(engine::STATUS_EVENT, status).is_err() {
@@ -45,7 +53,7 @@ pub fn run() -> Result<(), tauri::Error> {
         let supervisor = EngineSupervisor::spawn(
             &runtime,
             SupervisorConfig::default(),
-            engine::default_mode(data_dir),
+            engine::default_mode(data_dir, db_key),
             sink,
         );
         app.manage(AppState::new(supervisor, vault));

@@ -24,6 +24,7 @@ La llave (32 bytes aleatorios en hex) llega del núcleo por stdin al arrancar (v
 ```python
 def open_profile(path: Path, key_hex: bytearray) -> Connection:
     conn = sqlcipher.connect(path, isolation_level=None)  # transacciones explícitas
+    conn.execute("PRAGMA cipher_log_level = NONE")  # antes de la llave: stderr limpio
     conn.execute(f"PRAGMA key = \"x'{key_hex.decode()}'\"")  # llave cruda: sin PBKDF2
     try:
         conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
@@ -36,7 +37,8 @@ def open_profile(path: Path, key_hex: bytearray) -> Connection:
     return conn
 ```
 
-- `PRAGMA key` es siempre la **primera** sentencia. `key_hex` es `bytearray` para poder sobrescribirlo después.
+- `PRAGMA cipher_log_level = NONE` va **antes** de `PRAGMA key` en cada conexión: sin él, SQLCipher escribe texto UTF-16 en stderr (el canal de logs JSON) cuando la llave es incorrecta. Implementado y probado en `core/db/connection.py` (`open_encrypted`).
+- `PRAGMA key` es siempre la **primera** sentencia que toca el archivo. `key_hex` es `bytearray` para poder sobrescribirlo después.
 - `foreign_keys` se activa en **cada** conexión (SQLite no lo recuerda).
 - Los archivos `-wal` y `-shm` también quedan cifrados; se copian y borran junto con el `.db`.
 

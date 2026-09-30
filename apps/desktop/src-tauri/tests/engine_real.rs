@@ -8,12 +8,17 @@
 //!
 //! En Windows, el `python.exe` del `.venv` de uv es un lanzador que crea el intérprete
 //! real como hijo; estas pruebas comprueban que ningún proceso del árbol queda vivo.
+//!
+//! F1a (T6): tras el token se envía la línea `db_key` con una llave de prueba y una
+//! carpeta de datos temporal; el motor abre la base cifrada sin esperar los 10 s de la
+//! 2.ª línea y `/health` informa `database.state = "ready"`.
 #![cfg(all(windows, debug_assertions))]
 // Archivo solo de pruebas: los ayudantes fuera de `#[test]` también pueden fallar con panic.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::collections::HashMap;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use faro_lib::engine::client::{EngineClient, HealthError};
@@ -22,6 +27,9 @@ use faro_lib::engine::protocol::{self, StdoutLine};
 use faro_lib::engine::{
     EngineMode, EngineState, EngineStatus, EngineSupervisor, StatusSink, SupervisorConfig,
 };
+use faro_lib::error::AppError;
+use faro_lib::profile::{ProfileKeys, PROFILES_DIR};
+use faro_lib::vault::store::SecretStore;
 use secrecy::{ExposeSecret, SecretString};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
@@ -73,6 +81,63 @@ fn data_dir() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir")
 }
 
+/// Perfil y llave de prueba (no son del usuario; solo viven en la carpeta temporal).
+const TEST_PROFILE: &str = "0192f0a0-1234-7abc-8def-0123456789ab";
+const TEST_DB_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"; // gitleaks:allow
+/// El motor espera la línea `db_key` hasta 10 s; con ella debe llegar a `ready` bastante antes.
+const READY_WITH_KEY_MAX: Duration = Duration::from_secs(9);
+
+/// Cabecera de un archivo SQLite sin cifrar.
+const SQLITE_HEADER: &[u8] = b"SQLite format 3\0";
+
+/// Llavero en memoria para las pruebas de integración (no toca el llavero del SO).
+#[derive(Default)]
+struct TestStore(Mutex<HashMap<String, String>>);
+
+impl SecretStore for TestStore {
+    fn get(&self, secret_ref: &str) -> Result<Option<SecretString>, AppError> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .get(secret_ref)
+            .map(|s| SecretString::from(s.clone())))
+    }
+    fn set(&self, secret_ref: &str, secret: &SecretString) -> Result<(), AppError> {
+        self.0
+            .lock()
+            .unwrap()
+            .insert(secret_ref.to_owned(), secret.expose_secret().to_owned());
+        Ok(())
+    }
+    fn delete(&self, secret_ref: &str) -> Result<(), AppError> {
+        self.0.lock().unwrap().remove(secret_ref);
+        Ok(())
+    }
+}
+
+/// Comprueba que la base existe y no es legible como SQLite sin la llave.
+fn assert_encrypted_db(dir: &std::path::Path, profile: &str) {
+    let path = dir.join(PROFILES_DIR).join(format!("{profile}.db"));
+    let bytes = std::fs::read(&path).expect("el motor no creó la base del perfil");
+    assert!(bytes.len() >= 4096, "base demasiado pequeña");
+    assert_ne!(
+        &bytes[..SQLITE_HEADER.len()],
+        SQLITE_HEADER,
+        "la base no está cifrada"
+    );
+    // Ni la llave ni los nombres de las tablas aparecen en claro.
+    let text = String::from_utf8_lossy(&bytes);
+    for plain in [
+        "schema_migrations",
+        "audit_log",
+        "CREATE TABLE",
+        TEST_DB_KEY,
+    ] {
+        assert!(!text.contains(plain), "texto en claro en la base: {plain}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requiere apps/engine/.venv (uv sync)"]
 async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
@@ -102,8 +167,18 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
     };
 
     let token = protocol::generate_token().unwrap();
+    let launched = Instant::now();
     stdin
         .write_all(format!("{}\n", token.expose_secret()).as_bytes())
+        .await
+        .unwrap();
+    stdin
+        .write_all(
+            format!(
+                "{{\"event\":\"db_key\",\"profile\":\"{TEST_PROFILE}\",\"key\":\"{TEST_DB_KEY}\"}}\n"
+            )
+            .as_bytes(),
+        )
         .await
         .unwrap();
     stdin.flush().await.unwrap();
@@ -124,13 +199,36 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
     .await
     .expect("sin ready en 30 s");
     assert!(ready.port >= protocol::MIN_PORT);
+    let to_ready = launched.elapsed();
+    assert!(
+        to_ready < READY_WITH_KEY_MAX,
+        "ready tardó {to_ready:?}: el motor no recibió la línea db_key"
+    );
 
     let base = format!("http://127.0.0.1:{}", ready.port);
 
     // /health con token = 200.
-    let client = EngineClient::new(base.clone(), token, Duration::from_secs(5)).unwrap();
+    let client = EngineClient::new(base.clone(), token.clone(), Duration::from_secs(5)).unwrap();
     let health = client.health().await.expect("/health con token");
     assert!(!health.version.is_empty());
+    assert_eq!(
+        health.database_error, None,
+        "la base del perfil no está lista"
+    );
+
+    // El cuerpo de /health informa la base lista.
+    let raw = reqwest::Client::builder().no_proxy().build().unwrap();
+    let body: serde_json::Value = raw
+        .get(format!("{base}/health"))
+        .bearer_auth(token.expose_secret())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["database"]["state"], "ready", "{body}");
+    assert_eq!(body["database"]["error_code"], serde_json::Value::Null);
 
     // Token incorrecto = 401.
     let wrong = EngineClient::new(
@@ -142,7 +240,6 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
     assert_eq!(wrong.health().await, Err(HealthError::Unauthorized));
 
     // Sin cabecera Authorization = 401.
-    let raw = reqwest::Client::builder().no_proxy().build().unwrap();
     let response = raw.get(format!("{base}/health")).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 401);
 
@@ -183,10 +280,15 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
         !stderr_text.contains("engine.shutdown_forced"),
         "el motor tuvo que forzar el apagado"
     );
+    assert!(
+        !stderr_text.contains(TEST_DB_KEY),
+        "la llave apareció en el log del motor"
+    );
     control.kill();
     let mut all = tree.clone();
     all.push(ready.pid);
     wait_all_gone(&all).await;
+    assert_encrypted_db(dir.path(), TEST_PROFILE);
 }
 
 struct Statuses(mpsc::UnboundedReceiver<EngineStatus>);
@@ -220,7 +322,11 @@ async fn engine_real_supervisor_reinicia_y_apaga_sin_huerfanos() {
     let sink: StatusSink = Arc::new(move |s: &EngineStatus| {
         let _ = tx.send(s.clone());
     });
-    let mode = EngineMode::Managed(Arc::new(DevVenvLauncher::new(dir.path().to_path_buf())));
+    let store = Arc::new(TestStore::default());
+    let mode = EngineMode::Managed {
+        launcher: Arc::new(DevVenvLauncher::new(dir.path().to_path_buf())),
+        db_key: Arc::new(ProfileKeys::new(dir.path().to_path_buf(), store.clone())),
+    };
     let handle = EngineSupervisor::spawn(
         &tokio::runtime::Handle::current(),
         SupervisorConfig::default(),
@@ -231,6 +337,13 @@ async fn engine_real_supervisor_reinicia_y_apaga_sin_huerfanos() {
 
     let ready = statuses.expect(EngineState::Ready).await;
     assert!(ready.version.is_some());
+    // El núcleo creó perfil y llave y el motor abrió la base con ella.
+    assert_eq!(ready.database_error, None, "{:?}", ready.database_error);
+    let profiles: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("profiles.json")).unwrap()).unwrap();
+    let profile = profiles["active_profile_id"].as_str().unwrap().to_owned();
+    let refs: Vec<String> = store.0.lock().unwrap().keys().cloned().collect();
+    assert_eq!(refs, vec![format!("db/{profile}/key")]);
 
     // 1. Matar el intérprete real (pid de `ready`) → restarting → ready.
     let first = handle.diagnostics();
@@ -238,7 +351,10 @@ async fn engine_real_supervisor_reinicia_y_apaga_sin_huerfanos() {
     assert!(first.tree_pids.contains(&engine_pid), "{first:?}");
     kill_pid(engine_pid);
     statuses.expect(EngineState::Restarting).await;
-    statuses.expect(EngineState::Ready).await;
+    let again = statuses.expect(EngineState::Ready).await;
+    // Tras el reinicio se reutiliza la misma llave (sigue habiendo una sola).
+    assert_eq!(again.database_error, None, "{:?}", again.database_error);
+    assert_eq!(store.0.lock().unwrap().len(), 1);
     wait_all_gone(&first.tree_pids).await;
 
     // 2. Matar solo el lanzador del .venv → el intérprete no queda huérfano.
@@ -261,4 +377,5 @@ async fn engine_real_supervisor_reinicia_y_apaga_sin_huerfanos() {
     assert!(!pids.is_empty());
     wait_all_gone(&pids).await;
     assert_eq!(handle.diagnostics(), Default::default());
+    assert_encrypted_db(dir.path(), &profile);
 }

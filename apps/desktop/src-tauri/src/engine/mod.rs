@@ -21,6 +21,7 @@ use serde::Serialize;
 
 use crate::engine::launcher::EngineLauncher;
 use crate::error::AppError;
+use crate::profile::DbKeyProvider;
 
 pub use supervisor::{EngineSupervisor, EngineSupervisorHandle, StatusSink, SupervisorConfig};
 
@@ -37,7 +38,8 @@ pub enum EngineState {
     Error,
 }
 
-/// Carga de `engine_status`, `engine_restart` y del evento `engine://status` (spec §5.2).
+/// Carga de `engine_status`, `engine_restart` y del evento `engine://status`
+/// (spec F0 §5.2; F1a §5.4 añade `database_error`).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct EngineStatus {
     pub state: EngineState,
@@ -45,6 +47,10 @@ pub struct EngineStatus {
     pub version: Option<String>,
     /// Solo cuando `state = error`.
     pub error: Option<AppError>,
+    /// Solo cuando `state = ready`: la base del perfil no está disponible (`db.*` o
+    /// `vault.keyring_unavailable`), leído de `/health` en cada consulta. El motor sigue
+    /// `ready` aunque la base falle (ADR 0009 §4).
+    pub database_error: Option<AppError>,
 }
 
 impl EngineStatus {
@@ -53,14 +59,16 @@ impl EngineStatus {
             state: EngineState::Starting,
             version: None,
             error: None,
+            database_error: None,
         }
     }
 
-    pub fn ready(version: String) -> Self {
+    pub fn ready(version: String, database_error: Option<AppError>) -> Self {
         Self {
             state: EngineState::Ready,
             version: Some(version),
             error: None,
+            database_error,
         }
     }
 
@@ -69,6 +77,7 @@ impl EngineStatus {
             state: EngineState::Restarting,
             version: None,
             error: None,
+            database_error: None,
         }
     }
 
@@ -77,6 +86,7 @@ impl EngineStatus {
             state: EngineState::Error,
             version: None,
             error: Some(error),
+            database_error: None,
         }
     }
 }
@@ -99,16 +109,24 @@ impl fmt::Debug for ExternalTarget {
 
 /// Cómo obtiene el núcleo su motor.
 pub enum EngineMode {
-    /// El núcleo lanza y supervisa el proceso (con reinicios).
-    Managed(Arc<dyn EngineLauncher>),
+    /// El núcleo lanza y supervisa el proceso (con reinicios). En cada arranque prepara
+    /// la llave de la base con `db_key` y la envía como 2.ª línea de stdin (ADR 0010 §1).
+    Managed {
+        launcher: Arc<dyn EngineLauncher>,
+        db_key: Arc<dyn DbKeyProvider>,
+    },
     /// Motor externo de desarrollo, sin reinicios. `Err` si la configuración es inválida.
+    ///
+    /// No hay stdin: el núcleo no toca el perfil ni la llave. El motor `--dev` usa su
+    /// propia base de desarrollo con la llave de `.env.local` (`FARO_ENGINE_DEV_DB_KEY`,
+    /// ADR 0009); `database_error` se sigue leyendo de `/health`.
     External(Result<ExternalTarget, AppError>),
 }
 
 impl fmt::Debug for EngineMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Managed(_) => f.write_str("EngineMode::Managed"),
+            Self::Managed { .. } => f.write_str("EngineMode::Managed"),
             Self::External(target) => f.debug_tuple("EngineMode::External").field(target).finish(),
         }
     }
@@ -176,7 +194,9 @@ fn dev_env() -> (Option<String>, Option<String>) {
 /// - Debug: externo si `FARO_ENGINE_DEV_URL` está definida y no vacía; si no, gestionado
 ///   desde `apps/engine/.venv`.
 /// - Release (F0): sin sidecar → `engine.start_failed`.
-pub fn default_mode(data_dir: std::path::PathBuf) -> EngineMode {
+///
+/// `db_key` solo se usa en modo gestionado.
+pub fn default_mode(data_dir: std::path::PathBuf, db_key: Arc<dyn DbKeyProvider>) -> EngineMode {
     #[cfg(debug_assertions)]
     {
         let (url, token) = dev_env();
@@ -185,12 +205,18 @@ pub fn default_mode(data_dir: std::path::PathBuf) -> EngineMode {
             return EngineMode::External(target);
         }
         tracing::info!("motor en modo gestionado desde apps/engine/.venv");
-        EngineMode::Managed(Arc::new(launcher::DevVenvLauncher::new(data_dir)))
+        EngineMode::Managed {
+            launcher: Arc::new(launcher::DevVenvLauncher::new(data_dir)),
+            db_key,
+        }
     }
     #[cfg(not(debug_assertions))]
     {
         let _ = data_dir;
-        EngineMode::Managed(Arc::new(launcher::UnavailableLauncher))
+        EngineMode::Managed {
+            launcher: Arc::new(launcher::UnavailableLauncher),
+            db_key,
+        }
     }
 }
 
@@ -204,12 +230,21 @@ mod tests {
     fn engine_status_serializa_en_snake_case() {
         assert_eq!(
             serde_json::to_value(EngineStatus::starting()).unwrap(),
-            json!({"state": "starting", "version": null, "error": null})
+            json!({"state": "starting", "version": null, "error": null, "database_error": null})
         );
         assert_eq!(
-            serde_json::to_value(EngineStatus::ready("0.1.0".into())).unwrap(),
-            json!({"state": "ready", "version": "0.1.0", "error": null})
+            serde_json::to_value(EngineStatus::ready("0.1.0".into(), None)).unwrap(),
+            json!({"state": "ready", "version": "0.1.0", "error": null, "database_error": null})
         );
+        let with_db = serde_json::to_value(EngineStatus::ready(
+            "0.1.0".into(),
+            Some(AppError::db_too_new()),
+        ))
+        .unwrap();
+        assert_eq!(with_db["state"], "ready");
+        assert_eq!(with_db["error"], serde_json::Value::Null);
+        assert_eq!(with_db["database_error"]["code"], "db.too_new");
+        assert!(with_db["database_error"]["message"].is_string());
         assert_eq!(
             serde_json::to_value(EngineStatus::restarting()).unwrap()["state"],
             "restarting"

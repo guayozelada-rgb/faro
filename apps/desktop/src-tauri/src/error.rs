@@ -91,6 +91,66 @@ impl AppError {
         )
     }
 
+    // --- db (informados por el motor en `/health`, spec F1a §5.6) ---
+
+    pub fn db_key_missing() -> Self {
+        Self::new(
+            "db.key_missing",
+            "No encontramos la llave de tus datos en el llavero de tu computadora. Tus datos siguen guardados, pero Faro no puede abrirlos.",
+        )
+    }
+
+    pub fn db_wrong_key() -> Self {
+        Self::new(
+            "db.wrong_key",
+            "No pudimos abrir tus datos de Faro con la llave guardada en tu computadora.",
+        )
+    }
+
+    pub fn db_migration_failed() -> Self {
+        Self::new(
+            "db.migration_failed",
+            "No pudimos actualizar tus datos de Faro. Tus datos anteriores están a salvo en una copia. Intenta de nuevo.",
+        )
+    }
+
+    pub fn db_migration_tampered() -> Self {
+        Self::new(
+            "db.migration_tampered",
+            "Los datos de Faro se modificaron fuera de la app y no es seguro abrirlos.",
+        )
+    }
+
+    pub fn db_too_new() -> Self {
+        Self::new(
+            "db.too_new",
+            "Tus datos son de una versión más nueva de Faro. Actualiza Faro para abrirlos.",
+        )
+    }
+
+    pub fn db_unavailable() -> Self {
+        Self::new(
+            "db.unavailable",
+            "Tus datos de Faro no están disponibles ahora. Reinicia Faro.",
+        )
+    }
+
+    /// Error de la base según el código que informa el motor en `/health`.
+    ///
+    /// Solo se aceptan códigos conocidos (el mensaje sale siempre del núcleo, nunca del
+    /// motor); cualquier otro se muestra como `db.unavailable`.
+    pub fn from_database_code(code: Option<&str>) -> Self {
+        match code {
+            Some("db.key_missing") => Self::db_key_missing(),
+            Some("db.wrong_key") => Self::db_wrong_key(),
+            Some("db.migration_failed") => Self::db_migration_failed(),
+            Some("db.migration_tampered") => Self::db_migration_tampered(),
+            Some("db.too_new") => Self::db_too_new(),
+            Some("vault.keyring_unavailable") => Self::vault_keyring_unavailable(),
+            _ => Self::db_unavailable(),
+        }
+    }
+
     // --- vault ---
 
     pub fn vault_invalid_input() -> Self {
@@ -216,6 +276,27 @@ mod tests {
     }
 
     #[test]
+    fn codigos_de_base_conocidos_y_desconocidos() {
+        for code in [
+            "db.key_missing",
+            "db.wrong_key",
+            "db.migration_failed",
+            "db.migration_tampered",
+            "db.too_new",
+            "vault.keyring_unavailable",
+            "db.unavailable",
+        ] {
+            assert_eq!(AppError::from_database_code(Some(code)).code, code);
+        }
+        // Nunca se reenvía un código o texto arbitrario del motor.
+        for code in [None, Some(""), Some("db.otro"), Some("<script>")] {
+            let err = AppError::from_database_code(code);
+            assert_eq!(err.code, "db.unavailable");
+            assert!(!err.message.contains("script"));
+        }
+    }
+
+    #[test]
     fn display_muestra_solo_el_codigo() {
         assert_eq!(
             AppError::vault_not_found().to_string(),
@@ -241,11 +322,17 @@ mod tests {
             AppError::vault_provider_unreachable(),
             AppError::vault_provider_rate_limited(),
             AppError::vault_provider_error(),
+            AppError::db_key_missing(),
+            AppError::db_wrong_key(),
+            AppError::db_migration_failed(),
+            AppError::db_migration_tampered(),
+            AppError::db_too_new(),
+            AppError::db_unavailable(),
         ];
         for err in all {
             let (domain, reason) = err.code.split_once('.').unwrap();
             assert!(
-                ["internal", "engine", "vault"].contains(&domain),
+                ["internal", "engine", "vault", "db"].contains(&domain),
                 "{}",
                 err.code
             );

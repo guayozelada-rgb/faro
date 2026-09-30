@@ -20,8 +20,17 @@ from fastapi import FastAPI
 
 from faro_engine import __main__ as entry
 from faro_engine.core import protocol
+from faro_engine.core.db.profile import dev_data_dir, profile_db_path
+from tests.db.helpers import (
+    DB_KEY_ERROR_LINE,
+    TEST_KEY_HEX,
+    TEST_PROFILE_ID,
+    db_key_line,
+    key,
+)
 
 WAIT = 10.0
+NL = b"\n"
 
 
 class ReadySink(io.BytesIO):
@@ -72,7 +81,7 @@ def _run_in_thread(**kwargs: Any) -> tuple[threading.Thread, list[int]]:
 
 def test_run_serves_and_stops_on_eof(pipe: Pipe, tmp_path: Path) -> None:
     token = secrets.token_urlsafe(32)
-    pipe.write(token.encode("ascii") + b"\n")
+    pipe.write(token.encode("ascii") + b"\n" + db_key_line())
     sink = ReadySink()
     data_dir = tmp_path / "a" / "b"
     thread, result = _run_in_thread(
@@ -86,7 +95,10 @@ def test_run_serves_and_stops_on_eof(pipe: Pipe, tmp_path: Path) -> None:
 
     with httpx.Client(trust_env=False, timeout=5.0) as http:
         url = f"http://127.0.0.1:{ready['port']}/health"
-        assert http.get(url, headers={"Authorization": f"Bearer {token}"}).status_code == 200
+        response = http.get(url, headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200
+        assert response.json()["database"]["state"] == "ready"
+    assert profile_db_path(data_dir, TEST_PROFILE_ID).is_file()
 
     pipe.close_write()
     thread.join(WAIT)
@@ -105,13 +117,20 @@ def test_run_dev_mode_reads_env_file(pipe: Pipe, tmp_path: Path) -> None:
     )
     sink = ReadySink()
     thread, result = _run_in_thread(
-        argv=["--dev"], stdin_fd=pipe.read_fd, out=sink, env_file=env_file, frozen=False
+        argv=["--dev", "--data-dir", str(tmp_path / "devdata")],
+        stdin_fd=pipe.read_fd,
+        out=sink,
+        env_file=env_file,
+        frozen=False,
     )
     assert sink.flushed.wait(WAIT)
     assert json.loads(sink.getvalue())["port"] == port
     with httpx.Client(trust_env=False, timeout=5.0) as http:
         url = f"http://127.0.0.1:{port}/health"
-        assert http.get(url, headers={"Authorization": f"Bearer {token}"}).status_code == 200
+        response = http.get(url, headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200
+        # Sin FARO_ENGINE_DEV_DB_KEY la base de desarrollo no está disponible.
+        assert response.json()["database"]["error_code"] == "db.key_missing"
         assert http.get(f"http://127.0.0.1:{port}/docs").status_code == 401
 
     pipe.write(b'{"event":"shutdown"}\n')
@@ -139,7 +158,7 @@ def test_run_rejects_dev_when_frozen() -> None:
 
 def test_run_dev_with_missing_env_file(pipe: Pipe, tmp_path: Path) -> None:
     code = entry.run(
-        ["--dev"],
+        ["--dev", "--data-dir", str(tmp_path / "devdata")],
         stdin_fd=pipe.read_fd,
         out=ReadySink(),
         env_file=tmp_path / "missing.env",
@@ -174,7 +193,7 @@ def test_run_port_in_use_exits_1(pipe: Pipe) -> None:
         busy.bind(("127.0.0.1", 0))
         busy.listen(1)
         port = busy.getsockname()[1]
-        pipe.write(secrets.token_urlsafe(32).encode("ascii") + b"\n")
+        pipe.write(secrets.token_urlsafe(32).encode("ascii") + b"\n" + DB_KEY_ERROR_LINE)
         sink = ReadySink()
         code = entry.run(["--port", str(port)], stdin_fd=pipe.read_fd, out=sink)
     assert code == entry.EXIT_BIND_FAILED
@@ -300,3 +319,127 @@ def test_handle_stop_signals_outside_main_thread_is_noop() -> None:
     thread.start()
     thread.join(WAIT)
     assert seen == [before]
+
+
+# --- Base de datos en el arranque (ADR 0009 §4, ADR 0010 §1) ---------------------------
+
+
+def _health(port: int, token: str) -> dict[str, Any]:
+    with httpx.Client(trust_env=False, timeout=5.0) as http:
+        response = http.get(
+            f"http://127.0.0.1:{port}/health", headers={"Authorization": f"Bearer {token}"}
+        )
+    assert response.status_code == 200
+    data: dict[str, Any] = response.json()
+    return data
+
+
+def test_run_without_db_key_line_starts_with_key_missing(pipe: Pipe, tmp_path: Path) -> None:
+    token = secrets.token_urlsafe(32)
+    pipe.write(token.encode("ascii") + NL)
+    sink = ReadySink()
+    thread, result = _run_in_thread(
+        argv=["--data-dir", str(tmp_path)], stdin_fd=pipe.read_fd, out=sink, db_key_timeout=0.05
+    )
+    assert sink.flushed.wait(WAIT)
+    port = json.loads(sink.getvalue())["port"]
+    assert _health(port, token)["database"] == {
+        "state": "unavailable",
+        "error_code": "db.key_missing",
+        "newer_schema": False,
+    }
+    assert not (tmp_path / "profiles").exists()  # sin llave nunca se crea el archivo
+    pipe.write(b'{"event":"shutdown"}' + NL)
+    thread.join(WAIT)
+    assert result == [entry.EXIT_OK]
+
+
+def test_run_core_error_line_is_reported(pipe: Pipe, tmp_path: Path) -> None:
+    token = secrets.token_urlsafe(32)
+    line = json.dumps(
+        {"event": "db_key", "profile": TEST_PROFILE_ID, "error": "vault.keyring_unavailable"}
+    )
+    pipe.write(token.encode("ascii") + NL + line.encode("ascii") + NL)
+    sink = ReadySink()
+    thread, result = _run_in_thread(
+        argv=["--data-dir", str(tmp_path)], stdin_fd=pipe.read_fd, out=sink
+    )
+    assert sink.flushed.wait(WAIT)
+    port = json.loads(sink.getvalue())["port"]
+    assert _health(port, token)["database"]["error_code"] == "vault.keyring_unavailable"
+    pipe.close_write()
+    thread.join(WAIT)
+    assert result == [entry.EXIT_OK]
+
+
+def test_run_shutdown_instead_of_db_key_exits_without_ready(pipe: Pipe) -> None:
+    pipe.write(secrets.token_urlsafe(32).encode("ascii") + NL + b'{"event":"shutdown"}' + NL)
+    sink = ReadySink()
+    assert entry.run([], stdin_fd=pipe.read_fd, out=sink) == entry.EXIT_OK
+    assert sink.getvalue() == b""
+
+
+def test_run_eof_after_token_starts_and_stops(pipe: Pipe) -> None:
+    pipe.write(secrets.token_urlsafe(32).encode("ascii") + NL)
+    pipe.close_write()
+    sink = ReadySink()
+    thread, result = _run_in_thread(argv=[], stdin_fd=pipe.read_fd, out=sink)
+    thread.join(WAIT)
+    assert result == [entry.EXIT_OK]  # el EOF (núcleo caído) apaga tras `ready`
+    assert sink.getvalue().count(NL) == 1
+
+
+def test_run_dev_mode_with_dev_database(pipe: Pipe, tmp_path: Path) -> None:
+    token = secrets.token_urlsafe(32)
+    port = _free_port()
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        f"FARO_ENGINE_DEV_TOKEN={token}\nFARO_ENGINE_DEV_PORT={port}\n"
+        f"FARO_ENGINE_DEV_DB_KEY={TEST_KEY_HEX}\nFARO_ENGINE_DEV_PROFILE_ID={TEST_PROFILE_ID}\n",
+        encoding="utf-8",
+    )
+    data_dir = tmp_path / "devdata"
+    sink = ReadySink()
+    thread, result = _run_in_thread(
+        argv=["--dev", "--data-dir", str(data_dir)],
+        stdin_fd=pipe.read_fd,
+        out=sink,
+        env_file=env_file,
+        frozen=False,
+    )
+    assert sink.flushed.wait(WAIT)
+    assert _health(port, token)["database"]["state"] == "ready"
+    assert profile_db_path(data_dir, TEST_PROFILE_ID).is_file()
+    pipe.write(b'{"event":"shutdown"}' + NL)
+    thread.join(WAIT)
+    assert result == [entry.EXIT_OK]
+
+
+def test_run_dev_uses_devdata_by_default(
+    pipe: Pipe, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    default_dir = tmp_path / "por-defecto"
+    monkeypatch.setattr("faro_engine.__main__.dev_data_dir", lambda: default_dir)
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        f"FARO_ENGINE_DEV_TOKEN={secrets.token_urlsafe(32)}\nFARO_ENGINE_DEV_DB_KEY=zz\n",
+        encoding="utf-8",
+    )
+    code = entry.run(
+        ["--dev"], stdin_fd=pipe.read_fd, out=ReadySink(), env_file=env_file, frozen=False
+    )
+    assert code == entry.EXIT_USAGE  # llave de desarrollo inválida: error de configuración
+    assert default_dir.is_dir()
+
+
+def test_open_database_without_data_dir_wipes_key() -> None:
+    value = key()
+    line = protocol.DbKeyLine(profile_id=TEST_PROFILE_ID, key=value)
+    database = entry.open_database(None, line)
+    assert database.status.error_code == "db.unavailable"
+    assert value == bytearray(64)
+    assert line.key is None
+
+
+def test_dev_data_dir_is_inside_engine() -> None:
+    assert dev_data_dir() == Path(entry.__file__).resolve().parents[1] / ".devdata"
