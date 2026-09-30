@@ -1,0 +1,47 @@
+{
+  "name": "concersa/faro-wp-plugin",
+  "description": "Plugin de WordPress que conecta tu sitio con Faro.",
+  "type": "wordpress-plugin",
+  "license": "GPL-2.0-or-later",
+  "authors": [
+    {
+      "name": "Concersa"
+    }
+  ],
+  "require": {
+    "php": ">=8.1"
+  },
+  "require-dev": {
+    "dealerdirect/phpcodesniffer-composer-installer": "^1.0",
+    "php-stubs/woocommerce-stubs": "^10.0 || ^11.0",
+    "phpcompatibility/phpcompatibility-wp": "^2.1",
+    "phpstan/phpstan": "^2.1",
+    "phpunit/phpunit": "^9.6",
+    "szepeviktor/phpstan-wordpress": "^2.0",
+    "wp-coding-standards/wpcs": "^3.1",
+    "yoast/phpunit-polyfills": "^4.0"
+  },
+  "config": {
+    "allow-plugins": {
+      "dealerdirect/phpcodesniffer-composer-installer": true
+    },
+    "platform": {
+      "php": "8.1.0"
+    },
+    "sort-packages": true
+  },
+  "scripts": {
+    "phpcs": "phpcs",
+    "phpcbf": "phpcbf",
+    "phpstan": "phpstan analyse --memory-limit=1G --no-progress",
+    "test": "phpunit",
+    "test:hpos": [
+      "@putenv FARO_TEST_HPOS=1",
+      "phpunit"
+    ],
+    "test:legacy": [
+      "@putenv FARO_TEST_HPOS=0",
+      "phpunit"
+    ]
+  }
+}

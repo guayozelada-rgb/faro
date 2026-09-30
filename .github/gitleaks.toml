@@ -12,3 +12,18 @@ description = "Marcador de prueba del motor (no es un secreto): comprueba que no
 condition = "AND"
 paths = ['''(^|/)apps/engine/tests/test_errors\.py$''']
 regexes = ['''^valor-que-no-debe-salir-1234$''']
+
+# Vectores de prueba de la firma v1 (ADR 0011 §2, spec F1a §4.6). Son datos públicos de
+# prueba que usan PHPUnit y pytest para comprobar la misma firma en ambos lados; no dan
+# acceso a nada. Decodificados en base64url dicen literalmente
+# "test-faro-hmac-secret-not-real-1" y "test-faro-hmac-secret-not-real-2". La regla
+# `generic-api-key` los detecta por la clave `hmac_secret`. Solo se permiten esos dos
+# valores exactos y solo en este archivo.
+[[allowlists]]
+description = "Vectores de prueba de la firma v1 del plugin (hmac_secret de prueba, no son secretos)"
+condition = "AND"
+paths = ['''^packages/shared/fixtures/wp-signature-v1\.json$''']
+regexes = [
+  '''^dGVzdC1mYXJvLWhtYWMtc2VjcmV0LW5vdC1yZWFsLTE$''',
+  '''^dGVzdC1mYXJvLWhtYWMtc2VjcmV0LW5vdC1yZWFsLTI$''',
+]

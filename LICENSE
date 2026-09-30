@@ -5,6 +5,10 @@ licencia, expresa ni implícita, para usar, copiar, modificar, fusionar, publica
 distribuir, sublicenciar ni vender este software o cualquier parte de él, ni para
 crear obras derivadas, sin el permiso previo y por escrito de Concersa.
 
+Excepción: el contenido de packages/wp-plugin/ se distribuye bajo GPL-2.0-or-later;
+ver packages/wp-plugin/LICENSE. El resto del repositorio sigue siendo "Todos los
+derechos reservados".
+
 ---
 
 Copyright © 2026 Concersa. All rights reserved.
@@ -13,3 +17,7 @@ This source code is published for reference only. No license, express or
 implied, is granted to use, copy, modify, merge, publish, distribute, sublicense
 or sell this software or any part of it, or to create derivative works, without
 the prior written permission of Concersa.
+
+Exception: the contents of packages/wp-plugin/ are distributed under
+GPL-2.0-or-later; see packages/wp-plugin/LICENSE. The rest of the repository
+remains "All rights reserved".

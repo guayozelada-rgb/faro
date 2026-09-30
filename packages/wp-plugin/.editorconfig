@@ -1,0 +1,4 @@
+# Estilo de WordPress: tabulaciones en PHP (WordPress Coding Standards).
+[*.php]
+indent_style = tab
+indent_size = 4

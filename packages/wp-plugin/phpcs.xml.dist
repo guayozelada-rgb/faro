@@ -1,0 +1,55 @@
+<?xml version="1.0"?>
+<ruleset name="Faro">
+	<description>WordPress Coding Standards y compatibilidad con PHP 8.1+ para el plugin Faro.</description>
+
+	<file>.</file>
+	<exclude-pattern>/vendor/*</exclude-pattern>
+	<exclude-pattern>/dist/*</exclude-pattern>
+	<exclude-pattern>/node_modules/*</exclude-pattern>
+
+	<arg name="extensions" value="php"/>
+	<arg name="basepath" value="."/>
+	<arg name="colors"/>
+	<arg value="sp"/>
+
+	<config name="minimum_wp_version" value="6.0"/>
+	<config name="testVersion" value="8.1-"/>
+
+	<rule ref="WordPress"/>
+	<rule ref="PHPCompatibilityWP"/>
+
+	<rule ref="WordPress.WP.I18n">
+		<properties>
+			<property name="text_domain" type="array">
+				<element value="faro"/>
+			</property>
+		</properties>
+	</rule>
+
+	<rule ref="WordPress.NamingConventions.PrefixAllGlobals">
+		<properties>
+			<property name="prefixes" type="array">
+				<element value="faro"/>
+			</property>
+		</properties>
+	</rule>
+
+	<!-- Pruebas: nombres de archivo test-*.php (convención del WP test suite). -->
+	<rule ref="WordPress.Files.FileName.InvalidClassFileName">
+		<exclude-pattern>/tests/*</exclude-pattern>
+	</rule>
+	<rule ref="WordPress.Files.FileName.NotHyphenatedLowercase">
+		<exclude-pattern>/tests/*</exclude-pattern>
+	</rule>
+
+	<!-- Pruebas (no se distribuyen en el zip): sin docblock por prueba ni prefijos en clases y constantes del test suite. -->
+	<rule ref="Squiz.Commenting.FunctionComment.Missing">
+		<exclude-pattern>/tests/test-*</exclude-pattern>
+	</rule>
+	<rule ref="WordPress.NamingConventions.PrefixAllGlobals">
+		<exclude-pattern>/tests/*</exclude-pattern>
+	</rule>
+	<rule ref="WordPress.Security.NonceVerification">
+		<exclude-pattern>/tests/*</exclude-pattern>
+	</rule>
+</ruleset>

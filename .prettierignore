@@ -15,6 +15,12 @@ apps/desktop/src-tauri/binaries/
 package-lock.json
 Cargo.lock
 uv.lock
+composer.lock
+
+# Plugin de WordPress: herramientas de Composer y zip generado (Prettier no lee el
+# .gitignore anidado de packages/wp-plugin)
+packages/wp-plugin/vendor/
+packages/wp-plugin/dist/
 
 # Motor Python (lo formatea ruff)
 apps/engine/.venv/

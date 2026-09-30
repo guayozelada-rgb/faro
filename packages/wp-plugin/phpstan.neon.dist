@@ -1,0 +1,16 @@
+includes:
+	- vendor/szepeviktor/phpstan-wordpress/extension.neon
+
+parameters:
+	level: 8
+	phpVersion: 80100
+	paths:
+		- faro.php
+		- uninstall.php
+		- includes
+		- admin
+	bootstrapFiles:
+		- tests/phpstan-bootstrap.php
+	scanFiles:
+		- vendor/php-stubs/woocommerce-stubs/woocommerce-stubs.php
+		- vendor/php-stubs/woocommerce-stubs/woocommerce-packages-stubs.php
