@@ -169,27 +169,159 @@ fn sin_llave_y_sin_db_genera_una_nueva() {
 }
 
 #[test]
-fn llave_con_forma_invalida_solo_se_reemplaza_sin_db() {
+fn entrada_con_forma_invalida_nunca_se_sobrescribe() {
     let (_dir, store, keys) = setup();
     let profile_id = keys.prepare().profile_id().to_owned();
     let secret_ref = db_key_ref(&profile_id);
     store
         .set(&secret_ref, &SecretString::from("corrupta".to_owned()))
         .unwrap();
-    // Sin base: se reemplaza.
+    // Sin base ni copias: tampoco se toca.
+    assert!(!keys.db_path(&profile_id).exists());
     let message = keys.prepare();
-    assert_eq!(message.outcome(), KeyOutcome::Generated);
-    // Con base: nunca.
-    store
-        .set(&secret_ref, &SecretString::from("corrupta".to_owned()))
-        .unwrap();
-    touch_db(&keys, &profile_id);
-    let message = keys.prepare();
+    assert_eq!(message.outcome(), KeyOutcome::KeyMissing);
     assert_eq!(message.error_code(), Some(DB_KEY_MISSING));
+    assert_eq!(message.profile_id(), profile_id);
     assert_eq!(
         store.get(&secret_ref).unwrap().unwrap().expose_secret(),
         "corrupta"
     );
+    // Con base, igual.
+    touch_db(&keys, &profile_id);
+    assert_eq!(keys.prepare().error_code(), Some(DB_KEY_MISSING));
+    assert_eq!(
+        store.get(&secret_ref).unwrap().unwrap().expose_secret(),
+        "corrupta"
+    );
+}
+
+/// Crea `profiles/<name>` (o `profiles/backups/<name>`).
+fn touch_data(dir: &std::path::Path, relative: &str) {
+    let path = dir.join(PROFILES_DIR).join(relative);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, b"datos").unwrap();
+}
+
+#[test]
+fn sin_db_pero_con_wal_shm_o_copia_es_key_missing_sin_generar() {
+    for data in [
+        "{id}.db-wal",
+        "{id}.db-shm",
+        "backups/{id}-v0001-20260930T120000Z.db",
+    ] {
+        let (dir, store, keys) = setup();
+        let profile_id = keys.prepare().profile_id().to_owned();
+        store.delete(&db_key_ref(&profile_id)).unwrap();
+        touch_data(dir.path(), &data.replace("{id}", &profile_id));
+        assert!(!keys.db_path(&profile_id).exists());
+        let message = keys.prepare();
+        assert_eq!(message.outcome(), KeyOutcome::KeyMissing, "{data}");
+        assert_eq!(message.error_code(), Some(DB_KEY_MISSING), "{data}");
+        assert!(store.refs().is_empty(), "no debe generar llave: {data}");
+    }
+}
+
+#[test]
+fn archivos_de_otro_perfil_o_ajenos_no_bloquean_la_llave_nueva() {
+    let (dir, store, keys) = setup();
+    let profile_id = keys.prepare().profile_id().to_owned();
+    store.delete(&db_key_ref(&profile_id)).unwrap();
+    // Datos de otro perfil y nombres que no son de una base de este perfil.
+    touch_data(dir.path(), "0192f0a0-0000-7000-8000-000000000009.db");
+    touch_data(dir.path(), &format!("{profile_id}.txt"));
+    touch_data(dir.path(), &format!("backups/{profile_id}.db"));
+    let message = keys.prepare();
+    assert_eq!(message.outcome(), KeyOutcome::Generated);
+    assert_eq!(message.profile_id(), profile_id);
+}
+
+#[test]
+fn sin_profiles_json_se_adopta_el_unico_perfil_con_llave() {
+    let (dir, store, keys) = setup();
+    let first = keys.prepare();
+    let profile_id = first.profile_id().to_owned();
+    touch_db(&keys, &profile_id);
+    std::fs::remove_file(dir.path().join(PROFILES_FILE)).unwrap();
+
+    let message = keys.prepare();
+    assert_eq!(message.outcome(), KeyOutcome::Adopted);
+    assert_eq!(message.profile_id(), profile_id);
+    assert_eq!(key_of(&message), key_of(&first));
+    assert_eq!(read_file(dir.path()).active_profile_id, profile_id);
+    assert_eq!(store.refs(), vec![db_key_ref(&profile_id)]);
+    // Y en el siguiente arranque se reutiliza con normalidad.
+    let again = keys.prepare();
+    assert_eq!(again.outcome(), KeyOutcome::Reused);
+    assert_eq!(key_of(&again), key_of(&first));
+}
+
+#[test]
+fn sin_profiles_json_se_adopta_tambien_con_solo_una_copia() {
+    let (dir, _store, keys) = setup();
+    let first = keys.prepare();
+    let profile_id = first.profile_id().to_owned();
+    touch_data(
+        dir.path(),
+        &format!("backups/{profile_id}-v0001-20260930T120000Z.db"),
+    );
+    std::fs::remove_file(dir.path().join(PROFILES_FILE)).unwrap();
+    let message = keys.prepare();
+    assert_eq!(message.outcome(), KeyOutcome::Adopted);
+    assert_eq!(key_of(&message), key_of(&first));
+}
+
+#[test]
+fn sin_profiles_json_con_dos_perfiles_no_se_crea_nada() {
+    let (dir, store, keys) = setup();
+    touch_data(dir.path(), "0192f0a0-0000-7000-8000-000000000001.db");
+    touch_data(dir.path(), "0192f0a0-0000-7000-8000-000000000002.db-wal");
+    let message = keys.prepare();
+    assert_eq!(message.outcome(), KeyOutcome::OrphanData);
+    assert_eq!(message.profile_id(), NIL_PROFILE_ID);
+    assert_eq!(message.error_code(), Some(DB_KEY_MISSING));
+    assert!(store.refs().is_empty());
+    assert!(!dir.path().join(PROFILES_FILE).exists());
+}
+
+#[test]
+fn sin_profiles_json_con_un_perfil_sin_llave_no_se_genera() {
+    for stored in [None, Some("corrupta")] {
+        let (dir, store, keys) = setup();
+        let orphan = "0192f0a0-0000-7000-8000-000000000003";
+        touch_data(dir.path(), &format!("{orphan}.db"));
+        if let Some(value) = stored {
+            store
+                .set(&db_key_ref(orphan), &SecretString::from(value.to_owned()))
+                .unwrap();
+        }
+        let message = keys.prepare();
+        assert_eq!(message.outcome(), KeyOutcome::OrphanData, "{stored:?}");
+        assert_eq!(message.profile_id(), NIL_PROFILE_ID);
+        assert_eq!(message.error_code(), Some(DB_KEY_MISSING));
+        assert!(!dir.path().join(PROFILES_FILE).exists());
+        match stored {
+            None => assert!(store.refs().is_empty()),
+            Some(value) => assert_eq!(
+                store
+                    .get(&db_key_ref(orphan))
+                    .unwrap()
+                    .unwrap()
+                    .expose_secret(),
+                value
+            ),
+        }
+    }
+}
+
+#[test]
+fn sin_profiles_json_con_llavero_caido_no_se_crea_nada() {
+    let (dir, store, keys) = setup();
+    touch_data(dir.path(), "0192f0a0-0000-7000-8000-000000000004.db");
+    store.set_unavailable(true);
+    let message = keys.prepare();
+    assert_eq!(message.error_code(), Some(KEYRING_UNAVAILABLE));
+    assert_eq!(message.profile_id(), NIL_PROFILE_ID);
+    assert!(!dir.path().join(PROFILES_FILE).exists());
 }
 
 #[test]
