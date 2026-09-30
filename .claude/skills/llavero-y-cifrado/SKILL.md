@@ -70,7 +70,7 @@ Antes de responder, el núcleo comprueba:
 
 - Rust (`tracing`): nunca registres valores de secretos, cabeceras ni cuerpos; campos permitidos: `provider`, `secret_ref`, `op`, `kind`. `SecretString` imprime `[REDACTED]` si se cuela.
 - Python (`structlog`): `drop_sensitive_keys` en `core/logging.py` elimina campos con nombre sensible (`authorization`, `token`, `secret`, `api_key`, …). Añade al conjunto cualquier nombre nuevo (`hmac_secret`, `refresh_token`, `key`).
-- Pendiente de F1a: filtro por **valor** en ambas capas (`sk-…`, `AIza…`, hex de 64, JWT) como segunda defensa, con prueba que registra un secreto falso y comprueba que no sale.
+- Filtro por **valor** (ADR 0013), segunda defensa: en Rust ya está en `src-tauri/src/logging/redact.rs` (`sk-…`, `AIza…`, JWT, `Bearer …`, hex de 64, base64url de 43, y campos sensibles por nombre, también dentro del JSON del motor), con prueba que registra secretos falsos y comprueba que no salen. En Python (structlog) queda pendiente para T7.
 
 ## Auditoría local (`audit_log`)
 

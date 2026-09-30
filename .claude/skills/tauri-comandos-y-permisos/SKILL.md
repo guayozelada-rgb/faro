@@ -114,14 +114,14 @@ commands.allow = ["vault_add_key"]
   "identifier": "main",
   "windows": ["main"],
   "permissions": [
-    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
     "allow-vault-add-key",
-    "allow-engine-call",
-    "notification:default",
-    "updater:default"
+    "allow-engine-status"
   ]
 }
 ```
+Nunca `core:default` ni otros conjuntos amplios: solo los permisos de core que la interfaz usa de verdad (hoy, escuchar eventos). `build.rs` falla si `capabilities/` tiene algo distinto de `main.json`, si `tauri.conf.json` no fija `"capabilities": ["main"]` o si `main` concede un permiso ajeno fuera de `ALLOWED_FOREIGN_PERMISSIONS`.
 
 ## Prohibido sin ADR y revisión de seguridad
 - `shell:allow-execute` / `shell:allow-spawn` para cualquier cosa que no sea el sidecar `faro-engine` (con `"sidecar": true`).
