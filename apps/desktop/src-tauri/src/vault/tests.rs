@@ -667,3 +667,66 @@ async fn ningun_log_contiene_la_clave() {
     assert!(!logs.contains("clave con espacios"));
     assert!(!logs.to_ascii_lowercase().contains("bearer"));
 }
+
+// ---------- auditoría de la Bóveda (F1a T8, ADR 0010 §4) ----------
+
+#[tokio::test]
+async fn cada_operacion_deja_un_evento_de_auditoria_sin_la_clave() {
+    use crate::engine::supervisor::StdinWriter;
+    use crate::secrets::audit::AuditQueue;
+    use tokio::io::AsyncBufReadExt;
+
+    let server = FakeProviders::start().await;
+    let store = Arc::new(MemoryStore::new());
+    let checker = Arc::new(HttpProviderChecker::for_tests(server.bases(), TIMEOUT).unwrap());
+    let audit = AuditQueue::spawn(&tokio::runtime::Handle::current());
+    let (core, engine) = tokio::io::duplex(1024 * 1024);
+    audit.attach(StdinWriter::spawn(Box::new(core)));
+    let vault = VaultService::new(store.clone(), checker, Arc::new(|| NOW.to_owned()))
+        .with_audit(audit.clone());
+
+    let p = Provider::Openai;
+    vault.add(add_input(p, SECRET, false)).await.unwrap();
+    vault.add(add_input(p, SECRET_2, true)).await.unwrap();
+    vault.add(add_input(p, SECRET, false)).await.unwrap_err();
+    vault.add(add_input(p, "corta", true)).await.unwrap_err();
+    vault.test(p).await.unwrap();
+    server.reply(p, Reply::Status(401, "{}"));
+    vault.test(p).await.unwrap();
+    vault.delete(p).await.unwrap();
+    vault.test(p).await.unwrap_err();
+    store.set_unavailable(true);
+    vault.delete(p).await.unwrap_err();
+
+    assert_eq!(audit.sync().await, 0);
+    let expected = [
+        ("secret.added", "ok", None),
+        ("secret.replaced", "ok", None),
+        ("secret.added", "error", Some("vault.already_exists")),
+        ("secret.replaced", "error", Some("vault.invalid_input")),
+        ("secret.tested", "ok", None),
+        ("secret.tested", "error", Some("vault.invalid_key")),
+        ("secret.deleted", "ok", None),
+        ("secret.tested", "error", Some("vault.not_found")),
+        ("secret.deleted", "error", Some("vault.keyring_unavailable")),
+    ];
+    let mut reader = tokio::io::BufReader::new(engine);
+    for (action, result, code) in expected {
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        assert_no_secret(&line);
+        assert!(!line.contains("last4") && !line.contains("1a2B") && !line.contains("9z8Y"));
+        let event: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(event["event"], "audit");
+        assert_eq!(event["actor"], "user");
+        assert_eq!(event["action"], action, "{line}");
+        assert_eq!(event["result"], result, "{line}");
+        assert_eq!(event["secret_ref"], "llm/openai/default");
+        assert_eq!(event["run_id"], serde_json::Value::Null);
+        assert_eq!(event["details"]["provider"], "openai");
+        match code {
+            Some(code) => assert_eq!(event["details"]["error_code"], code, "{line}"),
+            None => assert!(event["details"].get("error_code").is_none(), "{line}"),
+        }
+    }
+}

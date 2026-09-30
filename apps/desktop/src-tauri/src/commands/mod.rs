@@ -9,3 +9,4 @@
 
 pub mod engine;
 pub mod vault;
+pub mod wp_plugin;

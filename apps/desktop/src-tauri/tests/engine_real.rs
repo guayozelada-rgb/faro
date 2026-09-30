@@ -29,6 +29,8 @@ use faro_lib::engine::{
 };
 use faro_lib::error::AppError;
 use faro_lib::profile::{ProfileKeys, PROFILES_DIR};
+use faro_lib::secrets::audit::{Action, Actor, AuditEvent, AuditQueue, Outcome};
+use faro_lib::secrets::SecretBroker;
 use faro_lib::vault::store::SecretStore;
 use secrecy::{ExposeSecret, SecretString};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -243,6 +245,29 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
     let response = raw.get(format!("{base}/health")).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 401);
 
+    // Protocolo v2 (F1a T8): un evento `audit` del núcleo (formato de `AuditEvent`) y una
+    // `secret_response` con un id que el motor no espera. El motor guarda el primero sin
+    // quejarse e ignora la segunda; un evento inválido a propósito demuestra que el
+    // stderr se está leyendo.
+    let valid =
+        AuditEvent::new(Actor::User, Action::Tested, Outcome::Ok).secret_ref("llm/openai/default");
+    stdin.write_all(&valid.to_line()).await.unwrap();
+    stdin
+        .write_all(
+            b"{\"event\":\"audit\",\"occurred_at\":\"ayer\",\"actor\":\"user\",\"action\":\"secret.tested\",\"result\":\"ok\"}
+",
+        )
+        .await
+        .unwrap();
+    stdin
+        .write_all(
+            b"{\"event\":\"secret_response\",\"id\":\"0192f0a0-0000-7abc-8def-00000000000a\",\"ok\":true}
+",
+        )
+        .await
+        .unwrap();
+    stdin.flush().await.unwrap();
+
     // El intérprete real (pid de `ready`) está dentro del Job Object.
     let tree = control.tree_pids();
     let launcher_pid = control.pid().unwrap();
@@ -284,6 +309,16 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
         !stderr_text.contains(TEST_DB_KEY),
         "la llave apareció en el log del motor"
     );
+    assert_eq!(
+        stderr_text.matches("audit.invalid_event").count(),
+        1,
+        "solo el evento inválido a propósito debe rechazarse: {stderr_text}"
+    );
+    assert!(
+        stderr_text.contains("secrets.response_ignored"),
+        "la respuesta con id desconocido debe ignorarse"
+    );
+    assert!(!stderr_text.contains("protocol.unknown_line"));
     control.kill();
     let mut all = tree.clone();
     all.push(ready.pid);
@@ -332,6 +367,11 @@ async fn engine_real_supervisor_reinicia_y_apaga_sin_huerfanos() {
         SupervisorConfig::default(),
         mode,
         sink,
+        Arc::new(SecretBroker::new(
+            store.clone(),
+            dir.path(),
+            AuditQueue::spawn(&tokio::runtime::Handle::current()),
+        )),
     );
     let mut statuses = Statuses(rx);
 

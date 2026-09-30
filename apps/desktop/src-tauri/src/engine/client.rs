@@ -7,8 +7,37 @@ use std::time::Duration;
 
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
+use serde_json::Value;
 
-use crate::error::AppError;
+use crate::error::{AppError, ErrorData};
+
+/// Tamaño máximo de una respuesta del motor a `engine_call`.
+pub const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Una llamada ya validada por `engine_call`. Su `Debug` no muestra consulta ni cuerpo.
+pub struct CallRequest<'a> {
+    /// `GET`, `POST`, `PUT`, `PATCH` o `DELETE`.
+    pub method: &'a str,
+    /// Ruta con los parámetros ya sustituidos (solo `[A-Za-z0-9/_.-]`).
+    pub path: &'a str,
+    pub query: &'a [(String, String)],
+    pub body: Option<&'a Value>,
+    /// Cabecera `X-Faro-Run-Id` (solo operaciones con secretos).
+    pub run_id: Option<&'a str>,
+    /// Tiempo máximo de toda la llamada (`timeout_seconds` de la operación).
+    pub timeout: Duration,
+}
+
+impl std::fmt::Debug for CallRequest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallRequest")
+            .field("method", &self.method)
+            .field("path", &self.path)
+            .field("run_id", &self.run_id)
+            .field("timeout", &self.timeout)
+            .finish_non_exhaustive()
+    }
+}
 
 /// Resultado correcto de `GET /health`.
 #[derive(Debug, Clone, PartialEq)]
@@ -96,6 +125,92 @@ impl EngineClient {
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// Reenvía una operación al motor con `Authorization` (y `X-Faro-Run-Id` si hay
+    /// concesión). 2xx → JSON de la respuesta (`null` si viene vacía). Error con la forma
+    /// común `{code, message, details}` → se devuelve **sin cambios**. Tiempo agotado →
+    /// `engine.timeout`; sin conexión → `engine.not_ready`. Nunca registra cuerpos,
+    /// consultas ni respuestas.
+    pub async fn call(&self, request: CallRequest<'_>) -> Result<Value, ErrorData> {
+        let timeout = request.timeout;
+        match tokio::time::timeout(timeout, self.call_inner(request)).await {
+            Ok(result) => result,
+            Err(_) => Err(AppError::engine_timeout().into()),
+        }
+    }
+
+    async fn call_inner(&self, request: CallRequest<'_>) -> Result<Value, ErrorData> {
+        let unexpected = || ErrorData::from(AppError::internal_unexpected());
+        let method =
+            reqwest::Method::from_bytes(request.method.as_bytes()).map_err(|_| unexpected())?;
+        let mut url = reqwest::Url::parse(&format!("{}{}", self.base_url, request.path))
+            .map_err(|_| unexpected())?;
+        if !request.query.is_empty() {
+            let mut pairs = url.query_pairs_mut();
+            for (key, value) in request.query {
+                pairs.append_pair(key, value);
+            }
+        }
+        let mut builder = self
+            .http
+            .request(method, url)
+            .bearer_auth(self.token.expose_secret())
+            .timeout(request.timeout);
+        if let Some(run_id) = request.run_id {
+            builder = builder.header("X-Faro-Run-Id", run_id);
+        }
+        if let Some(body) = request.body {
+            builder = builder.json(body);
+        }
+        let mut response = builder.send().await.map_err(|err| {
+            if err.is_timeout() && !err.is_connect() {
+                ErrorData::from(AppError::engine_timeout())
+            } else {
+                tracing::warn!("no se pudo conectar con el motor");
+                ErrorData::from(AppError::engine_not_ready())
+            }
+        })?;
+        let status = response.status();
+        let mut bytes: Vec<u8> = Vec::new();
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
+                        tracing::warn!("respuesta del motor demasiado grande");
+                        return Err(unexpected());
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(err) if err.is_timeout() => return Err(AppError::engine_timeout().into()),
+                Err(_) => return Err(AppError::engine_not_ready().into()),
+            }
+        }
+        if status.is_success() {
+            if bytes.iter().all(u8::is_ascii_whitespace) {
+                return Ok(Value::Null);
+            }
+            return serde_json::from_slice(&bytes).map_err(|_| {
+                tracing::warn!(
+                    status = status.as_u16(),
+                    "respuesta del motor sin JSON válido"
+                );
+                unexpected()
+            });
+        }
+        let forwarded = serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(ErrorData::from_engine);
+        match (forwarded, status.as_u16()) {
+            (Some(error), _) => Err(error),
+            (None, 401) => Err(AppError::engine_unauthorized().into()),
+            (None, 403) => Err(AppError::engine_forbidden_host().into()),
+            (None, code) => {
+                tracing::warn!(status = code, "error del motor sin la forma común");
+                Err(unexpected())
+            }
+        }
     }
 
     /// `GET /health` con el token.

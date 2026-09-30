@@ -13,6 +13,8 @@ use super::protocol::is_valid_token;
 use super::supervisor::LOG_UNRECOGNIZED_LINE;
 use super::*;
 use crate::profile::{db_key_ref, ProfileKeys};
+use crate::secrets::audit::AuditQueue;
+use crate::secrets::SecretBroker;
 use crate::vault::store::{MemoryStore, SecretStore};
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -39,6 +41,17 @@ struct Harness {
     store: Arc<MemoryStore>,
     /// Carpeta de datos de la app (profiles.json y profiles/<perfil>.db).
     data_dir: tempfile::TempDir,
+    /// Canal de secretos y auditoría compartido con el supervisor.
+    broker: Arc<SecretBroker>,
+}
+
+/// Canal de secretos para los modos que no lo usan (externo): llavero en memoria.
+fn test_broker() -> Arc<SecretBroker> {
+    Arc::new(SecretBroker::new(
+        Arc::new(MemoryStore::new()),
+        &std::env::temp_dir(),
+        AuditQueue::spawn(&tokio::runtime::Handle::current()),
+    ))
 }
 
 async fn managed(config: SupervisorConfig) -> Harness {
@@ -73,7 +86,18 @@ async fn build(
         store.clone(),
     ));
     let mode = EngineMode::Managed { launcher, db_key };
-    let handle = EngineSupervisor::spawn(&tokio::runtime::Handle::current(), config, mode, sink);
+    let broker = Arc::new(SecretBroker::new(
+        store.clone(),
+        data_dir.path(),
+        AuditQueue::spawn(&tokio::runtime::Handle::current()),
+    ));
+    let handle = EngineSupervisor::spawn(
+        &tokio::runtime::Handle::current(),
+        config,
+        mode,
+        sink,
+        Arc::clone(&broker),
+    );
     Harness {
         handle,
         statuses,
@@ -81,6 +105,7 @@ async fn build(
         server,
         store,
         data_dir,
+        broker,
     }
 }
 
@@ -394,6 +419,7 @@ async fn modo_externo_sin_reinicios_y_dev_unreachable() {
         test_config(),
         EngineMode::External(target),
         sink,
+        test_broker(),
     );
     recv_state(&mut statuses, EngineState::Ready).await;
     assert_eq!(server.last_auth(), Some(format!("Bearer {token}")));
@@ -435,6 +461,7 @@ async fn modo_externo_mal_configurado_es_dev_unreachable() {
         test_config(),
         EngineMode::External(Err(AppError::engine_dev_unreachable())),
         sink,
+        test_broker(),
     );
     let status = recv_state(&mut statuses, EngineState::Error).await;
     assert_eq!(status.error.unwrap().code, "engine.dev_unreachable");
@@ -675,6 +702,7 @@ async fn modo_externo_informa_database_error_sin_tocar_el_perfil() {
         test_config(),
         EngineMode::External(target),
         sink,
+        test_broker(),
     );
     let status = recv_state(&mut statuses, EngineState::Ready).await;
     assert_eq!(status.database_error.unwrap().code, "db.key_missing");
@@ -785,4 +813,249 @@ async fn linea_demasiado_larga_se_descarta() {
     assert_eq!(second, Some(Some("ok".to_owned())));
     let end = super::supervisor::tests_support::read_line(&mut reader).await;
     assert_eq!(end, None);
+}
+
+// ---------- secretos, concesiones y auditoría (F1a T8) ----------
+
+use crate::secrets::audit::{Action, Actor, AuditEvent, Outcome};
+use crate::secrets::operations::{parse_operations, OperationSpec};
+use crate::secrets::sites::SiteRegistry;
+
+const SITE: &str = "0192f0a0-0001-7abc-8def-0123456789ab";
+const SITE_VALUE: &str = r#"{"v":1,"token":"test-token-ficticio-000000000000000000000aa","hmac_secret":"test-hmac-ficticio-0000000000000000000000bb"}"#; // gitleaks:allow
+const REQUEST_ID: &str = "0192f0a0-0000-7abc-8def-00000000000a";
+
+fn check_site_op() -> &'static OperationSpec {
+    static OPS: std::sync::OnceLock<Vec<OperationSpec>> = std::sync::OnceLock::new();
+    &OPS.get_or_init(|| {
+        parse_operations(
+            r#"[{"operationId":"checkSiteConnection","method":"POST","path":"/sites/{site_id}/check","timeout_seconds":45,"secrets":[{"ref":"wp/{site_id}/token","access":["get"]}]}]"#,
+        )
+        .unwrap()
+    })[0]
+}
+
+fn site_path() -> std::collections::BTreeMap<String, String> {
+    std::collections::BTreeMap::from([("site_id".to_owned(), SITE.to_owned())])
+}
+
+fn get_line(run_id: &str) -> String {
+    format!(
+        r#"{{"event":"secret_request","id":"{REQUEST_ID}","run_id":"{run_id}","op":"get","ref":"wp/{SITE}/token"}}"#
+    )
+}
+
+fn event_of(line: &str) -> serde_json::Value {
+    serde_json::from_str(line).unwrap()
+}
+
+/// Lee `n` líneas de stdin del motor falso.
+async fn read_lines(proc: &mut FakeProcess, n: usize) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for _ in 0..n {
+        let line = timeout(WAIT, proc.read_line())
+            .await
+            .expect("sin línea en stdin")
+            .expect("stdin cerrado");
+        out.push(event_of(&line));
+    }
+    out
+}
+
+fn find<'a>(lines: &'a [serde_json::Value], event: &str) -> &'a serde_json::Value {
+    lines
+        .iter()
+        .find(|l| l["event"] == event)
+        .unwrap_or_else(|| panic!("sin evento {event}: {lines:?}"))
+}
+
+impl Harness {
+    fn profile_id(&self) -> String {
+        let file = std::fs::read_to_string(self.data_dir.path().join("profiles.json")).unwrap();
+        event_of(&file)["active_profile_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    /// El sitio es del perfil activo y su secreto está en el llavero.
+    fn add_site(&self) {
+        SiteRegistry::new(self.data_dir.path())
+            .add(&self.profile_id(), SITE)
+            .unwrap();
+        self.store
+            .set(
+                &format!("wp/{SITE}/token"),
+                &secrecy::SecretString::from(SITE_VALUE.to_owned()),
+            )
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn secret_request_del_motor_se_responde_por_stdin_con_auditoria() {
+    let mut h = managed(test_config()).await;
+    let (mut proc, _) = h.bring_up().await;
+    h.add_site();
+    let link = h.handle.link().expect("conexión en ready");
+    let guard = h
+        .broker
+        .grant(check_site_op(), &site_path(), link.generation)
+        .unwrap()
+        .unwrap();
+    proc.stdout_line(&get_line(guard.run_id())).await;
+    // Respuesta y evento de auditoría (en cualquier orden) por el mismo stdin.
+    let lines = read_lines(&mut proc, 2).await;
+    let response = find(&lines, "secret_response");
+    assert_eq!(
+        *response,
+        serde_json::json!({"event":"secret_response","id":REQUEST_ID,"value":SITE_VALUE})
+    );
+    let audit = find(&lines, "audit");
+    assert_eq!(audit["action"], "secret.used");
+    assert_eq!(audit["run_id"], guard.run_id());
+    assert!(!audit.to_string().contains("test-token-ficticio"));
+    let run_id = guard.run_id().to_owned();
+    drop(guard);
+    // Terminada la llamada, la misma solicitud se rechaza.
+    proc.stdout_line(&get_line(&run_id)).await;
+    let lines = read_lines(&mut proc, 2).await;
+    assert_eq!(
+        find(&lines, "secret_response")["error"],
+        "vault.secret_not_allowed"
+    );
+    h.handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn las_concesiones_desaparecen_al_reiniciar_el_motor() {
+    let mut config = test_config();
+    config.health_interval = Duration::from_secs(60);
+    let mut h = managed(config).await;
+    let (proc, _) = h.bring_up().await;
+    h.add_site();
+    let first = h.handle.link().unwrap();
+    let guard = h
+        .broker
+        .grant(check_site_op(), &site_path(), first.generation)
+        .unwrap()
+        .unwrap();
+    assert_eq!(h.broker.active_grants(), 1);
+    proc.exit(1);
+    h.expect_state(EngineState::Restarting).await;
+    let (mut proc2, _) = h.bring_up().await;
+    assert_eq!(h.broker.active_grants(), 0);
+    let second = h.handle.link().unwrap();
+    assert!(second.generation > first.generation);
+    // La concesión anterior ya no sirve en el motor nuevo...
+    proc2.stdout_line(&get_line(guard.run_id())).await;
+    let lines = read_lines(&mut proc2, 2).await;
+    assert_eq!(
+        find(&lines, "secret_response")["error"],
+        "vault.secret_not_allowed"
+    );
+    // ...ni se pueden crear concesiones para el motor anterior.
+    let err = h
+        .broker
+        .grant(check_site_op(), &site_path(), first.generation)
+        .unwrap_err();
+    assert_eq!(err.code, "engine.not_ready");
+    h.handle.shutdown().await;
+    assert!(h.handle.link().is_none(), "sin conexión tras apagar");
+    assert_eq!(h.broker.active_grants(), 0);
+}
+
+#[tokio::test]
+async fn secret_request_antes_de_ready_se_rechaza() {
+    let mut h = managed(test_config()).await;
+    let mut proc = h.next_proc().await;
+    let _ = proc.read_handshake().await;
+    assert!(h.handle.link().is_none());
+    proc.stdout_line(&get_line("0192f0a0-9999-7abc-8def-000000000000"))
+        .await;
+    let line = timeout(WAIT, proc.read_line()).await.unwrap().unwrap();
+    assert_eq!(event_of(&line)["error"], "vault.secret_not_allowed");
+    proc.send_ready(h.server.port).await;
+    h.expect_state(EngineState::Ready).await;
+    // La denegación se auditó y se envía al quedar listo el motor.
+    let line = timeout(WAIT, proc.read_line()).await.unwrap().unwrap();
+    let audit = event_of(&line);
+    assert_eq!(audit["event"], "audit");
+    assert_eq!(audit["action"], "secret.denied");
+    h.handle.shutdown().await;
+}
+
+fn vault_event() -> AuditEvent {
+    AuditEvent::new(Actor::User, Action::Added, Outcome::Ok).secret_ref("llm/openai/default")
+}
+
+#[tokio::test]
+async fn la_auditoria_se_guarda_hasta_que_el_motor_y_la_base_estan_listos() {
+    let mut h = managed(test_config()).await;
+    h.server.set_database_error(Some("db.key_missing"));
+    h.broker.audit().record(vault_event());
+    let (mut proc, _) = h.bring_up().await;
+    // Base no disponible: no se envía (el motor la descartaría).
+    assert!(
+        timeout(Duration::from_millis(200), proc.read_line())
+            .await
+            .is_err(),
+        "no debe enviarse con la base caída"
+    );
+    h.server.set_database_error(None);
+    let line = timeout(WAIT, proc.read_line()).await.unwrap().unwrap();
+    let audit = event_of(&line);
+    assert_eq!(audit["event"], "audit");
+    assert_eq!(audit["action"], "secret.added");
+    assert_eq!(audit["actor"], "user");
+    h.handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn la_auditoria_pendiente_llega_despues_del_arranque() {
+    let mut h = managed(test_config()).await;
+    h.broker.audit().record(vault_event());
+    let mut proc = h.next_proc().await;
+    // Las dos primeras líneas siguen siendo token y `db_key`.
+    let (token, db_key) = proc.read_handshake().await;
+    assert!(is_valid_token(&token));
+    assert_eq!(db_key["event"], "db_key");
+    proc.send_ready(h.server.port).await;
+    h.expect_state(EngineState::Ready).await;
+    let line = timeout(WAIT, proc.read_line()).await.unwrap().unwrap();
+    assert_eq!(event_of(&line)["action"], "secret.added");
+    h.handle.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn modo_externo_publica_conexion_y_audita_solo_al_log() {
+    let (logs, _guard) = capture_logs();
+    let server = FakeHealthServer::start().await;
+    let (tx, mut statuses) = mpsc::unbounded_channel();
+    let sink: StatusSink = Arc::new(move |s: &EngineStatus| {
+        let _ = tx.send(s.clone());
+    });
+    let target = external_target(
+        Some(format!("http://127.0.0.1:{}", server.port)),
+        Some("f".repeat(43)),
+    )
+    .unwrap();
+    let broker = test_broker();
+    let handle = EngineSupervisor::spawn(
+        &tokio::runtime::Handle::current(),
+        test_config(),
+        EngineMode::External(target),
+        sink,
+        Arc::clone(&broker),
+    );
+    recv_state(&mut statuses, EngineState::Ready).await;
+    let link = handle.link().expect("conexión en modo externo");
+    assert_eq!(
+        link.client.base_url(),
+        format!("http://127.0.0.1:{}", server.port)
+    );
+    broker.audit().record(vault_event());
+    wait_until(|| logs.text().contains("auditoría (sin motor gestionado)")).await;
+    handle.shutdown().await;
+    assert!(handle.link().is_none());
 }

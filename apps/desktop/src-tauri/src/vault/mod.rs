@@ -7,6 +7,9 @@
 //!   simultáneas de la prueba automática de la interfaz).
 //! - La clave nunca sale de aquí salvo hacia el proveedor (HTTPS) o el llavero; a la
 //!   interfaz solo llegan `last4` y el estado.
+//! - Auditoría (F1a, ADR 0010 §4): `secret.added`/`secret.replaced`, `secret.tested` y
+//!   `secret.deleted` con actor `user`, `details.provider` y el resultado (y
+//!   `details.error_code` si falló). Nunca el valor ni `last4`.
 
 pub mod providers;
 pub mod secret;
@@ -26,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::error::AppError;
+use crate::secrets::audit::{Action, Actor, AuditEvent, AuditQueue, DetailKey, Outcome};
 use crate::vault::providers::{ProviderChecker, Verdict};
 use crate::vault::secret::{last4, validate_secret, AddKeyInput};
 use crate::vault::store::SecretStore;
@@ -106,6 +110,8 @@ pub struct VaultService {
     clock: Clock,
     /// Estado de prueba por proveedor. El mismo mutex serializa todas las operaciones.
     tests: Mutex<HashMap<Provider, TestState>>,
+    /// Auditoría de la Bóveda (sin cola en pruebas unitarias que no la necesitan).
+    audit: Option<AuditQueue>,
 }
 
 impl fmt::Debug for VaultService {
@@ -125,7 +131,34 @@ impl VaultService {
             checker,
             clock,
             tests: Mutex::new(HashMap::new()),
+            audit: None,
         }
+    }
+
+    /// Envía un evento de auditoría por cada operación de la Bóveda.
+    #[must_use]
+    pub fn with_audit(mut self, audit: AuditQueue) -> Self {
+        self.audit = Some(audit);
+        self
+    }
+
+    fn record(
+        &self,
+        provider: Provider,
+        action: Action,
+        outcome: Outcome,
+        error_code: Option<&str>,
+    ) {
+        let Some(audit) = &self.audit else {
+            return;
+        };
+        let mut event = AuditEvent::new(Actor::User, action, outcome)
+            .secret_ref(provider.secret_ref())
+            .detail(DetailKey::Provider, provider.as_str());
+        if let Some(code) = error_code {
+            event = event.detail(DetailKey::ErrorCode, code);
+        }
+        audit.record(event);
     }
 
     /// Servicio de producción: llavero del SO (`app.faro.desktop`), hosts fijos de los
@@ -151,8 +184,34 @@ impl VaultService {
     }
 
     /// Valida → comprueba existencia → prueba con el proveedor → solo si es válida,
-    /// guarda → devuelve el resumen (`status: valid`).
+    /// guarda → devuelve el resumen (`status: valid`). Audita `secret.added` o
+    /// `secret.replaced` (según `replace` si falla antes de saberlo).
     pub async fn add(&self, input: AddKeyInput) -> Result<KeySummary, AppError> {
+        let provider = input.provider;
+        let replace = input.replace;
+        match self.add_inner(input).await {
+            Ok((summary, replaced)) => {
+                let action = if replaced {
+                    Action::Replaced
+                } else {
+                    Action::Added
+                };
+                self.record(provider, action, Outcome::Ok, None);
+                Ok(summary)
+            }
+            Err(err) => {
+                let action = if replace {
+                    Action::Replaced
+                } else {
+                    Action::Added
+                };
+                self.record(provider, action, Outcome::Error, Some(err.code));
+                Err(err)
+            }
+        }
+    }
+
+    async fn add_inner(&self, input: AddKeyInput) -> Result<(KeySummary, bool), AppError> {
         let AddKeyInput {
             provider,
             secret,
@@ -186,13 +245,26 @@ impl VaultService {
             replaced = exists,
             "clave guardada en el llavero"
         );
-        Ok(out)
+        Ok((out, exists))
     }
 
     /// Prueba la clave guardada. Un rechazo (401/403) no es error: devuelve
     /// `status: invalid` con `last_error_code`. Si la prueba no pudo hacerse, devuelve
-    /// el error y **no** cambia el estado en memoria.
+    /// el error y **no** cambia el estado en memoria. Audita `secret.tested` (`ok` solo si
+    /// el proveedor la aceptó).
     pub async fn test(&self, provider: Provider) -> Result<KeySummary, AppError> {
+        let result = self.test_inner(provider).await;
+        match &result {
+            Ok(summary) => match summary.last_error_code {
+                None => self.record(provider, Action::Tested, Outcome::Ok, None),
+                Some(code) => self.record(provider, Action::Tested, Outcome::Error, Some(code)),
+            },
+            Err(err) => self.record(provider, Action::Tested, Outcome::Error, Some(err.code)),
+        }
+        result
+    }
+
+    async fn test_inner(&self, provider: Provider) -> Result<KeySummary, AppError> {
         let mut tests = self.tests.lock().await;
         let secret = self
             .store
@@ -216,12 +288,16 @@ impl VaultService {
         Ok(out)
     }
 
-    /// Borra la clave y su estado de prueba. Idempotente.
+    /// Borra la clave y su estado de prueba. Idempotente. Audita `secret.deleted`.
     pub async fn delete(&self, provider: Provider) -> Result<(), AppError> {
         let mut tests = self.tests.lock().await;
-        self.store.delete(provider.secret_ref())?;
+        if let Err(err) = self.store.delete(provider.secret_ref()) {
+            self.record(provider, Action::Deleted, Outcome::Error, Some(err.code));
+            return Err(err);
+        }
         tests.remove(&provider);
         tracing::info!(provider = provider.as_str(), "clave borrada del llavero");
+        self.record(provider, Action::Deleted, Outcome::Ok, None);
         Ok(())
     }
 }

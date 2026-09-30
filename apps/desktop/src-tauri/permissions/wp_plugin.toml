@@ -1,0 +1,8 @@
+# Permiso del comando del plugin de WordPress (spec F1a §5.5). Uno por comando.
+# El núcleo muestra el archivo en el explorador desde Rust: la interfaz no tiene ningún
+# permiso `opener:*`.
+
+[[permission]]
+identifier = "allow-wp-plugin-export"
+description = "Permite guardar el zip del plugin de WordPress en la carpeta Descargas (solo devuelve el nombre del archivo)."
+commands.allow = ["wp_plugin_export"]

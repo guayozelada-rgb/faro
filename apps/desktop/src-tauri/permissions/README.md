@@ -4,6 +4,8 @@ Un archivo `.toml` por dominio, con un permiso por comando (spec F0 §5.3):
 
 - `engine.toml` (T5): `allow-engine-status`, `allow-engine-restart`.
 - `vault.toml` (T6): `allow-vault-list-keys`, `allow-vault-add-key`, `allow-vault-test-key`, `allow-vault-delete-key`.
+- `engine.toml` (F1a T8): `allow-engine-call`.
+- `wp_plugin.toml` (F1a T8): `allow-wp-plugin-export`. `tauri-plugin-opener` se usa solo desde Rust: ningún permiso `opener:*`.
 
 Cada permiso nuevo se agrega también a `capabilities/main.json` en la misma tarea que crea el comando.
 

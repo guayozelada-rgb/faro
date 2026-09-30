@@ -36,8 +36,10 @@ pub const REDACTED: &str = "[redactado]";
 /// una prueba). Se prefiere perder la línea a arriesgarse a escribir un secreto.
 const OMITTED_LINE: &str = "[registro omitido: filtro de secretos no disponible]";
 
-/// Nombres de campo sensibles (se comparan sin distinguir mayúsculas). Mismos que el
-/// motor (`SENSITIVE_KEYS` + ADR 0013 §3). `code` no se filtra: son códigos de error.
+/// Nombres de campo sensibles (se comparan sin distinguir mayúsculas). Los mismos que el
+/// motor (`SENSITIVE_NAMES` de `faro_engine/core/redact.py`, con prueba de paridad),
+/// incluido `key_hex` (nombre de la llave de la base en el motor). `code` no se filtra:
+/// son códigos de error.
 pub const SENSITIVE_NAMES: &[&str] = &[
     "authorization",
     "headers",
@@ -50,6 +52,7 @@ pub const SENSITIVE_NAMES: &[&str] = &[
     "refresh_token",
     "key",
     "db_key",
+    "key_hex",
     "value",
     "pairing_code",
     "x-faro-token",
@@ -697,6 +700,39 @@ mod tests {
             "{out}"
         );
         assert_eq!(value["fields"]["otro"], "x");
+    }
+
+    /// Mismas listas de nombres que el motor (`faro_engine/core/redact.py`).
+    #[test]
+    fn nombres_sensibles_iguales_que_en_el_motor() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../apps/engine/faro_engine/core/redact.py");
+        let python = std::fs::read_to_string(&path).unwrap();
+        let set = |name: &str| -> Vec<String> {
+            let start = python
+                .find(&format!("{name}: Final = frozenset("))
+                .unwrap_or_else(|| panic!("{name} en redact.py"));
+            let body = &python[start..];
+            let end = body.find("},").unwrap();
+            let re = Regex::new(r#""([^"]+)""#).unwrap();
+            let mut items: Vec<String> = re
+                .captures_iter(&body[..end])
+                .map(|c| c[1].to_owned())
+                .collect();
+            items.sort();
+            items
+        };
+        let sorted = |list: &[&str]| {
+            let mut items: Vec<String> = list.iter().map(|s| (*s).to_owned()).collect();
+            items.sort();
+            items
+        };
+        assert_eq!(set("SENSITIVE_NAMES"), sorted(SENSITIVE_NAMES));
+        assert_eq!(set("NON_SENSITIVE_NAMES"), sorted(NON_SENSITIVE_NAMES));
+        assert!(is_sensitive_name("key_hex"));
+        let line = r#"{"fields":{"key_hex":"abc"}}"#;
+        let value: Value = serde_json::from_str(&redact(line)).unwrap();
+        assert_eq!(value["fields"]["key_hex"], REDACTED);
     }
 
     #[test]

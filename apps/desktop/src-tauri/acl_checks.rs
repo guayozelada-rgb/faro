@@ -16,10 +16,12 @@ use std::path::Path;
 const COMMANDS: &[&str] = &[
     "engine_status",
     "engine_restart",
+    "engine_call",
     "vault_list_keys",
     "vault_add_key",
     "vault_test_key",
     "vault_delete_key",
+    "wp_plugin_export",
 ];
 
 /// Únicos permisos que no son de Faro que la capability `main` puede conceder: la

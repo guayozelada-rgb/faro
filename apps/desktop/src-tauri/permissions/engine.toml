@@ -9,3 +9,8 @@ commands.allow = ["engine_status"]
 identifier = "allow-engine-restart"
 description = "Permite reintentar la conexión con el motor local cuando está en error."
 commands.allow = ["engine_restart"]
+
+[[permission]]
+identifier = "allow-engine-call"
+description = "Permite llamar a una operación de la lista permitida del motor (engine-operations.json). El núcleo valida operación y parámetros; nunca expone puerto, token ni secretos."
+commands.allow = ["engine_call"]

@@ -16,9 +16,16 @@
 //! 8. Apagado: `{"event":"shutdown"}`, espera ≤ `shutdown_grace`, luego mata el árbol.
 //! 9. `/health` informa el estado de la base: `EngineStatus.database_error` se actualiza
 //!    en cada consulta; el estado sigue `ready` aunque la base no esté disponible.
+//! 10. Secretos y auditoría (ADR 0010, F1a T8): cada proceso es una *generación*; al
+//!     lanzarlo se avisa a [`SecretBroker`] (con el perfil activo), que borra todas las
+//!     concesiones anteriores. Las líneas `secret_request` de stdout van a su tarea, que
+//!     responde por stdin. La auditoría del núcleo se envía solo con el motor `ready` y la
+//!     base disponible (si no, se guarda); en modo externo solo va al log. En `ready` se
+//!     publica el [`EngineLink`] que usa `engine_call`; al salir de `ready` se retira y
+//!     las concesiones desaparecen.
 //!
 //! **Escritor de stdin único**: todo lo que va al stdin del motor (token, `db_key`,
-//! `shutdown` y, desde T8, `secret_response`/`audit`) pasa por una sola tarea
+//! `shutdown`, `secret_response` y `audit`) pasa por una sola tarea
 //! ([`StdinWriter`]) que escribe cada línea completa y la vacía antes de la siguiente,
 //! así las líneas nunca se intercalan.
 //!
@@ -34,14 +41,15 @@ use secrecy::{ExposeSecret, SecretString};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{self, Instant, MissedTickBehavior};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::engine::client::{EngineClient, HealthError};
 use crate::engine::launcher::{EngineLauncher, EngineProcess, ProcessControl, REAP_TIMEOUT};
 use crate::engine::protocol::{self, StdoutLine, MAX_LINE_BYTES, SHUTDOWN_LINE};
-use crate::engine::{EngineMode, EngineStatus};
+use crate::engine::{EngineLink, EngineMode, EngineStatus};
 use crate::error::AppError;
 use crate::profile::{DbKeyMessage, DbKeyProvider};
+use crate::secrets::SecretBroker;
 
 /// Mensaje que se registra (sin contenido) ante una línea de stdout no reconocida.
 pub const LOG_UNRECOGNIZED_LINE: &str = "línea de protocolo no reconocida";
@@ -108,6 +116,7 @@ pub struct EngineSupervisorHandle {
     shutdown_tx: Arc<watch::Sender<bool>>,
     done_rx: watch::Receiver<bool>,
     diagnostics: Arc<Mutex<EngineDiagnostics>>,
+    link_rx: watch::Receiver<Option<EngineLink>>,
 }
 
 impl fmt::Debug for EngineSupervisorHandle {
@@ -151,6 +160,11 @@ impl EngineSupervisorHandle {
         let _ = done.wait_for(|finished| *finished).await;
     }
 
+    /// Conexión con el motor si está `ready` (para `engine_call`). Nunca sale del núcleo.
+    pub fn link(&self) -> Option<EngineLink> {
+        self.link_rx.borrow().clone()
+    }
+
     /// Diagnóstico del proceso actual (PIDs). Nunca incluye puerto ni token.
     pub fn diagnostics(&self) -> EngineDiagnostics {
         match self.diagnostics.lock() {
@@ -169,8 +183,10 @@ impl EngineSupervisor {
         config: SupervisorConfig,
         mode: EngineMode,
         sink: StatusSink,
+        secrets: Arc<SecretBroker>,
     ) -> EngineSupervisorHandle {
         let (status_tx, status_rx) = watch::channel(EngineStatus::starting());
+        let (link_tx, link_rx) = watch::channel(None);
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (done_tx, done_rx) = watch::channel(false);
@@ -184,6 +200,9 @@ impl EngineSupervisor {
             shutdown_rx,
             restarts: VecDeque::new(),
             diagnostics: Arc::clone(&diagnostics),
+            secrets,
+            generation: 0,
+            link_tx,
         };
         runtime.spawn(async move {
             actor.run().await;
@@ -195,6 +214,7 @@ impl EngineSupervisor {
             shutdown_tx: Arc::new(shutdown_tx),
             done_rx,
             diagnostics,
+            link_rx,
         }
     }
 }
@@ -270,8 +290,20 @@ async fn prepare_db_key(provider: Arc<dyn DbKeyProvider>) -> DbKeyMessage {
 struct Proc {
     stdin: StdinWriter,
     /// `None` cuando stdout se cerró.
-    lines: Option<mpsc::Receiver<String>>,
+    lines: Option<mpsc::Receiver<Zeroizing<String>>>,
     control: Box<dyn ProcessControl>,
+    /// Solicitudes de secretos hacia la tarea de [`SecretBroker`] de este proceso.
+    secrets: mpsc::Sender<Zeroizing<String>>,
+}
+
+impl Proc {
+    /// Entrega una línea `secret_request` a su tarea. Si hay demasiadas pendientes se
+    /// descarta (el motor agota su espera). Nunca se registra su contenido.
+    fn secret_request(&self, line: Zeroizing<String>) {
+        if self.secrets.try_send(line).is_err() {
+            tracing::warn!("demasiadas solicitudes de secretos pendientes: se descarta una");
+        }
+    }
 }
 
 struct Running {
@@ -299,7 +331,7 @@ enum ErrorOutcome {
 enum SuperviseEvent {
     Shutdown,
     Exited(Option<i32>),
-    Line(Option<String>),
+    Line(Option<Zeroizing<String>>),
     Tick,
     Cmd(Command),
 }
@@ -313,6 +345,10 @@ struct Actor {
     shutdown_rx: watch::Receiver<bool>,
     restarts: VecDeque<Instant>,
     diagnostics: Arc<Mutex<EngineDiagnostics>>,
+    secrets: Arc<SecretBroker>,
+    /// Número del proceso (o conexión externa) actual; cambia en cada arranque.
+    generation: u64,
+    link_tx: watch::Sender<Option<EngineLink>>,
 }
 
 impl Actor {
@@ -337,16 +373,24 @@ impl Actor {
                 }
             };
             match started {
-                Err(StartError::Shutdown) => break,
+                Err(StartError::Shutdown) => {
+                    self.engine_gone();
+                    break;
+                }
                 Err(StartError::Failed(err)) => {
+                    self.engine_gone();
                     self.set(EngineStatus::error(err));
                 }
                 Ok(running) => {
+                    // Primero la conexión: quien vea `ready` ya puede usar `engine_call`.
+                    self.engine_ready(&running);
                     self.set(EngineStatus::ready(
                         running.version.clone(),
                         running.database_error.clone(),
                     ));
-                    match self.supervise(running).await {
+                    let outcome = self.supervise(running).await;
+                    self.engine_gone();
+                    match outcome {
                         RunOutcome::Shutdown => break,
                         RunOutcome::Failed => {
                             if matches!(self.mode, EngineMode::External(_)) {
@@ -369,6 +413,34 @@ impl Actor {
         }
         self.set_diagnostics(EngineDiagnostics::default());
         tracing::info!("supervisor del motor detenido");
+    }
+
+    /// Motor `ready`: publica la conexión para `engine_call` y activa la auditoría.
+    fn engine_ready(&self, running: &Running) {
+        self.link_tx.send_replace(Some(EngineLink {
+            client: running.client.clone(),
+            generation: self.generation,
+        }));
+        self.update_audit(running);
+    }
+
+    /// La auditoría del núcleo solo se envía con la base disponible; en modo externo,
+    /// solo al log (ADR 0010 §4–5).
+    fn update_audit(&self, running: &Running) {
+        let audit = self.secrets.audit();
+        match &running.proc {
+            None => audit.log_only(),
+            Some(proc) if running.database_error.is_none() => audit.attach(proc.stdin.clone()),
+            Some(_) => audit.detach(),
+        }
+    }
+
+    /// El motor dejó de estar `ready` (o no llegó): sin conexión ni concesiones, y la
+    /// auditoría vuelve a guardarse.
+    fn engine_gone(&self) {
+        self.link_tx.send_replace(None);
+        self.secrets.engine_stopped();
+        self.secrets.audit().detach();
     }
 
     fn set(&self, status: EngineStatus) {
@@ -441,7 +513,10 @@ impl Actor {
     ) -> Result<Running, StartError> {
         let token = protocol::generate_token().map_err(StartError::Failed)?;
         // Antes de lanzar (ADR 0009 §3): perfil y llave, en cada arranque y reinicio.
-        let db_key_line = into_bytes(prepare_db_key(db_key).await.to_line());
+        let db_key_message = prepare_db_key(db_key).await;
+        let profile_id = db_key_message.profile_id().to_owned();
+        let db_key_line = into_bytes(db_key_message.to_line());
+        drop(db_key_message);
         let EngineProcess {
             stdin,
             stdout,
@@ -449,8 +524,14 @@ impl Actor {
             control,
         } = launcher.launch().map_err(StartError::Failed)?;
         spawn_stderr_forwarder(stderr);
+        // Proceso nuevo: nueva generación; las concesiones anteriores desaparecen.
+        self.generation += 1;
+        self.secrets
+            .engine_started(self.generation, Some(&profile_id));
+        let stdin = StdinWriter::spawn(stdin);
         let mut proc = Proc {
-            stdin: StdinWriter::spawn(stdin),
+            secrets: self.secrets.spawn_worker(stdin.clone()),
+            stdin,
             lines: Some(spawn_line_reader(stdout)),
             control,
         };
@@ -493,6 +574,7 @@ impl Actor {
                     Some(line) => match protocol::parse_stdout_line(&line) {
                         StdoutLine::Ready(ready) => break Ok(ready),
                         StdoutLine::BadReady => break Err("bad_ready"),
+                        StdoutLine::SecretRequest => proc.secret_request(line),
                         StdoutLine::OtherEvent => {
                             tracing::debug!("evento del motor ignorado antes de ready");
                         }
@@ -592,6 +674,10 @@ impl Actor {
                 Ok(ok) => {
                     tracing::info!(version = %ok.version, "motor externo listo");
                     log_database(&ok);
+                    // Sin stdin no hay canal de secretos (el motor responde
+                    // `engine.secrets_unavailable`); las concesiones son inofensivas.
+                    self.generation += 1;
+                    self.secrets.engine_started(self.generation, None);
                     return Ok(Running {
                         proc: None,
                         client,
@@ -660,6 +746,11 @@ impl Actor {
                 }
                 SuperviseEvent::Line(Some(line)) => match protocol::parse_stdout_line(&line) {
                     StdoutLine::Unrecognized => tracing::warn!("{}", LOG_UNRECOGNIZED_LINE),
+                    StdoutLine::SecretRequest => {
+                        if let Some(proc) = running.proc.as_ref() {
+                            proc.secret_request(line);
+                        }
+                    }
                     StdoutLine::Ready(_) | StdoutLine::BadReady | StdoutLine::OtherEvent => {
                         tracing::debug!("evento del motor ignorado");
                     }
@@ -677,6 +768,7 @@ impl Actor {
                                 running.version.clone(),
                                 running.database_error.clone(),
                             ));
+                            self.update_audit(&running);
                         }
                     }
                     Err(err) => {
@@ -708,7 +800,9 @@ async fn wait_control(control: Option<&mut Box<dyn ProcessControl>>) -> Option<i
     }
 }
 
-async fn next_line(lines: Option<&mut mpsc::Receiver<String>>) -> Option<String> {
+async fn next_line(
+    lines: Option<&mut mpsc::Receiver<Zeroizing<String>>>,
+) -> Option<Zeroizing<String>> {
     match lines {
         Some(lines) => lines.recv().await,
         None => std::future::pending().await,
@@ -758,12 +852,16 @@ async fn graceful_stop(mut proc: Proc, config: &SupervisorConfig) {
     let _ = time::timeout(REAP_TIMEOUT, proc.control.wait()).await;
 }
 
-/// Lee líneas (máx. `MAX_LINE_BYTES`; las más largas se descartan) y las envía a un canal.
-fn spawn_line_reader(stream: Box<dyn AsyncRead + Send + Unpin>) -> mpsc::Receiver<String> {
+/// Lee líneas de stdout (máx. `MAX_LINE_BYTES`; las más largas se descartan) y las envía
+/// a un canal. Cada línea vive en memoria que se borra al soltarse: una `secret_request`
+/// de `create`/`set` lleva un secreto.
+fn spawn_line_reader(
+    stream: Box<dyn AsyncRead + Send + Unpin>,
+) -> mpsc::Receiver<Zeroizing<String>> {
     let (tx, rx) = mpsc::channel(64);
     tokio::spawn(async move {
         let mut reader = BufReader::new(stream);
-        while let Some(line) = read_limited_line(&mut reader).await {
+        while let Some(line) = read_limited_line(&mut reader, MAX_LINE_BYTES + 1).await {
             let Some(line) = line else {
                 tracing::debug!("línea del motor demasiado larga; se descarta");
                 continue;
@@ -780,10 +878,10 @@ fn spawn_line_reader(stream: Box<dyn AsyncRead + Send + Unpin>) -> mpsc::Receive
 fn spawn_stderr_forwarder(stream: Box<dyn AsyncRead + Send + Unpin>) {
     tokio::spawn(async move {
         let mut reader = BufReader::new(stream);
-        while let Some(line) = read_limited_line(&mut reader).await {
+        while let Some(line) = read_limited_line(&mut reader, 0).await {
             if let Some(line) = line {
                 if !line.is_empty() {
-                    tracing::debug!(target: "faro_lib::engine::stderr", "{line}");
+                    tracing::debug!(target: "faro_lib::engine::stderr", "{}", line.as_str());
                 }
             }
         }
@@ -791,10 +889,15 @@ fn spawn_stderr_forwarder(stream: Box<dyn AsyncRead + Send + Unpin>) {
 }
 
 /// `None` = fin del flujo; `Some(None)` = línea demasiado larga (descartada).
+///
+/// `capacity` reserva el búfer de antemano (con `MAX_LINE_BYTES + 1` nunca se realoja,
+/// así no quedan copias parciales sin borrar); el búfer se borra al soltarse y, si la
+/// línea es UTF-8 válido, pasa al texto sin copiarse.
 async fn read_limited_line<R: AsyncRead + Unpin>(
     reader: &mut BufReader<R>,
-) -> Option<Option<String>> {
-    let mut buf = Vec::new();
+    capacity: usize,
+) -> Option<Option<Zeroizing<String>>> {
+    let mut buf = Zeroizing::new(Vec::with_capacity(capacity));
     let limit = u64::try_from(MAX_LINE_BYTES)
         .unwrap_or(u64::MAX)
         .saturating_add(1);
@@ -804,7 +907,7 @@ async fn read_limited_line<R: AsyncRead + Unpin>(
             if buf.last() != Some(&b'\n') && buf.len() > MAX_LINE_BYTES {
                 // Descarta el resto de la línea.
                 loop {
-                    buf.clear();
+                    buf.zeroize();
                     match (&mut *reader).take(limit).read_until(b'\n', &mut buf).await {
                         Ok(0) | Err(_) => return None,
                         Ok(_) if buf.last() == Some(&b'\n') => return Some(None),
@@ -812,8 +915,18 @@ async fn read_limited_line<R: AsyncRead + Unpin>(
                     }
                 }
             }
-            let text = String::from_utf8_lossy(&buf);
-            Some(Some(text.trim_end_matches(['\r', '\n']).to_owned()))
+            while matches!(buf.last(), Some(b'\n' | b'\r')) {
+                buf.pop();
+            }
+            let bytes = std::mem::take(&mut *buf);
+            let text = match String::from_utf8(bytes) {
+                Ok(text) => Zeroizing::new(text),
+                Err(err) => {
+                    let bytes = Zeroizing::new(err.into_bytes());
+                    Zeroizing::new(String::from_utf8_lossy(&bytes).into_owned())
+                }
+            };
+            Some(Some(text))
         }
     }
 }
@@ -825,6 +938,8 @@ pub(crate) mod tests_support {
     pub async fn read_line<R: AsyncRead + Unpin>(
         reader: &mut BufReader<R>,
     ) -> Option<Option<String>> {
-        super::read_limited_line(reader).await
+        super::read_limited_line(reader, 0)
+            .await
+            .map(|line| line.map(|text| text.as_str().to_owned()))
     }
 }
