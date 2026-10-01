@@ -66,6 +66,7 @@ async def test_get_reads_body_and_sends_user_agent(router: respx.MockRouter) -> 
     sent = route.calls.last.request
     assert sent.headers["user-agent"] == "Faro/test"
     assert sent.headers["accept"] == "application/json"
+    assert sent.headers["accept-encoding"] == "identity"
     assert "HttpResponse(" in repr(response)
     assert "ok" not in repr(response)  # el cuerpo no aparece en `repr`
     response.wipe()
@@ -279,6 +280,25 @@ async def test_response_too_large_by_header(router: respx.MockRouter) -> None:
         with pytest.raises(FaroError) as info:
             await http.request("GET", URL)
     assert info.value.code == "site.response_too_large"
+
+
+@pytest.mark.parametrize("encoding", ["gzip", "br", " Deflate "])
+async def test_compressed_response_is_rejected(router: respx.MockRouter, encoding: str) -> None:
+    # Una bomba gzip ocuparía en memoria mucho más que el límite antes de comprobarlo.
+    router.get(URL).respond(200, content=b"x", headers={"Content-Encoding": encoding})
+    http, _ = _client(router)
+    async with http:
+        with pytest.raises(FaroError) as info:
+            await http.request("GET", URL)
+    assert info.value.code == "site.bad_response"
+
+
+async def test_identity_encoding_is_accepted(router: respx.MockRouter) -> None:
+    router.get(URL).respond(200, content=b"{}", headers={"Content-Encoding": "Identity"})
+    http, _ = _client(router)
+    async with http:
+        response = await http.request("GET", URL)
+    assert bytes(response.body) == b"{}"
 
 
 async def test_response_too_large_while_streaming(router: respx.MockRouter) -> None:

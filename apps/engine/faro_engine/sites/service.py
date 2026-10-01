@@ -29,6 +29,7 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Final, TypeVar, cast
+from urllib.parse import urlsplit
 
 import structlog
 
@@ -160,6 +161,15 @@ def _site_name(name: str) -> str | None:
     return clean or None
 
 
+def same_site(typed: str, final: str) -> bool:
+    """Mismo esquema, puerto y host, admitiendo solo añadir o quitar `www.`."""
+    a, b = urlsplit(typed), urlsplit(final)
+    if a.scheme != b.scheme or a.port != b.port:
+        return False
+    host_a, host_b = (a.hostname or "").lower(), (b.hostname or "").lower()
+    return host_a != "" and host_a.removeprefix("www.") == host_b.removeprefix("www.")
+
+
 @dataclass(slots=True)
 class SitesContext:
     """Dependencias de los casos de uso (una por app)."""
@@ -284,6 +294,11 @@ class SitesService:
         async with self._wordpress() as wp:
             found = await wp.discover(site_url)
             if found.site_url != site_url:
+                # El código de vinculación solo va al dominio que escribió el usuario (o a
+                # su variante con o sin `www.`), nunca al destino de una redirección ajena.
+                if not same_site(site_url, found.site_url):
+                    log.warning("site.discovery_other_host")
+                    raise site_error(SITE_MOVED)
                 await self._ensure_new_url(found.site_url)
             connection_id = new_id()
             site_id = new_id()

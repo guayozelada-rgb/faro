@@ -447,6 +447,28 @@ async def test_list_content_bad_shape(router: respx.MockRouter, env: Env) -> Non
     assert info.value.code == "site.bad_response"
 
 
+@pytest.mark.parametrize(
+    "url", ["javascript:alert(1)", "data:text/html,x", "ftp://tienda.example/a", "/cafe/", ""]
+)
+async def test_list_content_rejects_non_web_urls(
+    router: respx.MockRouter, env: Env, url: str
+) -> None:
+    # La interfaz puede mostrar la URL como enlace: solo http(s).
+    item = {"id": 7, "title": "x", "url": url, "slug": "x", "modified_at": "2026-09-30T12:00:00Z"}
+    body = {
+        "items": [item],
+        "page": 1,
+        "per_page": 50,
+        "total": 1,
+        "total_pages": 1,
+        "woocommerce_active": False,
+    }
+    router.get(f"{API}faro/v1/posts").respond(200, json=body)
+    with _credentials() as credentials, pytest.raises(FaroError) as info:
+        await env.wp.list_content(API, credentials, "post", page=1, per_page=50)
+    assert info.value.code == "site.bad_response"
+
+
 async def test_rest_route_mode_urls(router: respx.MockRouter, env: Env) -> None:
     root = f"{SITE_URL}/?rest_route="
     route = router.get(f"{SITE_URL}/").respond(

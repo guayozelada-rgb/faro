@@ -158,6 +158,12 @@ def parse_retry_after(value: str | None) -> float | None:
 
 
 async def _read_limited(response: httpx.Response) -> bytearray:
+    # Se pide `identity` y se rechaza cualquier otra codificación: una respuesta comprimida
+    # podría ocupar en memoria mucho más que el límite antes de comprobarlo (bomba gzip).
+    encoding = response.headers.get("content-encoding", "identity").strip().lower()
+    if encoding != "identity":
+        log.warning("net.compressed_response")
+        raise site_error(SITE_BAD_RESPONSE)
     length = response.headers.get("content-length", "")
     if length.isdigit() and int(length) > MAX_RESPONSE_BYTES:
         raise site_error(SITE_RESPONSE_TOO_LARGE)
@@ -184,7 +190,11 @@ class SafeHttpClient:
             ),
             follow_redirects=False,
             trust_env=False,
-            headers={"User-Agent": settings.user_agent, "Accept": "application/json"},
+            headers={
+                "User-Agent": settings.user_agent,
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+            },
         )
 
     @property

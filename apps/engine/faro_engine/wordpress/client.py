@@ -24,7 +24,7 @@ from typing import Annotated, Any, Final, Literal
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import structlog
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
 
 from faro_engine.core.errors import (
     SITE_BAD_RESPONSE,
@@ -63,6 +63,16 @@ Text = Annotated[str, Field(max_length=2048)]
 Count = Annotated[int, Field(ge=0)]
 
 
+def _web_url(value: str) -> str:
+    # La interfaz puede mostrarla como enlace: nada de `javascript:`, `data:`, etc.
+    if not value.lower().startswith(("https://", "http://")):
+        raise ValueError("url sin http(s)")
+    return value
+
+
+WebUrl = Annotated[Text, AfterValidator(_web_url)]
+
+
 class _Remote(BaseModel):
     # Estricto con los tipos; ignora campos nuevos del plugin (compatibilidad hacia delante).
     model_config = ConfigDict(extra="ignore", strict=True, frozen=True)
@@ -96,7 +106,7 @@ class RemoteStatus(_Remote):
 class RemoteContentItem(_Remote):
     id: Annotated[int, Field(ge=1)]
     title: Text
-    url: Text
+    url: WebUrl
     slug: Text
     modified_at: Annotated[str, Field(max_length=40)]
 

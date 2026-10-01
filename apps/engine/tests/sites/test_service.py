@@ -18,7 +18,7 @@ from faro_engine.core.logging import configure_logging
 from faro_engine.core.schemas.sites import SiteOut
 from faro_engine.sites import repository
 from faro_engine.sites.repository import ConnectionRecord, SiteRecord
-from faro_engine.sites.service import normalize_pairing_code, site_out
+from faro_engine.sites.service import normalize_pairing_code, same_site, site_out
 from tests.fakes.net import SITE_URL, json_response, wp_error
 from tests.fakes.wordpress import FakeConnection
 from tests.sites.conftest import NOW_TEXT, RUN_ID, World
@@ -128,6 +128,38 @@ async def test_connect_keeps_final_url_after_redirect(world: World) -> None:
     )
     site = await _connect(world)
     assert site.url == WWW
+
+
+async def test_connect_redirect_to_other_host_sends_no_code(world: World) -> None:
+    # El código de vinculación nunca va al destino de una redirección a otro dominio.
+    world.wp.site_url = "https://otro.example"
+    world.resolver.mapping["otro.example"] = ["93.184.216.36"]
+    world.front["tienda.example"] = httpx.Response(
+        301, headers={"Location": "https://otro.example/wp-json/faro/v1"}
+    )
+    code = world.wp.create_code()
+    with pytest.raises(FaroError) as info:
+        await world.service().connect(SITE_URL, code)
+    assert info.value.code == "site.moved"
+    assert world.wp.pending_code == code  # no se envió
+
+
+@pytest.mark.parametrize(
+    ("typed", "final", "same"),
+    [
+        ("https://tienda.example", "https://www.tienda.example", True),
+        ("https://www.tienda.example", "https://tienda.example/blog", True),
+        ("https://tienda.example", "https://TIENDA.example", True),
+        ("https://tienda.example", "https://otro.example", False),
+        ("https://tienda.example", "https://tienda.example.otro.example", False),
+        ("https://tienda.example", "https://www.www.tienda.example", False),
+        ("https://tienda.example", "http://tienda.example", False),
+        ("https://tienda.example", "https://tienda.example:8443", False),
+        ("https://", "https://", False),
+    ],
+)
+def test_same_site(typed: str, final: str, same: bool) -> None:
+    assert same_site(typed, final) is same
 
 
 @pytest.mark.parametrize("code", ["12345", "1234567", "12a456", "", "١٢٣٤٥٦"])
