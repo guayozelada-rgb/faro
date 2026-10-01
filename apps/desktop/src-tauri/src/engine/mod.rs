@@ -395,6 +395,8 @@ mod tests {
     #[test]
     fn sitios_locales_nunca_en_release() {
         // Fija la política de release: ningún valor activa `--allow-local-sites`.
+        // La garantía real es estructural: el arranque gestionado (`DevVenvLauncher`) solo
+        // existe con `cfg(debug_assertions)` y en release se usa `UnavailableLauncher`.
         for value in [None, Some("1"), Some(" 1 "), Some("0")] {
             assert!(!local_sites_allowed(false, value), "{value:?}");
         }

@@ -148,7 +148,7 @@ La primera vez tarda varios minutos (descarga imágenes de Docker, WordPress y W
 Cuando termine:
 
 - Sitio: http://localhost:8888
-- Administración: http://localhost:8888/wp-admin, usuario `admin` y contraseña `password` (valores por defecto de wp-env; solo existen en tu computadora).
+- Administración: http://localhost:8888/wp-admin, usuario `admin` y contraseña `password` (valores por defecto de wp-env). Docker puede abrir el puerto 8888 a tu red local: no dejes wp-env arrancado en redes compartidas o públicas y apágalo al terminar (paso 7).
 
 ### 3. Activar el plugin Faro
 
