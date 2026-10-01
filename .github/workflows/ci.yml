@@ -108,6 +108,8 @@ jobs:
   core:
     name: core (núcleo Rust, Windows)
     runs-on: windows-latest
+    # Los builds instrumentados de cargo llvm-cov viven en target/llvm-cov-target, aparte
+    # de los de clippy (target/debug); engine_real reutiliza los instrumentados.
     timeout-minutes: 45
     env:
       RUST_BACKTRACE: "1"
@@ -129,9 +131,12 @@ jobs:
         run: npm run build -w apps/desktop
 
       # rustup instala la versión exacta, componentes y target de rust-toolchain.toml.
+      # llvm-tools-preview (llvm-profdata y llvm-cov de esa misma versión) solo hace falta
+      # para la cobertura; por eso se añade aquí y no en rust-toolchain.toml.
       - name: Toolchain de rust-toolchain.toml
         run: |
           rustup toolchain install
+          rustup component add llvm-tools-preview
           rustc -Vv
           cargo -V
           cargo clippy -V
@@ -149,8 +154,26 @@ jobs:
       - name: Lint (clippy -D warnings)
         run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --all-targets -- -D warnings
 
-      - name: Pruebas del núcleo (cargo test)
-        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked
+      # Cobertura de Rust (spec F1a §4.6, T10). Versión fijada; el binario lo descarga
+      # install-action y comprueba su checksum.
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-llvm-cov@0.9.1
+
+      - name: Pruebas del comprobador de umbrales (scripts/check-rust-coverage.mjs)
+        run: npm run test:scripts
+
+      # Reemplaza a `cargo test`: ejecuta las mismas pruebas (las mismas que `npm run
+      # test:core`) con instrumentación. `clean --workspace` borra datos de cobertura
+      # (.profraw) que pudiera traer la caché. El informe se genera antes de `engine_real`,
+      # así que los umbrales miden solo estas pruebas.
+      - name: Pruebas del núcleo con cobertura (cargo llvm-cov)
+        id: coverage
+        run: |
+          cargo llvm-cov clean --manifest-path apps/desktop/src-tauri/Cargo.toml --workspace
+          cargo llvm-cov --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --no-report
+          cargo llvm-cov report --manifest-path apps/desktop/src-tauri/Cargo.toml \
+            --json --summary-only --output-path "$RUNNER_TEMP/rust-coverage.json"
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
@@ -162,9 +185,17 @@ jobs:
         run: uv sync --directory apps/engine --locked
 
       # Solo el binario de pruebas `engine_real`: nunca se ejecutan en CI otras pruebas
-      # ignoradas (por ejemplo, las que tocan el llavero real del sistema).
+      # ignoradas (por ejemplo, las que tocan el llavero real del sistema). Corre con
+      # `cargo llvm-cov --no-report` para reutilizar el build instrumentado del paso
+      # anterior en lugar de compilar el crate otra vez; el informe ya está generado.
       - name: Arranque real del motor (engine_real, ignoradas por defecto)
-        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --test engine_real -- --ignored engine_real
+        run: cargo llvm-cov --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --no-report --test engine_real -- --ignored engine_real
+
+      # Umbrales: 80 % de líneas global y 95 % en src/vault/, src/secrets/, src/profile/ y
+      # src/engine/protocol.rs. Corre aunque falle `engine_real`, siempre que haya informe.
+      - name: Umbrales de cobertura del núcleo
+        if: ${{ !cancelled() && steps.coverage.outcome == 'success' }}
+        run: node scripts/check-rust-coverage.mjs "$RUNNER_TEMP/rust-coverage.json"
 
   contracts:
     name: contracts (contratos generados al día)

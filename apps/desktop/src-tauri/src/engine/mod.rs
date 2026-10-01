@@ -176,48 +176,87 @@ pub fn external_target(
     }))
 }
 
-/// Lee `FARO_ENGINE_DEV_URL` y `FARO_ENGINE_DEV_TOKEN`: primero del entorno del
-/// proceso y, si no están, de `.env.local` en la raíz del repo (solo debug).
-/// No modifica el entorno del proceso.
+/// Variable (entorno o `.env.local`) que activa el modo de sitios locales (ADR 0012).
+pub const ALLOW_LOCAL_SITES_VAR: &str = "FARO_ALLOW_LOCAL_SITES";
+
+/// ¿Se lanza el motor con `--allow-local-sites`? (spec F1a §4.3, ADR 0012).
+///
+/// Solo si es un build de depuración **y** el valor es exactamente `1` (sin contar
+/// espacios alrededor), igual que el motor en `--dev`. En release siempre `false`, sea
+/// cual sea el entorno: el argumento nunca llega al sidecar empaquetado (que además lo
+/// rechaza con código 2).
+pub fn local_sites_allowed(debug_build: bool, value: Option<&str>) -> bool {
+    debug_build && value.is_some_and(|v| v.trim() == "1")
+}
+
+/// Variables de desarrollo que lee el núcleo (solo debug).
+#[cfg(any(debug_assertions, test))]
+struct DevEnv {
+    url: Option<String>,
+    token: Option<String>,
+    allow_local_sites: Option<String>,
+}
+
+/// Lee `FARO_ENGINE_DEV_URL`, `FARO_ENGINE_DEV_TOKEN` y `FARO_ALLOW_LOCAL_SITES`: primero
+/// de `process` (el entorno del proceso) y, si no están, de `env_file` (`.env.local`).
+/// No modifica el entorno del proceso. Un `.env.local` ausente o ilegible se ignora.
+#[cfg(any(debug_assertions, test))]
+fn read_dev_env(process: impl Fn(&str) -> Option<String>, env_file: &std::path::Path) -> DevEnv {
+    let mut env = DevEnv {
+        url: process("FARO_ENGINE_DEV_URL"),
+        token: process("FARO_ENGINE_DEV_TOKEN"),
+        allow_local_sites: process(ALLOW_LOCAL_SITES_VAR),
+    };
+    if let Ok(iter) = dotenvy::from_path_iter(env_file) {
+        for (key, value) in iter.flatten() {
+            let slot = match key.as_str() {
+                "FARO_ENGINE_DEV_URL" => &mut env.url,
+                "FARO_ENGINE_DEV_TOKEN" => &mut env.token,
+                ALLOW_LOCAL_SITES_VAR => &mut env.allow_local_sites,
+                _ => continue,
+            };
+            if slot.is_none() {
+                *slot = Some(value);
+            }
+        }
+    }
+    env
+}
+
+/// Variables de desarrollo del entorno del proceso y de `.env.local` en la raíz del repo.
 #[cfg(debug_assertions)]
-fn dev_env() -> (Option<String>, Option<String>) {
+fn dev_env() -> DevEnv {
     let env_file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .join("..")
         .join(".env.local");
-    let mut url = std::env::var("FARO_ENGINE_DEV_URL").ok();
-    let mut token = std::env::var("FARO_ENGINE_DEV_TOKEN").ok();
-    if let Ok(iter) = dotenvy::from_path_iter(&env_file) {
-        for (key, value) in iter.flatten() {
-            match key.as_str() {
-                "FARO_ENGINE_DEV_URL" if url.is_none() => url = Some(value),
-                "FARO_ENGINE_DEV_TOKEN" if token.is_none() => token = Some(value),
-                _ => {}
-            }
-        }
-    }
-    (url, token)
+    read_dev_env(|name| std::env::var(name).ok(), &env_file)
 }
 
 /// Modo del motor para esta ejecución.
 ///
 /// - Debug: externo si `FARO_ENGINE_DEV_URL` está definida y no vacía; si no, gestionado
-///   desde `apps/engine/.venv`.
-/// - Release (F0): sin sidecar → `engine.start_failed`.
+///   desde `apps/engine/.venv`, con `--allow-local-sites` si `FARO_ALLOW_LOCAL_SITES=1`
+///   ([`local_sites_allowed`]). En modo externo el motor `--dev` lee esa variable solo.
+/// - Release (F0): sin sidecar → `engine.start_failed`. Nunca `--allow-local-sites`.
 ///
 /// `db_key` solo se usa en modo gestionado.
 pub fn default_mode(data_dir: std::path::PathBuf, db_key: Arc<dyn DbKeyProvider>) -> EngineMode {
     #[cfg(debug_assertions)]
     {
-        let (url, token) = dev_env();
-        if let Some(target) = external_target(url, token) {
+        let env = dev_env();
+        if let Some(target) = external_target(env.url, env.token) {
             tracing::info!("motor en modo externo de desarrollo");
             return EngineMode::External(target);
         }
+        let allow_local_sites =
+            local_sites_allowed(cfg!(debug_assertions), env.allow_local_sites.as_deref());
         tracing::info!("motor en modo gestionado desde apps/engine/.venv");
         EngineMode::Managed {
-            launcher: Arc::new(launcher::DevVenvLauncher::new(data_dir)),
+            launcher: Arc::new(
+                launcher::DevVenvLauncher::new(data_dir).with_allow_local_sites(allow_local_sites),
+            ),
             db_key,
         }
     }
@@ -334,5 +373,76 @@ mod tests {
         assert!(!format!("{target:?}").contains(&token));
         let mode = EngineMode::External(Ok(target));
         assert!(!format!("{mode:?}").contains(&token));
+    }
+
+    #[test]
+    fn sitios_locales_solo_en_debug_y_con_valor_exacto_1() {
+        assert!(local_sites_allowed(true, Some("1")));
+        assert!(local_sites_allowed(true, Some(" 1 ")));
+        for value in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("true"),
+            Some("yes"),
+            Some("11"),
+            Some("1 0"),
+        ] {
+            assert!(!local_sites_allowed(true, value), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn sitios_locales_nunca_en_release() {
+        // Fija la política de release: ningún valor activa `--allow-local-sites`.
+        // La garantía real es estructural: el arranque gestionado (`DevVenvLauncher`) solo
+        // existe con `cfg(debug_assertions)` y en release se usa `UnavailableLauncher`.
+        for value in [None, Some("1"), Some(" 1 "), Some("0")] {
+            assert!(!local_sites_allowed(false, value), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn dev_env_prefiere_el_entorno_y_completa_con_env_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(".env.local");
+        std::fs::write(
+            &file,
+            concat!(
+                "# comentario\n",
+                "FARO_ENGINE_DEV_URL=http://127.0.0.1:9000\n",
+                "FARO_ENGINE_DEV_TOKEN=del-archivo\n",
+                "FARO_ALLOW_LOCAL_SITES=1\n",
+                "OTRA=x\n",
+            ),
+        )
+        .unwrap();
+
+        let env = read_dev_env(|_| None, &file);
+        assert_eq!(env.url.as_deref(), Some("http://127.0.0.1:9000"));
+        assert_eq!(env.token.as_deref(), Some("del-archivo"));
+        assert_eq!(env.allow_local_sites.as_deref(), Some("1"));
+
+        let env = read_dev_env(
+            |name| (name == ALLOW_LOCAL_SITES_VAR).then(|| "0".to_owned()),
+            &file,
+        );
+        assert_eq!(env.allow_local_sites.as_deref(), Some("0"));
+        assert_eq!(env.token.as_deref(), Some("del-archivo"));
+    }
+
+    #[test]
+    fn dev_env_sin_archivo_usa_solo_el_entorno() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = read_dev_env(
+            |name| (name == ALLOW_LOCAL_SITES_VAR).then(|| "1".to_owned()),
+            &dir.path().join("no-existe"),
+        );
+        assert!(env.url.is_none());
+        assert!(env.token.is_none());
+        assert_eq!(env.allow_local_sites.as_deref(), Some("1"));
+        assert!(read_dev_env(|_| None, &dir.path().join("no-existe"))
+            .allow_local_sites
+            .is_none());
     }
 }

@@ -23,6 +23,8 @@ pub enum Reply {
     Delayed(u16, Duration),
     /// No responde nunca (para el timeout).
     Hang,
+    /// Cierra la conexión sin responder (error de red que no es timeout ni conexión).
+    Close,
 }
 
 /// Petición recibida: línea de petición y cabeceras (nombres en minúsculas).
@@ -152,6 +154,10 @@ impl FakeProviders {
                 // Simula la latencia del proveedor (no es una espera de la prueba).
                 tokio::time::sleep(delay).await;
                 (status, "{}")
+            }
+            Reply::Close => {
+                self.active.fetch_sub(1, Ordering::SeqCst);
+                return;
             }
             Reply::Hang => {
                 self.active.fetch_sub(1, Ordering::SeqCst);

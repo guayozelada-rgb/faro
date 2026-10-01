@@ -82,10 +82,13 @@ Todos los comandos se ejecutan desde la raíz del repositorio. Son la interfaz c
 | `npm run format` | Formatea todo: Prettier (TS, JSON, Markdown, CSS), `cargo fmt` (Rust) y `ruff format` (Python) |
 | `npm run format:check` | Igual que `format`, pero solo comprueba y falla si algún archivo no tiene el formato correcto |
 | `npm run typecheck` | `tsc --noEmit` de los paquetes TypeScript y `mypy` del motor |
-| `npm run test` | Ejecuta `test:desktop`, `test:core` y `test:engine` |
+| `npm run test` | Ejecuta `test:desktop`, `test:core`, `test:engine`, `test:contracts` y `test:scripts` |
 | `npm run test:desktop` | Pruebas de la interfaz con Vitest |
 | `npm run test:core` | Pruebas del núcleo con `cargo test` |
 | `npm run test:engine` | Pruebas del motor con pytest (`uv run --directory apps/engine pytest`) |
+| `npm run test:contracts` | Pruebas del generador de contratos |
+| `npm run test:scripts` | Pruebas del comprobador de umbrales de cobertura de Rust (`scripts/check-rust-coverage.mjs`) |
+| `npm run coverage:core` | Pruebas del núcleo con `cargo llvm-cov` y los umbrales de la CI: 80 % de líneas global y 95 % en `src/vault/`, `src/secrets/`, `src/profile/` y `src/engine/protocol.rs`. Requiere `cargo install cargo-llvm-cov --version 0.9.1 --locked` y `rustup component add llvm-tools-preview` |
 | `npm run test:all` | En F0 es igual que `test`; desde F1 incluye las pruebas extremo a extremo |
 | `npm run contracts` | Regenera los contratos del motor en `packages/shared` (`openapi.json`, `engine.d.ts`, `engine-operations.json`) |
 | `npm run build:wp-plugin` | Genera el zip del plugin de WordPress en `packages/wp-plugin/dist/faro-wordpress.zip` (carpeta `faro/`, sin pruebas ni herramientas; dos builds dan el mismo SHA-256) |
@@ -107,6 +110,99 @@ En modo externo el núcleo no reinicia el motor: si lo detienes, Inicio muestra 
 
 `.env.local` nunca se sube al repositorio (está en `.gitignore`) y no debe contener claves de proveedores de IA ni otros secretos reales. Los builds de release ignoran estos modos.
 
+## Probar con un WordPress local (wp-env)
+
+Estos pasos montan un WordPress con WooCommerce en tu computadora con [wp-env](https://developer.wordpress.org/block-editor/reference-guides/packages/packages-env/) y lo conectan con Faro en modo desarrollo. Ejecuta los comandos en PowerShell desde la raíz del repositorio, salvo cuando se indique otra carpeta.
+
+### Requisitos
+
+- Lo de [Instalación en Windows](#instalación-en-windows): Node, Rust (con Visual Studio Build Tools) y uv, y haber ejecutado `npm run setup` al menos una vez.
+- **Docker Desktop con WSL 2** (wp-env levanta WordPress en contenedores):
+  1. Si no tienes WSL 2: `wsl --install` en una terminal de administrador y reinicia.
+  2. `winget install --id Docker.DockerDesktop -e`.
+  3. Abre Docker Desktop y, en Settings → General, deja marcado **Use the WSL 2 based engine**.
+  4. Comprueba que funciona: `docker run --rm hello-world` debe mostrar "Hello from Docker!".
+
+Docker Desktop tiene que estar abierto cada vez que uses wp-env.
+
+### 1. Generar el zip del plugin
+
+```powershell
+npm run build:wp-plugin
+```
+
+Crea `packages/wp-plugin/dist/faro-wordpress.zip`, el archivo que guarda el botón **Guardar el plugin en Descargas** de la app. `npm run setup` ya lo genera; vuelve a ejecutarlo si cambias el plugin.
+
+### 2. Arrancar WordPress con wp-env
+
+wp-env y sus versiones están fijados en `packages/wp-plugin/package-lock.json`. Instálalo una vez (sin scripts de instalación, igual que en la CI) y arráncalo desde la carpeta del plugin:
+
+```powershell
+npm ci --prefix packages/wp-plugin --ignore-scripts
+cd packages/wp-plugin
+npx --no-install wp-env start
+```
+
+La primera vez tarda varios minutos (descarga imágenes de Docker, WordPress y WooCommerce). Las versiones de PHP, WordPress y WooCommerce las fija `packages/wp-plugin/.wp-env.json`.
+
+Cuando termine:
+
+- Sitio: http://localhost:8888
+- Administración: http://localhost:8888/wp-admin, usuario `admin` y contraseña `password` (valores por defecto de wp-env). Docker puede abrir el puerto 8888 a tu red local: no dejes wp-env arrancado en redes compartidas o públicas y apágalo al terminar (paso 7).
+
+### 3. Activar el plugin Faro
+
+wp-env monta el código de `packages/wp-plugin` como el plugin `faro` (no hace falta subir el zip), pero no lo activa. Elige una opción:
+
+- En http://localhost:8888/wp-admin → **Plugins**, busca **Faro** y pulsa **Activar**.
+- O, desde `packages/wp-plugin`: `npx --no-install wp-env run cli wp plugin activate faro`.
+
+### 4. Generar el código de conexión
+
+En wp-admin → **Ajustes → Faro**, pulsa **Generar código de conexión**. Verás un código de 6 dígitos y la dirección `http://localhost:8888`. El código caduca en 10 minutos y solo sirve una vez; si caduca, pulsa **Generar otro código**.
+
+Funciona con `http` porque `.wp-env.json` define `WP_ENVIRONMENT_TYPE=local`. En un sitio real el plugin exige HTTPS.
+
+### 5. Permitir sitios locales en Faro
+
+Por seguridad, Faro solo se conecta a sitios con HTTPS en internet (ADR 0012). Para aceptar `http://localhost:8888`, vuelve a la raíz del repositorio y activa el modo de sitios locales en `.env.local`:
+
+```powershell
+cd ../..
+if (-not (Test-Path .env.local)) { Copy-Item .env.local.example .env.local }
+```
+
+Abre `.env.local` y cambia la línea a:
+
+```
+FARO_ALLOW_LOCAL_SITES=1
+```
+
+Solo vale el valor exacto `1`. Con él, el núcleo de un build de depuración lanza el motor con `--allow-local-sites`, que permite `http` y direcciones de tu propia computadora (`localhost`, `127.0.0.1`, `::1`). Las redes privadas (`192.168.x.x`, `10.x.x.x`…) siguen bloqueadas. También puedes definir la variable solo para una terminal: `$env:FARO_ALLOW_LOCAL_SITES = '1'` antes de `npm run dev`.
+
+### 6. Arrancar Faro y conectar el sitio
+
+```powershell
+npm run dev
+```
+
+Si la app ya estaba abierta, ciérrala y vuelve a ejecutar `npm run dev`: el valor se lee al lanzar el motor. En la app, ve a **Configuración → Sitios conectados → Conectar tu sitio**, escribe `http://localhost:8888` y el código del paso 4. La tarjeta del sitio debe quedar como **Conectado**.
+
+La pantalla Sitios conectados llega con la tarea F1a T11. Mientras no esté en `main`, puedes comprobar el mismo flujo de conexión sin la interfaz, con wp-env arrancado: `uv run --directory apps/engine pytest -m wp_env --no-cov` (usa un llavero simulado y su propia base temporal).
+
+### 7. Apagar wp-env
+
+Desde `packages/wp-plugin`:
+
+```powershell
+npx --no-install wp-env stop      # detiene los contenedores y conserva el sitio
+npx --no-install wp-env destroy   # opcional: borra el sitio y empieza de cero la próxima vez
+```
+
+Cuando termines de probar, vuelve a poner `FARO_ALLOW_LOCAL_SITES=0` en `.env.local`.
+
+> **El modo de sitios locales nunca funciona en la app instalada.** Solo lo activa un build de depuración (`npm run dev`) o el motor en modo `--dev`. El núcleo de release nunca pasa `--allow-local-sites` y el motor empaquetado se niega a arrancar con ese argumento.
+
 ## Integración continua
 
 Cada pull request hacia `main`, cada push a `main` y cada ejecución manual lanzan `.github/workflows/ci.yml`:
@@ -114,17 +210,17 @@ Cada pull request hacia `main`, cada push a `main` y cada ejecución manual lanz
 | Trabajo | Runner | Qué comprueba |
 | --- | --- | --- |
 | `ts` | Ubuntu | Prettier, ESLint, `tsc` y Vitest con cobertura (70 %) |
-| `engine` | Ubuntu y Windows | `ruff format --check`, `ruff check`, `mypy --strict` y pytest con cobertura (80 %; 95 % en seguridad y protocolo) |
-| `core` | Windows | Build de la interfaz, `cargo fmt --check`, `clippy -D warnings`, `cargo test` y el arranque real del motor (`engine_real`) |
+| `engine` | Ubuntu, Windows y macOS | `ruff format --check`, `ruff check`, `mypy --strict` y pytest con cobertura (80 %; 95 % en seguridad y protocolo) |
+| `core` | Windows | Build de la interfaz, `cargo fmt --check`, `clippy -D warnings`, pruebas con `cargo llvm-cov` (falla si la cobertura de líneas baja del 80 % global o del 95 % en `vault/`, `secrets/`, `profile/` y `engine/protocol.rs`) y el arranque real del motor (`engine_real`) |
 | `contracts` | Ubuntu | `npm run contracts` no deja diferencias en `packages/shared` |
 | `wp-plugin` | Ubuntu | Plugin de WordPress: PHPCS (WordPress Coding Standards), PHPStan y el zip del plugin (contenido y hash estable) |
-| `wp-plugin-integration` | Ubuntu (Docker) | PHPUnit del plugin en wp-env: configuración actual (PHP 8.3, WordPress y WooCommerce fijados, HPOS activado y desactivado) y mínima (PHP 8.1, WordPress 6.0, sin WooCommerce) |
+| `wp-plugin-integration` | Ubuntu (Docker) | PHPUnit del plugin en wp-env: configuración actual (PHP 8.3, WordPress y WooCommerce fijados, HPOS activado y desactivado, más la integración motor ↔ plugin con `pytest -m wp_env`) y mínima (PHP 8.1, WordPress 6.0, sin WooCommerce) |
 | `audit` | Ubuntu | `npm audit`, `cargo audit`, `pip-audit`, `composer audit` y `gitleaks` sobre todo el historial |
 | `ci-ok` | Ubuntu | Falla si cualquiera de los anteriores no terminó bien. Es el único check requerido en `main` |
 
 Además, `.github/workflows/codeql.yml` ejecuta CodeQL (Actions, JavaScript/TypeScript, Python y Rust) y `.github/dependabot.yml` propone actualizaciones semanales de npm, Cargo, uv, Composer y GitHub Actions.
 
-Para reproducir la CI en local antes de abrir un PR: `npm run format:check`, `npm run lint`, `npm run typecheck`, `npm run test` y `npm run contracts` (este último no debe cambiar ningún archivo).
+Para reproducir la CI en local antes de abrir un PR: `npm run format:check`, `npm run lint`, `npm run typecheck`, `npm run test`, `npm run coverage:core` (si cambias el núcleo Rust) y `npm run contracts` (este último no debe cambiar ningún archivo). La plantilla de PR (`.github/pull_request_template.md`) recoge esta lista y las casillas que piden la revisión de `revisor-seguridad`.
 
 ## Configuración del repositorio en GitHub
 

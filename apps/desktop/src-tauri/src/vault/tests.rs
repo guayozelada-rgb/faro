@@ -632,6 +632,93 @@ fn vault_service_debug_no_expone_nada() {
     assert_no_secret(&format!("{vault:?}"));
 }
 
+#[tokio::test]
+async fn test_key_con_caracteres_no_validos_en_cabecera_es_invalid_sin_peticion() {
+    // Solo puede pasar con una clave guardada fuera de Faro: un salto de línea no cabe
+    // en una cabecera HTTP, así que no puede ser válida y no se envía nada.
+    let env = env().await;
+    for p in Provider::ALL {
+        preload(
+            &env.store,
+            p,
+            "test-key-con-salto
+de-linea-0001",
+        );
+        let summary = env.vault.test(p).await.unwrap();
+        assert_eq!(summary.status, KeyStatus::Invalid, "{p:?}");
+        assert_eq!(summary.last_error_code, Some("vault.invalid_key"), "{p:?}");
+    }
+    assert!(env.server.requests().is_empty());
+}
+
+/// Clase del error de red en el log (`kind`), sin URL ni detalles de `reqwest`.
+async fn unreachable_kind(bases: BaseUrls) -> String {
+    let (vault, store) = env_with_bases(bases);
+    let (buffer, _guard) = crate::test_logs::capture();
+    let err = vault
+        .add(add_input(Provider::Openai, SECRET, false))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, "vault.provider_unreachable");
+    assert!(stored(&store, Provider::Openai).is_none());
+    let all = buffer.text();
+    assert_no_secret(&all);
+    // Solo los registros de Faro: la captura incluye también las trazas de hyper.
+    let logs: Vec<&str> = all.lines().filter(|l| l.contains("faro_lib::")).collect();
+    let line = logs
+        .iter()
+        .find(|l| l.contains("sin conexión con el proveedor"))
+        .unwrap_or_else(|| panic!("falta el aviso: {all}"));
+    for l in &logs {
+        assert!(!l.contains("127.0.0.1"), "el log no lleva la URL: {l}");
+    }
+    // `… kind="connect"` → `connect`.
+    let start = line.find("kind=\"").expect("falta kind") + "kind=\"".len();
+    line[start..]
+        .split('"')
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn sin_conexion_registra_la_clase_connect() {
+    // El puerto 0 no admite conexiones: el SO rechaza la conexión al instante.
+    let root = "http://127.0.0.1:0".to_owned();
+    let kind = unreachable_kind(BaseUrls {
+        anthropic: root.clone(),
+        openai: root.clone(),
+        gemini: root,
+    })
+    .await;
+    assert_eq!(kind, "connect");
+}
+
+#[tokio::test]
+async fn conexion_cerrada_sin_respuesta_registra_la_clase_other() {
+    let server = FakeProviders::start().await;
+    server.reply(Provider::Openai, Reply::Close);
+    let kind = unreachable_kind(server.bases()).await;
+    assert_eq!(kind, "other");
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn system_clock_da_utc_en_rfc3339_con_segundos() {
+    let now = super::system_clock()();
+    assert!(now.ends_with('Z'), "{now}");
+    let parsed = chrono::DateTime::parse_from_rfc3339(&now).unwrap();
+    assert_eq!(parsed.timestamp_subsec_nanos(), 0);
+}
+
+#[test]
+fn vault_service_system_se_construye_sin_usar_el_llavero() {
+    // Crear el servicio no crea entradas ni llama al llavero: solo construye
+    // `KeyringStore` y el cliente HTTP. Aquí no se ejecuta ninguna operación.
+    let vault = VaultService::system().unwrap();
+    assert!(!format!("{vault:?}").is_empty());
+}
+
 // ---------- logs ----------
 
 #[tokio::test]

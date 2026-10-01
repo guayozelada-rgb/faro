@@ -220,6 +220,7 @@ pub struct DevVenvLauncher {
     engine_dir: PathBuf,
     python: PathBuf,
     data_dir: PathBuf,
+    allow_local_sites: bool,
 }
 
 #[cfg(debug_assertions)]
@@ -232,7 +233,37 @@ impl DevVenvLauncher {
             engine_dir,
             python,
             data_dir,
+            allow_local_sites: false,
         }
+    }
+
+    /// Lanza el motor con `--allow-local-sites` (ADR 0012). Quien lo llama decide con
+    /// [`crate::engine::local_sites_allowed`]; este lanzador solo existe en debug.
+    #[must_use]
+    pub fn with_allow_local_sites(mut self, allow: bool) -> Self {
+        self.allow_local_sites = allow;
+        self
+    }
+
+    /// Argumentos del motor tras el intérprete.
+    pub fn args(&self) -> Vec<std::ffi::OsString> {
+        let mut args: Vec<std::ffi::OsString> = [
+            "-m",
+            "faro_engine",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--data-dir",
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+        args.push(self.data_dir.clone().into_os_string());
+        if self.allow_local_sites {
+            args.push("--allow-local-sites".into());
+        }
+        args
     }
 }
 
@@ -243,11 +274,13 @@ impl EngineLauncher for DevVenvLauncher {
             tracing::warn!("no existe apps/engine/.venv; ejecuta `npm run setup`");
             return Err(AppError::engine_start_failed("dev_env_missing"));
         }
+        if self.allow_local_sites {
+            // Solo desarrollo (ADR 0012): `http` y loopback para wp-env.
+            tracing::warn!("motor lanzado con --allow-local-sites (solo desarrollo)");
+        }
         let mut command = tokio::process::Command::new(&self.python);
         command
-            .args(["-m", "faro_engine", "--host", "127.0.0.1", "--port", "0"])
-            .arg("--data-dir")
-            .arg(&self.data_dir)
+            .args(self.args())
             .current_dir(&self.engine_dir)
             .env("PYTHONUNBUFFERED", "1")
             .env("PYTHONIOENCODING", "utf-8");
@@ -257,3 +290,59 @@ impl EngineLauncher for DevVenvLauncher {
 
 /// Tiempo máximo para recoger un proceso ya matado.
 pub(crate) const REAP_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[cfg(all(test, debug_assertions))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dev_venv_sin_sitios_locales_por_defecto() {
+        let launcher = DevVenvLauncher::new(PathBuf::from("datos"));
+        let args = launcher.args();
+        assert!(!args.iter().any(|a| a == "--allow-local-sites"));
+        assert_eq!(
+            args,
+            [
+                "-m",
+                "faro_engine",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "0",
+                "--data-dir",
+                "datos"
+            ]
+            .map(std::ffi::OsString::from)
+        );
+    }
+
+    #[test]
+    fn dev_venv_con_sitios_locales_anade_el_argumento_al_final() {
+        let launcher = DevVenvLauncher::new(PathBuf::from("datos")).with_allow_local_sites(true);
+        let args = launcher.args();
+        assert_eq!(
+            args.last().map(|a| a.as_os_str()),
+            Some("--allow-local-sites".as_ref())
+        );
+        assert_eq!(
+            args.iter().filter(|a| *a == "--allow-local-sites").count(),
+            1
+        );
+        let off = DevVenvLauncher::new(PathBuf::from("datos"))
+            .with_allow_local_sites(true)
+            .with_allow_local_sites(false);
+        assert!(!off.args().iter().any(|a| a == "--allow-local-sites"));
+    }
+
+    #[test]
+    fn dev_venv_sin_venv_falla_antes_de_lanzar_con_sitios_locales() {
+        let (logs, _guard) = crate::test_logs::capture();
+        let dir = tempfile::tempdir().unwrap();
+        let mut launcher =
+            DevVenvLauncher::new(dir.path().to_path_buf()).with_allow_local_sites(true);
+        launcher.python = dir.path().join("no-existe").join("python.exe");
+        let err = launcher.launch().err().unwrap();
+        assert_eq!(err.code, "engine.start_failed");
+        assert!(!logs.text().contains("--allow-local-sites"));
+    }
+}
