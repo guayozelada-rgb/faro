@@ -535,5 +535,50 @@ describe("Configuración → Sitios conectados", () => {
       expect(screen.getByRole("alertdialog")).toBeInTheDocument();
       expect(getCard("Mi Tienda")).toBeInTheDocument();
     });
+
+    it("site.not_found al quitar: muestra el mensaje y vuelve a leer la lista", async () => {
+      const user = userEvent.setup();
+      const ipc = healthy([SITE_A], {
+        listSites: sequence<unknown>(
+          { items: [SITE_A], next_cursor: null },
+          { items: [], next_cursor: null },
+        ),
+        removeSite: rejectWith(faroError("site.not_found", "")),
+      });
+      renderSites();
+
+      const dialog = await openDisconnect(user);
+      await user.click(within(dialog).getByRole("button", { name: "Desconectar Mi Tienda" }));
+
+      expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+        "No encontramos ese sitio en Faro. Puede que ya lo hayas quitado.",
+      );
+      await waitFor(() => {
+        expect(ipc.engineCalls("listSites")).toHaveLength(2);
+      });
+    });
+
+    it("mientras quita: botón 'Desconectando el sitio…' y no se cierra con Escape", async () => {
+      const user = userEvent.setup();
+      const pending = deferred<unknown>();
+      healthy([SITE_A], { removeSite: () => pending.promise });
+      renderSites();
+
+      const dialog = await openDisconnect(user);
+      await user.click(within(dialog).getByRole("button", { name: "Desconectar Mi Tienda" }));
+
+      expect(
+        await within(dialog).findByRole("button", { name: "Desconectando el sitio…" }),
+      ).toBeInTheDocument();
+      expect(dialog).toHaveAttribute("aria-busy", "true");
+      await user.keyboard("{Escape}");
+      expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+
+      pending.resolve({ remote_revoked: true });
+      await waitFor(() => {
+        expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+      });
+      await expectToast("Desconectamos Mi Tienda.");
+    });
   });
 });
