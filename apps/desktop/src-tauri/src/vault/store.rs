@@ -28,9 +28,17 @@ pub trait SecretStore: Send + Sync {
 }
 
 /// Llavero del SO mediante el crate `keyring` v3.
+///
+/// En producción cada operación crea su entrada con `keyring::Entry::new` (backend
+/// nativo del SO). Solo en pruebas se puede inyectar un constructor de credenciales
+/// (`keyring::mock`) **para esta instancia**, sin tocar el constructor global de
+/// `keyring` (`set_default_credential_builder`), que afectaría a la prueba con el
+/// llavero real.
 #[derive(Debug)]
 pub struct KeyringStore {
     service: &'static str,
+    #[cfg(test)]
+    builder: Option<std::sync::Arc<keyring::CredentialBuilder>>,
 }
 
 impl KeyringStore {
@@ -38,13 +46,30 @@ impl KeyringStore {
     pub fn new() -> Self {
         Self {
             service: KEYRING_SERVICE,
+            #[cfg(test)]
+            builder: None,
         }
     }
 
     /// Solo pruebas: servicio exclusivo para no tocar las claves reales del usuario.
     #[cfg(test)]
     pub(crate) fn with_test_service(service: &'static str) -> Self {
-        Self { service }
+        Self {
+            service,
+            builder: None,
+        }
+    }
+
+    /// Solo pruebas: servicio de producción, pero las entradas las crea `builder`
+    /// (p. ej. un mock de `keyring`) en lugar del llavero del SO.
+    #[cfg(test)]
+    pub(crate) fn with_credential_builder(
+        builder: std::sync::Arc<keyring::CredentialBuilder>,
+    ) -> Self {
+        Self {
+            service: KEYRING_SERVICE,
+            builder: Some(builder),
+        }
     }
 
     pub fn service(&self) -> &'static str {
@@ -52,6 +77,13 @@ impl KeyringStore {
     }
 
     fn entry(&self, secret_ref: &str, op: &'static str) -> Result<keyring::Entry, AppError> {
+        #[cfg(test)]
+        if let Some(builder) = &self.builder {
+            return builder
+                .build(None, self.service, secret_ref)
+                .map(keyring::Entry::new_with_credential)
+                .map_err(|err| unavailable(op, &err));
+        }
         keyring::Entry::new(self.service, secret_ref).map_err(|err| unavailable(op, &err))
     }
 }
@@ -180,110 +212,5 @@ impl SecretStore for MemoryStore {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const SECRET: &str = "test-key-000000000000000000001a2B"; // gitleaks:allow
-
-    #[test]
-    fn keyring_store_usa_el_servicio_fijo_de_la_app() {
-        assert_eq!(KEYRING_SERVICE, "app.faro.desktop");
-        assert_eq!(KeyringStore::new().service(), "app.faro.desktop");
-        assert_eq!(KeyringStore::default().service(), "app.faro.desktop");
-    }
-
-    #[test]
-    fn memory_store_get_set_delete() {
-        let store = MemoryStore::new();
-        assert!(store.get("llm/openai/default").unwrap().is_none());
-        store
-            .set("llm/openai/default", &SecretString::from(SECRET.to_owned()))
-            .unwrap();
-        let got = store.get("llm/openai/default").unwrap().unwrap();
-        assert_eq!(got.expose_secret(), SECRET);
-        store.delete("llm/openai/default").unwrap();
-        store.delete("llm/openai/default").unwrap();
-        assert!(store.get("llm/openai/default").unwrap().is_none());
-    }
-
-    #[test]
-    fn memory_store_debug_no_muestra_secretos() {
-        let store = MemoryStore::new();
-        store
-            .set("llm/openai/default", &SecretString::from(SECRET.to_owned()))
-            .unwrap();
-        let debug = format!("{store:?}");
-        assert!(debug.contains("llm/openai/default"));
-        assert!(!debug.contains(SECRET));
-    }
-
-    #[test]
-    fn memory_store_no_disponible() {
-        let store = MemoryStore::new();
-        store.set_unavailable(true);
-        assert_eq!(
-            store.get("llm/openai/default").unwrap_err().code,
-            "vault.keyring_unavailable"
-        );
-    }
-
-    /// Nombre con el que `keyring` guarda la entrada en Windows: `<usuario>.<servicio>`.
-    #[cfg(windows)]
-    fn windows_credential_exists() -> bool {
-        let output = std::process::Command::new("cmdkey")
-            .arg("/list:llm/test/vault_keyring_real.app.faro.desktop.test")
-            .output()
-            .unwrap();
-        // La cabecera repite el filtro; si existe, aparece otra vez en la línea del destino.
-        String::from_utf8_lossy(&output.stdout)
-            .matches("llm/test/vault_keyring_real.app.faro.desktop.test")
-            .count()
-            >= 2
-    }
-
-    /// Escribe, lee y borra una credencial real en el llavero del SO con un servicio
-    /// exclusivo de pruebas (`app.faro.desktop.test`). Nunca toca `app.faro.desktop`.
-    ///
-    /// `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml -- --ignored vault_keyring_real`
-    #[test]
-    #[ignore = "usa el llavero real del sistema"]
-    fn vault_keyring_real() {
-        const TEST_SERVICE: &str = "app.faro.desktop.test";
-        const TEST_REF: &str = "llm/test/vault_keyring_real";
-        let store = KeyringStore::with_test_service(TEST_SERVICE);
-        assert_ne!(store.service(), KEYRING_SERVICE);
-
-        // Limpieza previa por si una ejecución anterior se interrumpió.
-        store.delete(TEST_REF).unwrap();
-        assert!(store.get(TEST_REF).unwrap().is_none());
-
-        let result = std::panic::catch_unwind(|| {
-            store
-                .set(TEST_REF, &SecretString::from(SECRET.to_owned()))
-                .unwrap();
-            let got = store.get(TEST_REF).unwrap().unwrap();
-            assert_eq!(got.expose_secret(), SECRET);
-            store
-                .set(TEST_REF, &SecretString::from(format!("{SECRET}-v2")))
-                .unwrap();
-            let got = store.get(TEST_REF).unwrap().unwrap();
-            assert_eq!(got.expose_secret(), format!("{SECRET}-v2"));
-            // Está de verdad en el Administrador de credenciales (no en un almacén simulado).
-            #[cfg(windows)]
-            assert!(
-                windows_credential_exists(),
-                "la credencial no está en el SO"
-            );
-        });
-
-        // Siempre se deja limpio, aunque la prueba falle.
-        store.delete(TEST_REF).unwrap();
-        store.delete(TEST_REF).unwrap(); // idempotente
-        assert!(store.get(TEST_REF).unwrap().is_none());
-        #[cfg(windows)]
-        assert!(!windows_credential_exists(), "la credencial quedó en el SO");
-        if let Err(panic) = result {
-            std::panic::resume_unwind(panic);
-        }
-    }
-}
+#[path = "store_tests.rs"]
+mod tests;
