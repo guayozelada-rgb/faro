@@ -19,7 +19,10 @@ export function isEngineStatus(value: unknown): value is EngineStatus {
     typeof candidate.state === "string" &&
     (ENGINE_STATES as readonly string[]).includes(candidate.state) &&
     (candidate.version === null || typeof candidate.version === "string") &&
-    (candidate.error === null || isFaroErrorData(candidate.error))
+    (candidate.error === null || isFaroErrorData(candidate.error)) &&
+    (candidate.database_error === undefined ||
+      candidate.database_error === null ||
+      isFaroErrorData(candidate.database_error))
   );
 }
 

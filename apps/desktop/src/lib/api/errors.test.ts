@@ -74,6 +74,58 @@ describe("getErrorMessage", () => {
   });
 });
 
+// Catálogo nuevo de F1a (spec §5.6): una muestra por dominio; el resto lo cubren las pantallas.
+const F1A_CATALOG: [code: string, message: string][] = [
+  [
+    "engine.not_ready",
+    "El motor de Faro todavía no está listo. Espera unos segundos e intenta de nuevo.",
+  ],
+  [
+    "engine.operation_not_allowed",
+    "Esta acción no está permitida. Reinicia Faro; si se repite, escríbenos.",
+  ],
+  ["engine.timeout", "Faro tardó demasiado en responder. Intenta de nuevo."],
+  [
+    "engine.secrets_unavailable",
+    "Esta acción no está disponible en el modo de desarrollo externo.",
+  ],
+  ["db.too_new", "Tus datos son de una versión más nueva de Faro. Actualiza Faro para abrirlos."],
+  ["db.unavailable", "Tus datos de Faro no están disponibles ahora. Reinicia Faro."],
+  [
+    "site.moved",
+    "Tu sitio respondió desde otra dirección. Vuelve a conectarlo con la dirección nueva.",
+  ],
+  [
+    "site.clock_skew",
+    "La hora de tu computadora no coincide con la de tu sitio. Activa la fecha y hora automáticas e intenta de nuevo.",
+  ],
+  [
+    "vault.secret_timeout",
+    "Faro no pudo usar una credencial guardada. Reinicia Faro e intenta de nuevo.",
+  ],
+  ["plugin.package_missing", "Esta versión de Faro no incluye el plugin de WordPress."],
+];
+
+describe("getErrorMessage: catálogo de F1a", () => {
+  it.each(F1A_CATALOG)("traduce %s", (code, message) => {
+    expect(getErrorMessage(new FaroError(code, "respaldo del motor"))).toBe(message);
+  });
+
+  const BASE = "El código no coincide. Revísalo en WordPress (Ajustes → Faro).";
+
+  it.each([
+    [{ attempts_left: 4 }, `${BASE} Te quedan 4 intentos.`],
+    [{ attempts_left: 1 }, `${BASE} Te queda 1 intento.`],
+    [{ attempts_left: 0 }, `${BASE} Te quedan 0 intentos.`],
+    [{}, BASE],
+    [{ attempts_left: "4" }, BASE],
+    [{ attempts_left: -1 }, BASE],
+    [{ attempts_left: 1.5 }, BASE],
+  ])("site.pairing_code_invalid con details %j", (details, message) => {
+    expect(getErrorMessage(new FaroError("site.pairing_code_invalid", "", details))).toBe(message);
+  });
+});
+
 describe("toFaroError", () => {
   it("devuelve la misma instancia si ya es FaroError", () => {
     const error = new FaroError("vault.not_found");

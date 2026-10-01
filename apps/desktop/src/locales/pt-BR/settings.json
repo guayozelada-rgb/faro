@@ -64,5 +64,141 @@
       "testValid": "[TODO] La clave funciona.",
       "deleted": "[TODO] Clave de {{provider}} borrada."
     }
+  },
+  "tabs": {
+    "label": "[TODO] Secciones de Configuración",
+    "sites": "[TODO] Sitios conectados",
+    "aiKeys": "[TODO] Claves de IA"
+  },
+  "sites": {
+    "title": "[TODO] Sitios conectados",
+    "titleHelpLabel": "[TODO] Cómo se conecta Faro a tu sitio",
+    "titleTooltip": "[TODO] Faro lee tu sitio con un plugin. Nunca te pedimos tu contraseña.",
+    "loadingLabel": "[TODO] Cargando tus sitios",
+    "retry": "[TODO] Intentar de nuevo",
+    "retrying": "[TODO] Intentando de nuevo…",
+    "connectAnother": "[TODO] Conectar otro sitio",
+    "emptyState": {
+      "title": "[TODO] Conecta tu sitio de WordPress",
+      "description": "[TODO] Faro leerá tus páginas, entradas y productos para ayudarte a atraer más clientes. Nunca te pedimos tu contraseña.",
+      "action": "[TODO] Conectar tu sitio"
+    },
+    "status": {
+      "checking": "[TODO] Comprobando…",
+      "connected": "[TODO] Conectado",
+      "unchecked": "[TODO] Sin comprobar",
+      "disconnected": "[TODO] Desconectado"
+    },
+    "card": {
+      "pages_one": "[TODO] {{value}} página",
+      "pages_other": "[TODO] {{value}} páginas",
+      "posts_one": "[TODO] {{value}} entrada",
+      "posts_other": "[TODO] {{value}} entradas",
+      "products_one": "[TODO] {{value}} producto",
+      "products_other": "[TODO] {{value}} productos",
+      "noWooCommerce": "[TODO] WooCommerce no está activo",
+      "separator": "[TODO] ·",
+      "checkedAt": "[TODO] Comprobado {{relative}}"
+    },
+    "actions": {
+      "viewContent": "[TODO] Ver contenido",
+      "viewContentLabel": "[TODO] Ver contenido de {{name}}",
+      "check": "[TODO] Comprobar conexión",
+      "checkLabel": "[TODO] Comprobar conexión de {{name}}",
+      "checking": "[TODO] Comprobando…",
+      "more": "[TODO] Más acciones para {{name}}",
+      "disconnect": "[TODO] Desconectar sitio",
+      "reconnect": "[TODO] Volver a conectar",
+      "reconnectLabel": "[TODO] Volver a conectar {{name}}",
+      "remove": "[TODO] Quitar de Faro",
+      "removeLabel": "[TODO] Quitar de Faro el sitio {{name}}"
+    },
+    "toast": {
+      "checkOk": "[TODO] Tu sitio responde bien.",
+      "connected": "[TODO] Tu sitio {{name}} está conectado.",
+      "disconnected": "[TODO] Desconectamos {{name}}.",
+      "removed": "[TODO] Quitamos {{name}} de Faro.",
+      "remoteNotNotified": "[TODO] Quitamos {{name}} de Faro, pero no pudimos avisar a tu sitio. Para terminar, entra a WordPress → Ajustes → Faro y pulsa Desconectar."
+    },
+    "connect": {
+      "title": "[TODO] Conecta tu sitio",
+      "reconnectTitle": "[TODO] Vuelve a conectar {{name}}",
+      "stepIndicator": "[TODO] Paso {{step}} de {{total}}",
+      "passwordNote": "[TODO] Nunca te pediremos tu contraseña de WordPress.",
+      "cancel": "[TODO] Cancelar",
+      "back": "[TODO] Atrás",
+      "next": "[TODO] Siguiente",
+      "step1": {
+        "title": "[TODO] Instala el plugin de Faro en tu sitio",
+        "download": "[TODO] Guardar el plugin en Descargas",
+        "downloading": "[TODO] Guardando el plugin…",
+        "downloaded": "[TODO] Guardamos {{fileName}} en tu carpeta Descargas.",
+        "instructionsLabel": "[TODO] Cómo instalarlo",
+        "instruction1": "[TODO] Entra al panel de WordPress de tu sitio.",
+        "instruction2": "[TODO] Ve a Plugins → Añadir nuevo → Subir plugin.",
+        "instruction3": "[TODO] Elige faro-wordpress.zip, pulsa Instalar ahora y después Activar.",
+        "alreadyInstalled": "[TODO] Ya tengo el plugin instalado"
+      },
+      "step2": {
+        "title": "[TODO] Genera un código en WordPress",
+        "description": "[TODO] En WordPress, ve a Ajustes → Faro y pulsa Generar código de conexión. El código dura 10 minutos y solo sirve una vez."
+      },
+      "step3": {
+        "title": "[TODO] Escribe la dirección y el código",
+        "urlLabel": "[TODO] Dirección de tu sitio",
+        "urlPlaceholder": "[TODO] https://tutienda.com",
+        "urlHelp": "[TODO] La misma dirección que escriben tus clientes.",
+        "urlRequired": "[TODO] Escribe la dirección de tu sitio.",
+        "codeLabel": "[TODO] Código de conexión",
+        "codeHelp": "[TODO] Son 6 números. Puedes escribirlos con o sin espacio.",
+        "submit": "[TODO] Conectar sitio",
+        "reconnectSubmit": "[TODO] Volver a conectar",
+        "submitting": "[TODO] Conectando con tu sitio…",
+        "slowNote": "[TODO] Puede tardar hasta un minuto.",
+        "goToSite": "[TODO] Ir al sitio"
+      }
+    },
+    "content": {
+      "title": "[TODO] Contenido de {{name}}",
+      "close": "[TODO] Cerrar",
+      "tabsLabel": "[TODO] Tipo de contenido",
+      "tabs": {
+        "page": "[TODO] Páginas",
+        "post": "[TODO] Entradas",
+        "product": "[TODO] Productos"
+      },
+      "columns": {
+        "title": "[TODO] Título",
+        "url": "[TODO] Dirección",
+        "modified": "[TODO] Última modificación"
+      },
+      "loadingLabel": "[TODO] Cargando el contenido de tu sitio",
+      "empty": {
+        "page": "[TODO] Tu sitio no tiene páginas publicadas.",
+        "post": "[TODO] Tu sitio no tiene entradas publicadas.",
+        "product": "[TODO] Tu sitio no tiene productos publicados."
+      },
+      "noWooCommerce": "[TODO] Este sitio no tiene WooCommerce activo.",
+      "untitled": "[TODO] (Sin título)",
+      "retry": "[TODO] Intentar de nuevo",
+      "retrying": "[TODO] Intentando de nuevo…",
+      "pagination": {
+        "label": "[TODO] Páginas de resultados",
+        "previous": "[TODO] Anteriores",
+        "next": "[TODO] Siguientes",
+        "status": "[TODO] Página {{page}} de {{total}}"
+      }
+    },
+    "remove": {
+      "disconnectTitle": "[TODO] ¿Desconectar {{name}}?",
+      "disconnectDescription": "[TODO] Faro dejará de leer este sitio. Para volver a conectarlo necesitarás un código nuevo.",
+      "disconnectConfirm": "[TODO] Desconectar {{name}}",
+      "disconnecting": "[TODO] Desconectando el sitio…",
+      "removeTitle": "[TODO] ¿Quitar {{name}} de Faro?",
+      "removeDescription": "[TODO] Quitaremos {{name}} de tu lista.",
+      "removeConfirm": "[TODO] Quitar de Faro",
+      "removing": "[TODO] Quitando el sitio…",
+      "cancel": "[TODO] Cancelar"
+    }
   }
 }

@@ -7,7 +7,11 @@
     "forbidden_host": "[TODO] El motor rechazó la conexión. Reinicia Faro.",
     "not_found": "[TODO] No encontramos lo que buscabas.",
     "invalid_request": "[TODO] La solicitud no es válida. Intenta de nuevo.",
-    "integrity_failed": "[TODO] Faro no pudo verificar sus archivos. Reinstala la app."
+    "integrity_failed": "[TODO] Faro no pudo verificar sus archivos. Reinstala la app.",
+    "not_ready": "[TODO] El motor de Faro todavía no está listo. Espera unos segundos e intenta de nuevo.",
+    "operation_not_allowed": "[TODO] Esta acción no está permitida. Reinicia Faro; si se repite, escríbenos.",
+    "timeout": "[TODO] Faro tardó demasiado en responder. Intenta de nuevo.",
+    "secrets_unavailable": "[TODO] Esta acción no está disponible en el modo de desarrollo externo."
   },
   "vault": {
     "invalid_input": "[TODO] Esa clave no tiene el formato esperado. Cópiala de nuevo desde la página del proveedor.",
@@ -18,7 +22,50 @@
     "keyring_unavailable": "[TODO] No pudimos abrir el llavero de tu computadora. Reinicia Faro e intenta de nuevo.",
     "provider_unreachable": "[TODO] No pudimos comprobar la clave. Revisa tu conexión a internet e intenta de nuevo.",
     "provider_rate_limited": "[TODO] El proveedor está recibiendo muchas solicitudes. Espera un minuto e intenta de nuevo.",
-    "provider_error": "[TODO] El proveedor tuvo un problema. Intenta de nuevo en unos minutos."
+    "provider_error": "[TODO] El proveedor tuvo un problema. Intenta de nuevo en unos minutos.",
+    "invalid_ref": "[TODO] Faro no pudo usar una credencial guardada. Reinicia Faro e intenta de nuevo.",
+    "secret_not_allowed": "[TODO] Faro no pudo usar una credencial guardada. Reinicia Faro e intenta de nuevo.",
+    "secret_timeout": "[TODO] Faro no pudo usar una credencial guardada. Reinicia Faro e intenta de nuevo."
+  },
+  "db": {
+    "key_missing": "[TODO] No encontramos la llave de tus datos en el llavero de tu computadora. Tus datos siguen guardados, pero Faro no puede abrirlos.",
+    "wrong_key": "[TODO] No pudimos abrir tus datos de Faro con la llave guardada en tu computadora.",
+    "migration_failed": "[TODO] No pudimos actualizar tus datos de Faro. Tus datos anteriores están a salvo en una copia. Intenta de nuevo.",
+    "migration_tampered": "[TODO] Los datos de Faro se modificaron fuera de la app y no es seguro abrirlos.",
+    "too_new": "[TODO] Tus datos son de una versión más nueva de Faro. Actualiza Faro para abrirlos.",
+    "unavailable": "[TODO] Tus datos de Faro no están disponibles ahora. Reinicia Faro."
+  },
+  "site": {
+    "invalid_url": "[TODO] Esa dirección no parece válida. Escríbela así: https://tutienda.com",
+    "https_required": "[TODO] Faro solo se conecta a sitios con HTTPS (el candado del navegador).",
+    "address_not_allowed": "[TODO] Esa dirección apunta a esta computadora o a tu red local. Faro solo se conecta a sitios publicados en internet.",
+    "unreachable": "[TODO] No pudimos conectar con tu sitio. Revisa la dirección y que el sitio esté en línea.",
+    "tls_error": "[TODO] El certificado de seguridad de tu sitio no es válido. Pide a tu proveedor de hosting que lo revise.",
+    "timeout": "[TODO] Tu sitio tardó demasiado en responder. Intenta de nuevo en unos minutos.",
+    "server_error": "[TODO] Tu sitio tuvo un problema al responder. Intenta de nuevo en unos minutos.",
+    "rate_limited": "[TODO] Tu sitio recibió demasiados intentos. Espera 15 minutos e intenta de nuevo.",
+    "plugin_not_found": "[TODO] No encontramos el plugin de Faro en ese sitio. Revisa que esté instalado y activado.",
+    "plugin_outdated": "[TODO] El plugin de Faro de tu sitio no es compatible con esta versión. Instala la versión más reciente.",
+    "blocked": "[TODO] Algo en tu sitio está bloqueando la conexión, como un plugin de seguridad. Permite el acceso a la API de WordPress e intenta de nuevo.",
+    "moved": "[TODO] Tu sitio respondió desde otra dirección. Vuelve a conectarlo con la dirección nueva.",
+    "bad_response": "[TODO] Tu sitio respondió algo que no esperábamos. Revisa que el plugin de Faro esté actualizado.",
+    "response_too_large": "[TODO] Tu sitio envió una respuesta demasiado grande. Intenta de nuevo.",
+    "invalid_code_format": "[TODO] El código tiene 6 números.",
+    "pairing_code_invalid": "[TODO] El código no coincide. Revísalo en WordPress (Ajustes → Faro).",
+    "pairing_code_invalid_one": "[TODO] El código no coincide. Revísalo en WordPress (Ajustes → Faro). Te queda {{attempts_left}} intento.",
+    "pairing_code_invalid_other": "[TODO] El código no coincide. Revísalo en WordPress (Ajustes → Faro). Te quedan {{attempts_left}} intentos.",
+    "pairing_code_expired": "[TODO] Este código ya no sirve: caducó o ya se usó. Genera uno nuevo en WordPress.",
+    "already_connected": "[TODO] Este sitio ya está en Faro.",
+    "not_found": "[TODO] No encontramos ese sitio en Faro. Puede que ya lo hayas quitado.",
+    "revoked": "[TODO] Tu sitio se desconectó de Faro desde WordPress. Vuelve a conectarlo con un código nuevo.",
+    "connection_broken": "[TODO] La conexión dejó de funcionar porque cambiaron las claves de seguridad de WordPress. Vuelve a conectarlo con un código nuevo.",
+    "auth_failed": "[TODO] Tu sitio rechazó la conexión. Vuelve a conectarlo con un código nuevo.",
+    "secret_missing": "[TODO] Falta la conexión de este sitio en el llavero de tu computadora. Vuelve a conectarlo con un código nuevo.",
+    "clock_skew": "[TODO] La hora de tu computadora no coincide con la de tu sitio. Activa la fecha y hora automáticas e intenta de nuevo."
+  },
+  "plugin": {
+    "package_missing": "[TODO] Esta versión de Faro no incluye el plugin de WordPress.",
+    "export_failed": "[TODO] No pudimos guardar el plugin en tu carpeta Descargas. Revisa que haya espacio e intenta de nuevo."
   },
   "internal": {
     "unexpected": "[TODO] Algo salió mal. Intenta de nuevo; si se repite, reinicia Faro."
