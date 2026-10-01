@@ -53,11 +53,36 @@ export function toFaroError(reason: unknown): FaroError {
   return FaroError.unexpected();
 }
 
-function catalogMessage(i18n: I18n, code: string): string | null {
+/**
+ * Códigos cuyo mensaje lleva un número de `details` con plurales (`_one`/`_other` en
+ * errors.json). Sin ese número se usa el mensaje base, sin la parte variable.
+ */
+const COUNT_DETAIL: Readonly<Record<string, string>> = {
+  "site.pairing_code_invalid": "attempts_left",
+};
+
+/** Opciones de interpolación a partir de `details`: solo enteros no negativos conocidos. */
+function countOptions(error: FaroError): Record<string, number> {
+  const detail = COUNT_DETAIL[error.code];
+  if (detail === undefined) {
+    return {};
+  }
+  const value = error.details[detail];
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    return {};
+  }
+  return { count: value, [detail]: value };
+}
+
+function catalogMessage(
+  i18n: I18n,
+  code: string,
+  options: Record<string, number> = {},
+): string | null {
   for (const lng of i18n.languages) {
     const value: unknown = i18n.getResource(lng, "errors", code);
     if (typeof value === "string" && value.length > 0) {
-      return i18n.t(code, { ns: "errors", lng, nsSeparator: false });
+      return i18n.t(code, { ns: "errors", lng, nsSeparator: false, ...options });
     }
   }
   return null;
@@ -69,7 +94,7 @@ function catalogMessage(i18n: I18n, code: string): string | null {
  */
 export function getErrorMessage(error: unknown, i18n: I18n = defaultI18n): string {
   const faroError = toFaroError(error);
-  const fromCatalog = catalogMessage(i18n, faroError.code);
+  const fromCatalog = catalogMessage(i18n, faroError.code, countOptions(faroError));
   if (fromCatalog !== null) {
     return fromCatalog;
   }
