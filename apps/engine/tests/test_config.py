@@ -108,3 +108,14 @@ def test_load_dev_config_without_dev_database(tmp_path: Path) -> None:
     )
     assert config.db_key is None
     assert config.profile_id is None
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [("FARO_ALLOW_LOCAL_SITES=1\n", True), ("FARO_ALLOW_LOCAL_SITES=0\n", False), ("", False)],
+)
+def test_load_dev_config_allow_local_sites(tmp_path: Path, line: str, expected: bool) -> None:
+    config = load_dev_config(
+        _write(tmp_path, f"FARO_ENGINE_DEV_TOKEN={secrets.token_urlsafe(32)}\n{line}")
+    )
+    assert config.allow_local_sites is expected

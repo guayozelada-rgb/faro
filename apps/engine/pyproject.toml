@@ -8,6 +8,8 @@ license = { text = "Propietario. Todos los derechos reservados." }
 dependencies = [
     "anyio>=4.15.1",
     "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "idna>=3.20",
     "pydantic>=2.13.5",
     "sqlcipher3-wheels>=0.5.7,<0.6",
     "structlog>=26.1.0",
@@ -66,8 +68,14 @@ addopts = [
     "--cov=faro_engine",
     "--cov-report=term-missing",
     "--cov-fail-under=80",
+    # La integración con wp-env solo corre si se pide: `pytest -m wp_env --no-cov`.
+    "-m",
+    "not wp_env",
 ]
-markers = ["slow: pruebas de más de 2 s (solo CI nocturno)"]
+markers = [
+    "slow: pruebas de más de 2 s (solo CI nocturno)",
+    "wp_env: integración motor ↔ plugin contra wp-env (Docker); CI wp-plugin-integration",
+]
 filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]
 
 [tool.coverage.run]
@@ -96,6 +104,11 @@ strict_modules = [
     "faro_engine/core/run_id.py",
     "faro_engine/core/audit.py",
     "faro_engine/core/redact.py",
+    # Red saliente y firma del plugin (spec F1a T9, ADR 0011 y 0012).
+    "faro_engine/net/guard.py",
+    "faro_engine/net/urls.py",
+    "faro_engine/net/client.py",
+    "faro_engine/wordpress/signing.py",
 ]
 strict_fail_under = 95
 
@@ -106,5 +119,6 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
+    "respx>=0.23.1",
     "ruff>=0.16.9",
 ]

@@ -10,10 +10,18 @@ from faro_engine.core.db.database import Database
 from faro_engine.core.errors import DB_UNAVAILABLE, install_error_handlers
 from faro_engine.core.logging import RequestLoggingMiddleware
 from faro_engine.core.operations import validate_app_operations
-from faro_engine.core.routes import health
+from faro_engine.core.routes import health, sites
 from faro_engine.core.run_id import RunIdMiddleware
 from faro_engine.core.secrets import SecretBroker
 from faro_engine.core.security import SecurityMiddleware
+from faro_engine.net.client import NetSettings
+from faro_engine.net.urls import NetPolicy
+
+
+def default_net_settings(settings: Settings) -> NetSettings:
+    """Red saliente real. En modo local, el puerto del propio motor sigue prohibido."""
+    policy = NetPolicy(allow_local=settings.allow_local_sites, engine_port=settings.port)
+    return NetSettings(policy=policy, user_agent=f"Faro/{settings.version}")
 
 
 def create_app(
@@ -22,6 +30,7 @@ def create_app(
     *,
     secrets: SecretBroker | None = None,
     audit: AuditLog | None = None,
+    net: NetSettings | None = None,
 ) -> FastAPI:
     """App con seguridad Host + Bearer en todas las rutas.
 
@@ -29,7 +38,8 @@ def create_app(
     (exportar el OpenAPI, pruebas) la base queda no disponible con `db.unavailable`.
     `secrets` es el cliente del canal de secretos; sin él (modo externo, pruebas) toda
     solicitud falla con `engine.secrets_unavailable`. `audit` escribe en `audit_log` de
-    `database` (se crea si no se pasa).
+    `database` (se crea si no se pasa). `net` es la red saliente (ADR 0012); por defecto,
+    la real con la política de `settings` (sitios locales solo con `allow_local_sites`).
 
     Sin `/docs`, `/redoc` ni `/openapi.json` por HTTP (tampoco en `--dev`): el esquema
     se exporta con `python -m faro_engine.export_openapi`.
@@ -46,8 +56,10 @@ def create_app(
     app.state.database = database if database is not None else Database.unavailable(DB_UNAVAILABLE)
     app.state.secrets = secrets if secrets is not None else SecretBroker.unavailable()
     app.state.audit = audit if audit is not None else AuditLog(app.state.database)
+    app.state.net = net if net is not None else default_net_settings(settings)
     install_error_handlers(app)
     app.include_router(health.router)
+    app.include_router(sites.router)
     # Toda operación declara timeout y secretos (ADR 0010 §3); si no, el motor no arranca.
     validate_app_operations(app)
     # add_middleware apila hacia fuera: el último añadido es el más externo. Orden de

@@ -25,6 +25,8 @@ DEV_PORT_VAR = "FARO_ENGINE_DEV_PORT"
 # Base de desarrollo (ADR 0009, excepción consciente solo en `--dev`, nunca datos reales).
 DEV_DB_KEY_VAR = "FARO_ENGINE_DEV_DB_KEY"
 DEV_PROFILE_ID_VAR = "FARO_ENGINE_DEV_PROFILE_ID"
+# Modo de sitios locales en `--dev` (ADR 0012). Solo el valor exacto `1` lo activa.
+ALLOW_LOCAL_SITES_VAR = "FARO_ALLOW_LOCAL_SITES"
 MIN_DEV_PORT = 1024
 MAX_PORT = 65535
 
@@ -47,6 +49,8 @@ class Settings:
     version: str
     dev: bool = False
     data_dir: Path | None = None
+    # Modo de sitios locales (solo desarrollo, ADR 0012): `http` y loopback permitidos.
+    allow_local_sites: bool = False
 
     @property
     def expected_host(self) -> str:
@@ -68,6 +72,7 @@ class DevConfig:
     # Llave de la base de desarrollo (64 hex) y perfil; `None` si no están definidos.
     db_key: bytearray | None = field(default=None, repr=False)
     profile_id: str | None = None
+    allow_local_sites: bool = False
 
 
 def parse_env_file(text: str) -> dict[str, str]:
@@ -125,4 +130,10 @@ def load_dev_config(env_file: Path) -> DevConfig:
             raise DevConfigError("profile_id_invalid")
         db_key = bytearray(raw_key, "ascii")
         profile_id = raw_profile
-    return DevConfig(token=token, port=port, db_key=db_key, profile_id=profile_id)
+    return DevConfig(
+        token=token,
+        port=port,
+        db_key=db_key,
+        profile_id=profile_id,
+        allow_local_sites=values.get(ALLOW_LOCAL_SITES_VAR, "").strip() == "1",
+    )

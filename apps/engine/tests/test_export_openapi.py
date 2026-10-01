@@ -17,8 +17,18 @@ def test_export_writes_openapi_json() -> None:
     schema = json.loads(out.getvalue())
     assert schema["info"]["version"] == __version__
     operations = [op["operationId"] for path in schema["paths"].values() for op in path.values()]
-    assert operations == ["getHealth"]
-    assert {"ErrorOut", "HealthOut"} <= set(schema["components"]["schemas"])
+    assert operations == [
+        "getHealth",
+        "listSites",
+        "connectSite",
+        "reconnectSite",
+        "checkSiteConnection",
+        "listSiteContent",
+        "removeSite",
+    ]
+    assert {"ErrorOut", "HealthOut", "SiteOut", "SiteContentPage"} <= set(
+        schema["components"]["schemas"]
+    )
 
 
 def test_export_is_deterministic() -> None:

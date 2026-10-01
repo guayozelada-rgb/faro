@@ -1,9 +1,88 @@
 [
   {
+    "operationId": "checkSiteConnection",
+    "method": "POST",
+    "path": "/sites/{site_id}/check",
+    "timeout_seconds": 45,
+    "secrets": [
+      {
+        "ref": "wp/{site_id}/token",
+        "access": [
+          "get"
+        ]
+      }
+    ]
+  },
+  {
+    "operationId": "connectSite",
+    "method": "POST",
+    "path": "/sites",
+    "timeout_seconds": 60,
+    "secrets": [
+      {
+        "ref": "wp/{new}/token",
+        "access": [
+          "create",
+          "delete"
+        ]
+      }
+    ]
+  },
+  {
     "operationId": "getHealth",
     "method": "GET",
     "path": "/health",
     "timeout_seconds": 10,
     "secrets": []
+  },
+  {
+    "operationId": "listSiteContent",
+    "method": "GET",
+    "path": "/sites/{site_id}/content",
+    "timeout_seconds": 45,
+    "secrets": [
+      {
+        "ref": "wp/{site_id}/token",
+        "access": [
+          "get"
+        ]
+      }
+    ]
+  },
+  {
+    "operationId": "listSites",
+    "method": "GET",
+    "path": "/sites",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
+    "operationId": "reconnectSite",
+    "method": "PUT",
+    "path": "/sites/{site_id}/connection",
+    "timeout_seconds": 60,
+    "secrets": [
+      {
+        "ref": "wp/{site_id}/token",
+        "access": [
+          "set"
+        ]
+      }
+    ]
+  },
+  {
+    "operationId": "removeSite",
+    "method": "DELETE",
+    "path": "/sites/{site_id}",
+    "timeout_seconds": 45,
+    "secrets": [
+      {
+        "ref": "wp/{site_id}/token",
+        "access": [
+          "get",
+          "delete"
+        ]
+      }
+    ]
   }
 ]
