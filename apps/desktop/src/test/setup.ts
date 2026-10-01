@@ -6,6 +6,8 @@ import { afterEach, beforeEach, expect } from "vitest";
 
 import { toast } from "sonner";
 
+import { resetSiteActivityForTests } from "@/features/sites/siteActivity";
+import { resetAutoCheckSessionForTests } from "@/features/sites/useAutoCheckSites";
 import { resetKeyActivityForTests } from "@/features/vault/keyActivity";
 import { resetAutoTestSessionForTests } from "@/features/vault/useAutoTestKeys";
 import i18n from "@/lib/i18n";
@@ -40,9 +42,13 @@ export function takeMissingKeys(): string[] {
 beforeEach(() => {
   missingKeys.length = 0;
   window.localStorage.clear();
+  window.sessionStorage.clear();
   // Cada prueba es una sesión nueva de la app para la prueba automática de claves.
   resetAutoTestSessionForTests();
   resetKeyActivityForTests();
+  // Y para la comprobación automática de sitios.
+  resetAutoCheckSessionForTests();
+  resetSiteActivityForTests();
 });
 
 afterEach(() => {

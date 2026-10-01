@@ -3,7 +3,7 @@
   "emptyState": {
     "title": "[TODO] Te damos la bienvenida a Faro",
     "description": "[TODO] Aquí verás cada día qué hacer para atraer más clientes a tu sitio.",
-    "action": "[TODO] Agregar clave de IA"
+    "action": "[TODO] Conectar tu sitio"
   },
   "engine": {
     "title": "[TODO] Motor de Faro",
@@ -19,6 +19,18 @@
   },
   "nextSteps": {
     "title": "[TODO] Qué hacer ahora",
-    "allSet": "[TODO] Todo listo por ahora. Pronto podrás conectar tu sitio desde aquí."
+    "allSet": "[TODO] Todo listo por ahora. Pronto los agentes empezarán a trabajar en tu sitio.",
+    "done": "[TODO] Hecho",
+    "pending": "[TODO] Pendiente",
+    "loading": "[TODO] Revisando tus sitios",
+    "connectSite": {
+      "title": "[TODO] Conecta tu sitio",
+      "action": "[TODO] Conectar tu sitio",
+      "unavailable": "[TODO] Aún no podemos ver tus sitios."
+    },
+    "addKey": {
+      "title": "[TODO] Agrega una clave de IA",
+      "action": "[TODO] Agregar clave de IA"
+    }
   }
 }

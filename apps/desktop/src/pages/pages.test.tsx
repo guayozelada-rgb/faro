@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { renderApp } from "@/test/renderApp";
-import { mockVaultIpc } from "@/test/vaultIpc";
+import { mockSitesIpc } from "@/test/sitesIpc";
 
 const COMING_SOON = "Esta sección estará disponible en una próxima versión.";
 
@@ -25,7 +25,7 @@ const PAGES: PageCase[] = [
     section: "Inicio",
     title: "Te damos la bienvenida a Faro",
     description: "Aquí verás cada día qué hacer para atraer más clientes a tu sitio.",
-    action: "Agregar clave de IA",
+    action: "Conectar tu sitio",
     comingSoon: false,
     headingLevel: 3,
   },
@@ -82,10 +82,10 @@ const PAGES: PageCase[] = [
   {
     path: "/settings",
     section: "Configuración",
-    title: "Agrega tu primera clave de IA",
+    title: "Conecta tu sitio de WordPress",
     description:
-      "Los agentes la usan para escribir y analizar. Se guarda en el llavero de tu computadora.",
-    action: "Agregar clave",
+      "Faro leerá tus páginas, entradas y productos para ayudarte a atraer más clientes. Nunca te pedimos tu contraseña.",
+    action: "Conectar tu sitio",
     comingSoon: false,
     headingLevel: 3,
   },
@@ -93,8 +93,8 @@ const PAGES: PageCase[] = [
 
 describe("estados vacíos de las 8 secciones", () => {
   beforeEach(() => {
-    // Bóveda sin claves: Inicio muestra la bienvenida y Configuración su estado vacío.
-    mockVaultIpc({ list: () => [] });
+    // Sin sitios ni claves: Inicio muestra la bienvenida y Configuración su estado vacío.
+    mockSitesIpc({ listSites: () => ({ items: [], next_cursor: null }) });
   });
 
   it.each(PAGES)("$section ($path) muestra su estado vacío", async (page) => {
@@ -124,18 +124,23 @@ describe("estados vacíos de las 8 secciones", () => {
     }
   });
 
-  it("Inicio: Agregar clave de IA lleva a Configuración", async () => {
+  it("Inicio: Conectar tu sitio lleva a Configuración, pestaña Sitios conectados", async () => {
     const user = userEvent.setup();
     const { router } = renderApp("/");
 
-    await user.click(screen.getByRole("button", { name: "Agregar clave de IA" }));
+    await user.click(await screen.findByRole("button", { name: "Conectar tu sitio" }));
 
     expect(router.state.location.pathname).toBe("/settings");
+    expect(router.state.location.search).toBe("?tab=sites");
     expect(
       await screen.findByRole("heading", { level: 1, name: "Configuración" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Sitios conectados" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     expect(
-      await screen.findByRole("heading", { level: 3, name: "Agrega tu primera clave de IA" }),
+      await screen.findByRole("heading", { level: 3, name: "Conecta tu sitio de WordPress" }),
     ).toBeInTheDocument();
   });
 
@@ -143,20 +148,73 @@ describe("estados vacíos de las 8 secciones", () => {
     const user = userEvent.setup();
     const { router } = renderApp("/");
 
-    screen.getByRole("button", { name: "Agregar clave de IA" }).focus();
+    (await screen.findByRole("button", { name: "Conectar tu sitio" })).focus();
     await user.keyboard("{Enter}");
 
     expect(router.state.location.pathname).toBe("/settings");
   });
 
-  it("Configuración: Agregar clave abre el diálogo sin salir de la sección", async () => {
+  it("Configuración: Conectar tu sitio abre el asistente sin salir de la sección", async () => {
     const user = userEvent.setup();
     const { router } = renderApp("/settings");
 
-    const emptyState = await screen.findByRole("region", { name: "Agrega tu primera clave de IA" });
-    await user.click(within(emptyState).getByRole("button", { name: "Agregar clave" }));
+    const emptyState = await screen.findByRole("region", { name: "Conecta tu sitio de WordPress" });
+    await user.click(within(emptyState).getByRole("button", { name: "Conectar tu sitio" }));
 
     expect(router.state.location.pathname).toBe("/settings");
-    expect(screen.getByRole("dialog", { name: "Agregar clave de IA" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Conecta tu sitio" })).toBeInTheDocument();
+  });
+});
+
+describe("Configuración: pestañas", () => {
+  beforeEach(() => {
+    mockSitesIpc({ listSites: () => ({ items: [], next_cursor: null }) });
+  });
+
+  it("Sitios conectados es la pestaña por defecto (también con un valor desconocido)", async () => {
+    renderApp("/settings?tab=otra");
+
+    const tabs = screen.getByRole("tablist", { name: "Secciones de Configuración" });
+    expect(
+      within(tabs)
+        .getAllByRole("tab")
+        .map((tab) => tab.textContent),
+    ).toEqual(["Sitios conectados", "Claves de IA"]);
+    expect(within(tabs).getByRole("tab", { name: "Sitios conectados" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(
+      await screen.findByRole("region", { name: "Conecta tu sitio de WordPress" }),
+    ).toBeInTheDocument();
+  });
+
+  it("?tab=ai-keys abre Claves de IA (lo de F0, sin cambios)", async () => {
+    renderApp("/settings?tab=ai-keys");
+
+    expect(screen.getByRole("tab", { name: "Claves de IA" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(
+      await screen.findByRole("region", { name: "Agrega tu primera clave de IA" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Sitios conectados" })).not.toBeInTheDocument();
+  });
+
+  it("cambiar de pestaña (ratón o flechas) actualiza la URL", async () => {
+    const user = userEvent.setup();
+    const { router } = renderApp("/settings");
+
+    await user.click(screen.getByRole("tab", { name: "Claves de IA" }));
+    expect(router.state.location.search).toBe("?tab=ai-keys");
+    expect(
+      await screen.findByRole("region", { name: "Agrega tu primera clave de IA" }),
+    ).toBeInTheDocument();
+
+    expect(screen.getByRole("tab", { name: "Claves de IA" })).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
+    expect(screen.getByRole("tab", { name: "Sitios conectados" })).toHaveFocus();
+    expect(router.state.location.search).toBe("?tab=sites");
   });
 });

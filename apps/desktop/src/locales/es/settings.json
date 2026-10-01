@@ -64,5 +64,141 @@
       "testValid": "La clave funciona.",
       "deleted": "Clave de {{provider}} borrada."
     }
+  },
+  "tabs": {
+    "label": "Secciones de Configuración",
+    "sites": "Sitios conectados",
+    "aiKeys": "Claves de IA"
+  },
+  "sites": {
+    "title": "Sitios conectados",
+    "titleHelpLabel": "Cómo se conecta Faro a tu sitio",
+    "titleTooltip": "Faro lee tu sitio con un plugin. Nunca te pedimos tu contraseña.",
+    "loadingLabel": "Cargando tus sitios",
+    "retry": "Intentar de nuevo",
+    "retrying": "Intentando de nuevo…",
+    "connectAnother": "Conectar otro sitio",
+    "emptyState": {
+      "title": "Conecta tu sitio de WordPress",
+      "description": "Faro leerá tus páginas, entradas y productos para ayudarte a atraer más clientes. Nunca te pedimos tu contraseña.",
+      "action": "Conectar tu sitio"
+    },
+    "status": {
+      "checking": "Comprobando…",
+      "connected": "Conectado",
+      "unchecked": "Sin comprobar",
+      "disconnected": "Desconectado"
+    },
+    "card": {
+      "pages_one": "{{value}} página",
+      "pages_other": "{{value}} páginas",
+      "posts_one": "{{value}} entrada",
+      "posts_other": "{{value}} entradas",
+      "products_one": "{{value}} producto",
+      "products_other": "{{value}} productos",
+      "noWooCommerce": "WooCommerce no está activo",
+      "separator": "·",
+      "checkedAt": "Comprobado {{relative}}"
+    },
+    "actions": {
+      "viewContent": "Ver contenido",
+      "viewContentLabel": "Ver contenido de {{name}}",
+      "check": "Comprobar conexión",
+      "checkLabel": "Comprobar conexión de {{name}}",
+      "checking": "Comprobando…",
+      "more": "Más acciones para {{name}}",
+      "disconnect": "Desconectar sitio",
+      "reconnect": "Volver a conectar",
+      "reconnectLabel": "Volver a conectar {{name}}",
+      "remove": "Quitar de Faro",
+      "removeLabel": "Quitar de Faro el sitio {{name}}"
+    },
+    "toast": {
+      "checkOk": "Tu sitio responde bien.",
+      "connected": "Tu sitio {{name}} está conectado.",
+      "disconnected": "Desconectamos {{name}}.",
+      "removed": "Quitamos {{name}} de Faro.",
+      "remoteNotNotified": "Quitamos {{name}} de Faro, pero no pudimos avisar a tu sitio. Para terminar, entra a WordPress → Ajustes → Faro y pulsa Desconectar."
+    },
+    "connect": {
+      "title": "Conecta tu sitio",
+      "reconnectTitle": "Vuelve a conectar {{name}}",
+      "stepIndicator": "Paso {{step}} de {{total}}",
+      "passwordNote": "Nunca te pediremos tu contraseña de WordPress.",
+      "cancel": "Cancelar",
+      "back": "Atrás",
+      "next": "Siguiente",
+      "step1": {
+        "title": "Instala el plugin de Faro en tu sitio",
+        "download": "Guardar el plugin en Descargas",
+        "downloading": "Guardando el plugin…",
+        "downloaded": "Guardamos {{fileName}} en tu carpeta Descargas.",
+        "instructionsLabel": "Cómo instalarlo",
+        "instruction1": "Entra al panel de WordPress de tu sitio.",
+        "instruction2": "Ve a Plugins → Añadir nuevo → Subir plugin.",
+        "instruction3": "Elige faro-wordpress.zip, pulsa Instalar ahora y después Activar.",
+        "alreadyInstalled": "Ya tengo el plugin instalado"
+      },
+      "step2": {
+        "title": "Genera un código en WordPress",
+        "description": "En WordPress, ve a Ajustes → Faro y pulsa Generar código de conexión. El código dura 10 minutos y solo sirve una vez."
+      },
+      "step3": {
+        "title": "Escribe la dirección y el código",
+        "urlLabel": "Dirección de tu sitio",
+        "urlPlaceholder": "https://tutienda.com",
+        "urlHelp": "La misma dirección que escriben tus clientes.",
+        "urlRequired": "Escribe la dirección de tu sitio.",
+        "codeLabel": "Código de conexión",
+        "codeHelp": "Son 6 números. Puedes escribirlos con o sin espacio.",
+        "submit": "Conectar sitio",
+        "reconnectSubmit": "Volver a conectar",
+        "submitting": "Conectando con tu sitio…",
+        "slowNote": "Puede tardar hasta un minuto.",
+        "goToSite": "Ir al sitio"
+      }
+    },
+    "content": {
+      "title": "Contenido de {{name}}",
+      "close": "Cerrar",
+      "tabsLabel": "Tipo de contenido",
+      "tabs": {
+        "page": "Páginas",
+        "post": "Entradas",
+        "product": "Productos"
+      },
+      "columns": {
+        "title": "Título",
+        "url": "Dirección",
+        "modified": "Última modificación"
+      },
+      "loadingLabel": "Cargando el contenido de tu sitio",
+      "empty": {
+        "page": "Tu sitio no tiene páginas publicadas.",
+        "post": "Tu sitio no tiene entradas publicadas.",
+        "product": "Tu sitio no tiene productos publicados."
+      },
+      "noWooCommerce": "Este sitio no tiene WooCommerce activo.",
+      "untitled": "(Sin título)",
+      "retry": "Intentar de nuevo",
+      "retrying": "Intentando de nuevo…",
+      "pagination": {
+        "label": "Páginas de resultados",
+        "previous": "Anteriores",
+        "next": "Siguientes",
+        "status": "Página {{page}} de {{total}}"
+      }
+    },
+    "remove": {
+      "disconnectTitle": "¿Desconectar {{name}}?",
+      "disconnectDescription": "Faro dejará de leer este sitio. Para volver a conectarlo necesitarás un código nuevo.",
+      "disconnectConfirm": "Desconectar {{name}}",
+      "disconnecting": "Desconectando el sitio…",
+      "removeTitle": "¿Quitar {{name}} de Faro?",
+      "removeDescription": "Quitaremos {{name}} de tu lista.",
+      "removeConfirm": "Quitar de Faro",
+      "removing": "Quitando el sitio…",
+      "cancel": "Cancelar"
+    }
   }
 }

@@ -37,6 +37,7 @@ export function EngineStatusCard() {
   }
 
   const version = view === "ready" ? (status?.version ?? null) : null;
+  const databaseError = view === "ready" ? (status?.database_error ?? null) : null;
 
   let message: string;
   switch (view) {
@@ -123,6 +124,23 @@ export function EngineStatusCard() {
             </TooltipTrigger>
             <TooltipContent>{t("engine.version", { version })}</TooltipContent>
           </Tooltip>
+        ) : null}
+      </div>
+
+      {/* Motor listo pero sin base (spec F1a §3.6): aviso con el mensaje de su código. */}
+      <div aria-live="polite" aria-atomic="true">
+        {databaseError ? (
+          <p
+            data-testid="engine-database-error"
+            className="flex items-start gap-3 rounded-md border border-critical/40 bg-critical/10 p-3 text-sm"
+          >
+            <CircleX
+              aria-hidden="true"
+              className="mt-0.5 size-4 shrink-0 text-critical"
+              strokeWidth={1.5}
+            />
+            {getErrorMessage(databaseError, i18n)}
+          </p>
         ) : null}
       </div>
 
