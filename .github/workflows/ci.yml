@@ -411,6 +411,20 @@ jobs:
           enable-cache: true
           cache-dependency-glob: apps/engine/uv.lock
 
+      # Con la carpeta de wp-env restaurada de la caché, wp-env cree que el sitio de
+      # desarrollo ya está instalado y no lo instala, pero su base es nueva en cada
+      # ejecución (PHPUnit no lo nota: el entorno de pruebas crea sus propias tablas).
+      # Contraseña aleatoria y desechable: el sitio solo vive en este runner.
+      - name: Instalar el sitio de desarrollo de wp-env si falta
+        if: matrix.config == 'actual'
+        run: |
+          if ! npx --no-install wp-env run cli wp core is-installed; then
+            npx --no-install wp-env run cli wp core install \
+              --url=http://localhost:8888 --title=Faro --admin_user=admin \
+              --admin_password="$(openssl rand -hex 16)" \
+              --admin_email=wordpress@example.com --skip-email
+          fi
+
       - name: Integración motor ↔ plugin (pytest -m wp_env)
         if: matrix.config == 'actual'
         working-directory: apps/engine
