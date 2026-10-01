@@ -188,7 +188,9 @@ npm run dev
 
 Si la app ya estaba abierta, ciérrala y vuelve a ejecutar `npm run dev`: el valor se lee al lanzar el motor. En la app, ve a **Configuración → Sitios conectados → Conectar tu sitio**, escribe `http://localhost:8888` y el código del paso 4. La tarjeta del sitio debe quedar como **Conectado**.
 
-La pantalla Sitios conectados llega con la tarea F1a T11. Mientras no esté en `main`, puedes comprobar el mismo flujo de conexión sin la interfaz, con wp-env arrancado: `uv run --directory apps/engine pytest -m wp_env --no-cov` (usa un llavero simulado y su propia base temporal).
+Desde la tarjeta puedes **Comprobar conexión**, **Ver contenido** (páginas, entradas y productos) y **Desconectar sitio**. El botón **Guardar el plugin en Descargas** del asistente copia `faro-wordpress.zip` a tu carpeta Descargas, por si quieres instalarlo en otro WordPress con **Plugins → Añadir nuevo → Subir plugin**.
+
+Si prefieres probar el flujo sin la interfaz (por ejemplo, para depurar el motor), con wp-env arrancado ejecuta `uv run --directory apps/engine pytest -m wp_env --no-cov`: conecta, comprueba, lee contenido, desconecta y quita el sitio con un llavero simulado y su propia base temporal, sin tocar tus datos de Faro.
 
 ### 7. Apagar wp-env
 
