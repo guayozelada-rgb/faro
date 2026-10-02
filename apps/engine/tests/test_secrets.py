@@ -206,6 +206,55 @@ async def test_timeout_raises_and_late_response_is_ignored(log_stream: io.String
     assert "test-token-value" not in output
 
 
+async def test_max_wait_shortens_the_wait(log_stream: io.StringIO) -> None:
+    # El broker espera 60 s, pero a la operación solo le quedan 0,05 s (T13 B2).
+    broker, core = _broker(None, timeout=60.0)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    with use_run_id(RUN_ID), pytest.raises(SecretError) as caught:
+        await broker.delete(REF, max_wait=0.05)
+    assert caught.value.code == VAULT_SECRET_TIMEOUT
+    assert loop.time() - started < 5
+    assert len(core.requests) == 1
+    assert broker.pending_count == 0
+    assert "secrets.timeout" in log_stream.getvalue()
+
+
+async def test_max_wait_never_extends_the_broker_timeout() -> None:
+    broker, core = _broker(None, timeout=0.05)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    with use_run_id(RUN_ID), pytest.raises(SecretError) as caught:
+        await broker.get(REF, max_wait=600)
+    assert caught.value.code == VAULT_SECRET_TIMEOUT
+    assert loop.time() - started < 5
+    assert len(core.requests) == 1
+
+
+@pytest.mark.parametrize("max_wait", [0, -3.5])
+@pytest.mark.parametrize("op", ["get", "create", "set", "delete"])
+async def test_without_time_left_nothing_is_sent(
+    op: str, max_wait: float, log_stream: io.StringIO
+) -> None:
+    broker, core = _broker(lambda _r: {"ok": True})
+    args: tuple[object, ...] = (REF, FAKE_VALUE.encode()) if op in {"create", "set"} else (REF,)
+    with use_run_id(RUN_ID), pytest.raises(SecretError) as caught:
+        await getattr(broker, op)(*args, max_wait=max_wait)
+    assert caught.value.code == VAULT_SECRET_TIMEOUT
+    assert caught.value.status == 503
+    assert core.requests == []
+    assert broker.pending_count == 0
+    assert "secrets.no_time_left" in log_stream.getvalue()
+
+
+async def test_max_wait_with_quick_answer_returns_normally() -> None:
+    broker, core = _broker(lambda _r: {"value": FAKE_VALUE})
+    with use_run_id(RUN_ID), await broker.get(REF, max_wait=3.0) as secret:
+        assert bytes(secret.buffer) == FAKE_VALUE.encode()
+    for thread in core.threads:
+        thread.join()
+
+
 @pytest.mark.parametrize(
     "request_id", [None, 5, "no-es-uuid", "01920000-0000-7000-8000-00000000000Z"]
 )

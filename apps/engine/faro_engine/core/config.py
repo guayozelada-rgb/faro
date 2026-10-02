@@ -16,7 +16,17 @@ HOST = "127.0.0.1"
 TOKEN_TIMEOUT_SECONDS = 10.0
 DB_KEY_TIMEOUT_SECONDS = 10.0  # 2.ª línea de stdin (ADR 0010 §1)
 SHUTDOWN_GRACE_SECONDS = 10.0
-SECRET_TIMEOUT_SECONDS = 10.0  # espera de cada `secret_response` (ADR 0010 §2)
+SECRET_TIMEOUT_SECONDS = 10.0  # espera máxima de cada `secret_response` (ADR 0010 §2)
+
+# Limpieza al final de una operación (T13 B2). El motor corta su trabajo 5 s antes del
+# timeout del núcleo (ADR 0012) y, de ese plazo, reserva los últimos
+# `UNDO_RESERVE_SECONDS` para limpiar: así el `delete` del secreto llega mientras la
+# concesión del núcleo sigue viva. Ejemplo `connectSite` (60 s en el núcleo): trabajo
+# hasta los 45 s, deshacer hasta los 55 s, 5 s de holgura hasta que el núcleo corta.
+UNDO_RESERVE_SECONDS = 10.0
+# Dentro de esa reserva, el `delete` del llavero va primero y puede usarla entera; el
+# `revoke` remoto (sin reintentos) va después con como mucho este tiempo.
+UNDO_REVOKE_SECONDS = 5.0
 
 # Modo desarrollo "externo".
 DEFAULT_DEV_PORT = 8765

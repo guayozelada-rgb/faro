@@ -451,6 +451,43 @@ def test_deadline() -> None:
     assert info.value.code == "site.timeout"
 
 
+def test_deadline_ending_before_and_capped() -> None:
+    clock = FakeClock()
+    deadline = Deadline(55, clock=clock)
+    work = deadline.ending_before(10)
+    assert work.remaining() == 45
+    assert deadline.capped(10).remaining() == 10
+    clock.now = 50
+    assert work.remaining() == -5
+    # Nunca pasa del final del plazo original.
+    assert deadline.capped(10).remaining() == 5
+    assert deadline.capped(10).capped(3).remaining() == 3
+    clock.now = 60
+    assert deadline.capped(10).remaining() == -5
+    with pytest.raises(FaroError):
+        deadline.capped(10).check()
+
+
+async def test_limited_to_swaps_the_deadline_and_restores_it(router: respx.MockRouter) -> None:
+    router.get(f"{SITE_URL}/x").respond(200, text="ok")
+    clock = FakeClock()
+    expired = Deadline(0, clock=clock)
+    http, _ = _client(router, deadline=expired)
+    fresh = Deadline(5, clock=clock)
+    async with http:
+        with http.limited_to(fresh):
+            assert http.deadline is fresh
+            response = await http.request("GET", f"{SITE_URL}/x")
+            assert response.status == 200
+        assert http.deadline is expired
+        with pytest.raises(FaroError) as info:
+            await http.request("GET", f"{SITE_URL}/x")
+        assert info.value.code == "site.timeout"
+        with pytest.raises(RuntimeError), http.limited_to(fresh):
+            raise RuntimeError("falla dentro")
+        assert http.deadline is expired
+
+
 def test_tls_detection_walks_the_chain_without_loops() -> None:
     first = RuntimeError("a")
     second = RuntimeError("b")

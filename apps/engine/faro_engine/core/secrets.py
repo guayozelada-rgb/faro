@@ -17,8 +17,11 @@ Reglas del lado del motor:
   `vault.secret_not_allowed` y no sale nada por stdout.
 - La referencia se valida con la gramática del llavero (`vault.invalid_ref`) y `db/*`
   nunca se pide (`vault.secret_not_allowed`): la llave de la base solo llega al arrancar.
-- Espera máxima `SECRET_TIMEOUT_SECONDS` (10 s) → `vault.secret_timeout`. Una respuesta
-  que llega tarde, con `id` desconocido o repetida se ignora (su valor se suelta).
+- Espera máxima `SECRET_TIMEOUT_SECONDS` (10 s) → `vault.secret_timeout`. Quien llama
+  puede acortarla con `max_wait` (lo que le queda del plazo de la operación) para que una
+  solicitud nunca se pase de ese plazo; sin tiempo, falla sin escribir nada. Una
+  respuesta que llega tarde, con `id` desconocido o repetida se ignora (su valor se
+  suelta).
 - Un código de error que el núcleo no debería enviar, o una respuesta que no encaja con
   la operación, cuenta como `vault.secret_not_allowed` (se falla cerrado).
 - Sin canal (modo desarrollo externo, ADR 0010 §5) → `engine.secrets_unavailable`.
@@ -267,29 +270,36 @@ class SecretBroker:
 
     # --- API para las operaciones -----------------------------------------------------
 
-    async def get(self, ref: str) -> SecretValue:
-        """Lee el secreto `ref`. Úsalo con `with` para que se sobrescriba al terminar."""
-        outcome = await self._request("get", ref, None)
+    async def get(self, ref: str, *, max_wait: float | None = None) -> SecretValue:
+        """Lee el secreto `ref`. Úsalo con `with` para que se sobrescriba al terminar.
+
+        `max_wait` (en todas las operaciones): espera máxima, nunca mayor que la del broker.
+        """
+        outcome = await self._request("get", ref, None, max_wait)
         if outcome.value is None:  # pragma: no cover - _outcome_from_response lo garantiza
             raise SecretError(VAULT_SECRET_NOT_ALLOWED)
         value = SecretValue(outcome.value)
         outcome.value = None
         return value
 
-    async def create(self, ref: str, value: bytes | bytearray) -> None:
+    async def create(
+        self, ref: str, value: bytes | bytearray, *, max_wait: float | None = None
+    ) -> None:
         """Crea `ref` (el núcleo falla con `vault.already_exists` si existe).
 
         No sobrescribe `value`: es de quien llama.
         """
-        await self._request("create", ref, value)
+        await self._request("create", ref, value, max_wait)
 
-    async def set(self, ref: str, value: bytes | bytearray) -> None:
+    async def set(
+        self, ref: str, value: bytes | bytearray, *, max_wait: float | None = None
+    ) -> None:
         """Crea o reemplaza `ref`. No sobrescribe `value`: es de quien llama."""
-        await self._request("set", ref, value)
+        await self._request("set", ref, value, max_wait)
 
-    async def delete(self, ref: str) -> None:
+    async def delete(self, ref: str, *, max_wait: float | None = None) -> None:
         """Borra `ref` (idempotente en el llavero)."""
-        await self._request("delete", ref, None)
+        await self._request("delete", ref, None, max_wait)
 
     # --- Entrada desde el lector de stdin (otro hilo) ---------------------------------
 
@@ -349,9 +359,18 @@ class SecretBroker:
         return run_id
 
     async def _request(
-        self, op: SecretAccess, ref: str, value: bytes | bytearray | None
+        self,
+        op: SecretAccess,
+        ref: str,
+        value: bytes | bytearray | None,
+        max_wait: float | None,
     ) -> _Outcome:
         run_id = self._check(op, ref, value)
+        wait = self._timeout if max_wait is None else min(self._timeout, max_wait)
+        if wait <= 0:
+            # El plazo de la operación ya se agotó: no se pide nada que nadie esperaría.
+            log.warning("secrets.no_time_left", op=op, secret_ref=ref)
+            raise SecretError(VAULT_SECRET_TIMEOUT)
         writer = self._writer
         if writer is None:  # pragma: no cover - sin escritor, _check ya falló
             raise SecretError(ENGINE_SECRETS_UNAVAILABLE)
@@ -373,7 +392,7 @@ class SecretBroker:
             finally:
                 wipe_line(line)
             try:
-                outcome = await asyncio.wait_for(future, self._timeout)
+                outcome = await asyncio.wait_for(future, wait)
             except TimeoutError:
                 log.warning("secrets.timeout", op=op, secret_ref=ref)
                 raise SecretError(VAULT_SECRET_TIMEOUT) from None

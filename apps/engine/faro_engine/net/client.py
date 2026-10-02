@@ -23,8 +23,8 @@ import asyncio
 import random
 import ssl
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Final
@@ -78,6 +78,14 @@ class Deadline:
         """`site.timeout` si ya no queda tiempo."""
         if self.remaining() <= 0:
             raise site_error(SITE_TIMEOUT)
+
+    def ending_before(self, seconds: float) -> Deadline:
+        """Plazo que termina `seconds` antes que este (reserva para limpiar al final)."""
+        return Deadline(self.remaining() - seconds, self._clock)
+
+    def capped(self, seconds: float) -> Deadline:
+        """Plazo de como mucho `seconds` desde ahora, sin pasar del final de este."""
+        return Deadline(min(seconds, self.remaining()), self._clock)
 
 
 class ConcurrencyLimits:
@@ -200,6 +208,20 @@ class SafeHttpClient:
     @property
     def deadline(self) -> Deadline:
         return self._deadline
+
+    @contextmanager
+    def limited_to(self, deadline: Deadline) -> Iterator[None]:
+        """Usa `deadline` en vez del plazo del cliente mientras dure el `with`.
+
+        Para limpiar al final de una operación (p. ej. revocar al deshacer `connect`) con
+        un límite propio, conservando las IP ya fijadas (sin otra resolución DNS).
+        """
+        previous = self._deadline
+        self._deadline = deadline
+        try:
+            yield
+        finally:
+            self._deadline = previous
 
     @property
     def policy(self) -> NetPolicy:

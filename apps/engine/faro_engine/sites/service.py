@@ -18,10 +18,17 @@ Reglas:
   (`site.secret_missing`). Si no se pudo comprobar (red, tiempo, 5xx…), devuelve el error
   y no cambia nada.
 - Nunca se registra ni se devuelve el código de vinculación.
+- Plazos (T13 B2): cada `secret_request` espera como mucho lo que le queda al plazo de la
+  operación. `connect` trabaja hasta `UNDO_RESERVE_SECONDS` antes del final y guarda ese
+  tiempo para deshacer: primero el `delete` del secreto (si no llega antes de que el
+  núcleo cierre la concesión, el secreto queda huérfano) y después el `revoke` remoto, sin
+  reintentos y con `UNDO_REVOKE_SECONDS` como mucho. Sin esa reserva no empieza `create`.
+  `remove` reserva lo mismo para el `delete` final tras el `revoke`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hmac
 import re
@@ -34,6 +41,7 @@ from urllib.parse import urlsplit
 import structlog
 
 from faro_engine.core.audit import AuditLog
+from faro_engine.core.config import UNDO_RESERVE_SECONDS, UNDO_REVOKE_SECONDS
 from faro_engine.core.db.connection import Connection, DatabaseError, DbUnavailableError
 from faro_engine.core.db.database import UNAVAILABLE_STATUS, Database
 from faro_engine.core.errors import (
@@ -42,6 +50,7 @@ from faro_engine.core.errors import (
     SITE_MOVED,
     SITE_NOT_FOUND,
     SITE_SECRET_MISSING,
+    SITE_TIMEOUT,
     VAULT_NOT_FOUND,
     FaroError,
     site_error,
@@ -199,8 +208,8 @@ class SitesService:
             raise FaroError.of(exc.code, UNAVAILABLE_STATUS) from None
 
     @contextlib.asynccontextmanager
-    async def _wordpress(self) -> AsyncIterator[WordPressClient]:
-        async with SafeHttpClient(self._ctx.net, self._deadline) as http:
+    async def _wordpress(self, deadline: Deadline | None = None) -> AsyncIterator[WordPressClient]:
+        async with SafeHttpClient(self._ctx.net, deadline or self._deadline) as http:
             yield self._ctx.wordpress_factory(http)
 
     def _now(self) -> str:
@@ -239,7 +248,7 @@ class SitesService:
         Otros fallos del canal (llavero caído, tiempo agotado) se propagan.
         """
         try:
-            secret = await self._ctx.secrets.get(c.secret_ref)
+            secret = await self._ctx.secrets.get(c.secret_ref, max_wait=self._deadline.remaining())
         except SecretError as exc:
             if exc.code != VAULT_NOT_FOUND:
                 raise
@@ -291,7 +300,10 @@ class SitesService:
         code = normalize_pairing_code(pairing_code)
         site_url = normalize_site_url(url, self._ctx.net.policy)
         await self._ensure_new_url(site_url)
-        async with self._wordpress() as wp:
+        # Los últimos `UNDO_RESERVE_SECONDS` del plazo quedan para deshacer (T13 B2).
+        work = self._deadline.ending_before(UNDO_RESERVE_SECONDS)
+        async with SafeHttpClient(self._ctx.net, work) as http:
+            wp = self._ctx.wordpress_factory(http)
             found = await wp.discover(site_url)
             if found.site_url != site_url:
                 # El código de vinculación solo va al dominio que escribió el usuario (o a
@@ -310,10 +322,15 @@ class SitesService:
                 app_version=self._ctx.app_version,
             )
             with pairing.credentials as credentials:
+                create_sent = False
                 try:
+                    # Sin tiempo para deshacer no se crea nada; solo se revoca el `pair`.
+                    work.check()
+                    # Desde aquí el núcleo puede crearlo aunque la respuesta no llegue.
+                    create_sent = True
                     value = credentials.secret_value()
                     try:
-                        await self._ctx.secrets.create(ref, value)
+                        await self._ctx.secrets.create(ref, value, max_wait=work.remaining())
                     finally:
                         value[:] = bytes(len(value))
                     remote = await wp.status(found.api_root, credentials)
@@ -335,9 +352,17 @@ class SitesService:
                             **status_fields(remote),  # type: ignore[arg-type]
                         ),
                     )
-                    await self._insert(record, now)
+                    # La base tampoco puede comerse la reserva del deshacer.
+                    work.check()
+                    try:
+                        async with asyncio.timeout(work.remaining()):
+                            await self._insert(record, now)
+                    except TimeoutError:
+                        raise site_error(SITE_TIMEOUT) from None
                 except BaseException:
-                    await self._undo_connect(wp, found.api_root, credentials, ref)
+                    await self._undo_connect(
+                        http, wp, found.api_root, credentials, ref if create_sent else None
+                    )
                     raise
         log.info("sites.connected", site_id=site_id)
         await self._ctx.audit.record(
@@ -360,20 +385,28 @@ class SitesService:
 
     async def _undo_connect(
         self,
+        http: SafeHttpClient,
         wp: WordPressClient,
         api_root: str,
         credentials: SiteCredentials,
-        ref: str,
+        ref: str | None,
     ) -> None:
-        """Vinculación a medias: borra el secreto (si llegó a crearse; si no, el núcleo lo
-        rechaza sin más) y revoca la conexión en el sitio, las dos de buena fe."""
+        """Vinculación a medias, con su propio plazo (`UNDO_RESERVE_SECONDS`, sin pasar
+        del final de la operación): borra el secreto si se pidió crearlo (`ref`; si no
+        llegó a crearse, el núcleo lo rechaza sin más) y después revoca la conexión en el
+        sitio, sin reintentos y con `UNDO_REVOKE_SECONDS` como mucho. Las dos de buena fe.
+        """
         log.warning("sites.connect_rolled_back")
+        undo = self._deadline.capped(UNDO_RESERVE_SECONDS)
+        if ref is not None:
+            # Primero lo crítico: un secreto huérfano en el llavero no lo ve nadie.
+            try:
+                await self._ctx.secrets.delete(ref, max_wait=undo.remaining())
+            except FaroError as exc:
+                log.error("sites.rollback_delete_failed", error_code=exc.code)
         try:
-            await self._ctx.secrets.delete(ref)
-        except FaroError as exc:
-            log.error("sites.rollback_delete_failed", error_code=exc.code)
-        try:
-            await wp.revoke(api_root, credentials, retries=0)
+            with http.limited_to(undo.capped(UNDO_REVOKE_SECONDS)):
+                await wp.revoke(api_root, credentials, retries=0)
         except FaroError as exc:
             log.warning("sites.rollback_revoke_failed", error_code=exc.code)
 
@@ -393,7 +426,9 @@ class SitesService:
             with pairing.credentials as credentials:
                 value = credentials.secret_value()
                 try:
-                    await self._ctx.secrets.set(c.secret_ref, value)
+                    await self._ctx.secrets.set(
+                        c.secret_ref, value, max_wait=self._deadline.remaining()
+                    )
                 finally:
                     value[:] = bytes(len(value))
                 now = self._now()
@@ -492,13 +527,15 @@ class SitesService:
         credentials = await self._credentials(record, c)
         if credentials is not None:
             with credentials:
-                async with self._wordpress() as wp:
+                # El `revoke` deja `UNDO_RESERVE_SECONDS` para el `delete` de después.
+                revoke = self._deadline.ending_before(UNDO_RESERVE_SECONDS)
+                async with self._wordpress(revoke) as wp:
                     try:
                         remote_revoked = await wp.revoke(c.api_root, credentials, retries=1)
                     except FaroError as exc:
                         log.warning("sites.remote_revoke_failed", error_code=exc.code)
         # Si el llavero falla, el sitio se queda: sin su secreto huérfano en el llavero.
-        await self._ctx.secrets.delete(c.secret_ref)
+        await self._ctx.secrets.delete(c.secret_ref, max_wait=self._deadline.remaining())
         await self._db(lambda conn: repository.delete_site(conn, site_id))
         log.info("sites.removed", site_id=site_id, remote_revoked=remote_revoked)
         await self._ctx.audit.record(
