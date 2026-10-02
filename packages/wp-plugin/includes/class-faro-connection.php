@@ -63,7 +63,17 @@ final class Faro_Connection {
 	 * @phpstan-return FaroConnection|null
 	 */
 	public static function get(): ?array {
-		$record = get_option( self::OPTION );
+		return self::validate( get_option( self::OPTION ) );
+	}
+
+	/**
+	 * Valida la forma de una conexión guardada.
+	 *
+	 * @param mixed $record Valor de la opción.
+	 * @return array<string, mixed>|null
+	 * @phpstan-return FaroConnection|null
+	 */
+	private static function validate( $record ): ?array {
 		if ( ! is_array( $record ) ) {
 			return null;
 		}
@@ -113,7 +123,12 @@ final class Faro_Connection {
 	/**
 	 * Actualiza last_seen_at como mucho cada 5 minutos.
 	 *
-	 * @param array<string, mixed> $connection Conexión guardada.
+	 * Escribe con comparar e intercambiar sobre el valor exacto leído de la base y nunca recrea
+	 * la opción: si mientras tanto se desconectó el sitio (opción borrada) o se vinculó otra
+	 * conexión (valor distinto), no hace nada. Así una petición en curso no revive una conexión
+	 * revocada ni pisa una vinculación nueva.
+	 *
+	 * @param array<string, mixed> $connection Conexión verificada en esta petición.
 	 * @phpstan-param FaroConnection $connection
 	 * @return void
 	 */
@@ -122,8 +137,21 @@ final class Faro_Connection {
 		if ( $now - $connection['last_seen_at'] < self::LAST_SEEN_INTERVAL ) {
 			return;
 		}
-		$connection['last_seen_at'] = $now;
-		update_option( self::OPTION, $connection, false );
+
+		$raw = Faro_Option_Store::read_raw( self::OPTION );
+		if ( null === $raw ) {
+			return;
+		}
+		$stored = self::validate( maybe_unserialize( $raw ) );
+		if ( null === $stored
+			|| ! hash_equals( $stored['connection_id'], $connection['connection_id'] )
+			|| ! hash_equals( $stored['token_sha256'], $connection['token_sha256'] )
+			|| $now - $stored['last_seen_at'] < self::LAST_SEEN_INTERVAL ) {
+			return;
+		}
+
+		$stored['last_seen_at'] = $now;
+		Faro_Option_Store::compare_and_swap( self::OPTION, $raw, maybe_serialize( $stored ) );
 	}
 
 	/**

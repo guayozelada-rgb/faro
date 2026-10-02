@@ -136,8 +136,9 @@ final class Faro_Signature {
 		if ( is_wp_error( $result ) ) {
 			return $result;
 		}
+		// Solo se toca la conexión que firmó esta petición; touch() tampoco recrea una revocada.
 		$connection = Faro_Connection::get();
-		if ( null !== $connection ) {
+		if ( null !== $connection && hash_equals( $connection['connection_id'], (string) $request->get_header( 'x_faro_connection' ) ) ) {
 			Faro_Connection::touch( $connection );
 		}
 

@@ -38,6 +38,7 @@ define( 'FARO_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 require_once FARO_PLUGIN_DIR . 'includes/class-faro-clock.php';
 require_once FARO_PLUGIN_DIR . 'includes/class-faro-errors.php';
 require_once FARO_PLUGIN_DIR . 'includes/class-faro-crypto.php';
+require_once FARO_PLUGIN_DIR . 'includes/class-faro-option-store.php';
 require_once FARO_PLUGIN_DIR . 'includes/class-faro-connection.php';
 require_once FARO_PLUGIN_DIR . 'includes/class-faro-pairing.php';
 require_once FARO_PLUGIN_DIR . 'includes/class-faro-signature.php';

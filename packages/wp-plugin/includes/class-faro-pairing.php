@@ -80,7 +80,7 @@ final class Faro_Pairing {
 			'',
 			false
 		);
-		self::flush_cache();
+		Faro_Option_Store::flush_cache( self::OPTION );
 
 		return $code;
 	}
@@ -267,19 +267,7 @@ final class Faro_Pairing {
 	 * @return bool true si esta petición hizo el cambio.
 	 */
 	public static function compare_and_swap( string $expected_raw, string $new_raw ): bool {
-		global $wpdb;
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Comparar e intercambiar atómico; la caché se invalida abajo.
-		$rows = $wpdb->query(
-			$wpdb->prepare(
-				"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
-				$new_raw,
-				self::OPTION,
-				$expected_raw
-			)
-		);
-		self::flush_cache();
-
-		return 1 === $rows;
+		return Faro_Option_Store::compare_and_swap( self::OPTION, $expected_raw, $new_raw );
 	}
 
 	/**
@@ -289,18 +277,7 @@ final class Faro_Pairing {
 	 * @return bool true si esta petición lo borró.
 	 */
 	private static function delete_if_unchanged( string $expected_raw ): bool {
-		global $wpdb;
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Borrado condicional atómico; la caché se invalida abajo.
-		$rows = $wpdb->query(
-			$wpdb->prepare(
-				"DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
-				self::OPTION,
-				$expected_raw
-			)
-		);
-		self::flush_cache();
-
-		return 1 === $rows;
+		return Faro_Option_Store::delete_if_unchanged( self::OPTION, $expected_raw );
 	}
 
 	/**
@@ -311,11 +288,7 @@ final class Faro_Pairing {
 	 * @return string|null
 	 */
 	public static function read_raw(): ?string {
-		global $wpdb;
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Lectura para comparar e intercambiar; no debe venir de la caché.
-		$raw = $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", self::OPTION ) );
-
-		return is_string( $raw ) ? $raw : null;
+		return Faro_Option_Store::read_raw( self::OPTION );
 	}
 
 	/**
@@ -339,17 +312,6 @@ final class Faro_Pairing {
 			'expires_at'    => $pending['expires_at'],
 			'attempts_left' => $pending['attempts_left'],
 		);
-	}
-
-	/**
-	 * Invalida la caché de objetos de la opción.
-	 *
-	 * @return void
-	 */
-	private static function flush_cache(): void {
-		wp_cache_delete( self::OPTION, 'options' );
-		wp_cache_delete( 'notoptions', 'options' );
-		wp_cache_delete( 'alloptions', 'options' );
 	}
 
 	/**
