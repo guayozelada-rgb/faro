@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +21,17 @@ from tests.db.helpers import TEST_PROFILE_ID, key
 from tests.fakes.net import FakeResolver, RecordingSleep, net_settings
 from tests.fakes.vault import FakeVault
 from tests.fakes.wordpress import FakeWordPress
+
+
+class FakeClock:
+    """Reloj monótono de prueba para `Deadline`: avanza solo cuando la prueba lo dice."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
 
 RUN_ID = "01920000-0000-7000-8000-0000000000aa"
 NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
@@ -57,8 +68,11 @@ class World:
             now=lambda: NOW,
         )
 
-    def service(self, seconds: float = 55) -> SitesService:
-        return SitesService(self.context(), Deadline(seconds))
+    def service(
+        self, seconds: float = 55, clock: Callable[[], float] | None = None
+    ) -> SitesService:
+        deadline = Deadline(seconds) if clock is None else Deadline(seconds, clock)
+        return SitesService(self.context(), deadline)
 
     def query(self, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
         def run(conn: Connection) -> list[tuple[Any, ...]]:

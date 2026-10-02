@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from typing import Any
 
 import httpx
@@ -16,12 +17,13 @@ from faro_engine.core.db.connection import Connection, DatabaseError
 from faro_engine.core.errors import FaroError
 from faro_engine.core.logging import configure_logging
 from faro_engine.core.schemas.sites import SiteOut
+from faro_engine.net.client import Deadline, SafeHttpClient
 from faro_engine.sites import repository
 from faro_engine.sites.repository import ConnectionRecord, SiteRecord
 from faro_engine.sites.service import normalize_pairing_code, same_site, site_out
 from tests.fakes.net import SITE_URL, json_response, wp_error
 from tests.fakes.wordpress import FakeConnection
-from tests.sites.conftest import NOW_TEXT, RUN_ID, World
+from tests.sites.conftest import NOW_TEXT, RUN_ID, FakeClock, World
 
 WWW = "https://www.tienda.example"
 
@@ -333,6 +335,132 @@ async def test_connect_times_out_with_deadline(world: World) -> None:
     with pytest.raises(FaroError) as info:
         await world.service(seconds=0).connect(SITE_URL, "123456")
     assert info.value.code == "site.timeout"
+
+
+# --- plazos del deshacer (T13 B2) -------------------------------------------------------
+# `connect` con 55 s: trabajo hasta los 45 s, deshacer hasta los 55 s (`UNDO_RESERVE_SECONDS`).
+
+
+def _advance_on_secret(world: World, clock: FakeClock, op: str, to: float) -> None:
+    """La operación `op` del llavero tarda: el reloj llega a `to` antes de responder."""
+    original = world.vault.answer
+
+    def slow(request: dict[str, Any]) -> dict[str, Any]:
+        if request["op"] == op:
+            clock.now = to
+        return original(request)
+
+    world.vault.answer = slow  # type: ignore[method-assign]
+
+
+def _advance_on_http(world: World, clock: FakeClock, method: str, suffix: str, to: float) -> None:
+    """La petición `method …suffix` al sitio tarda: el reloj llega a `to` antes de responder."""
+    original = world.wp.handler
+
+    def slow(request: httpx.Request) -> httpx.Response:
+        if request.method == method and request.url.path.endswith(suffix):
+            clock.now = to
+        return original(request)
+
+    world.wp.handler = slow  # type: ignore[method-assign]
+
+
+async def test_connect_slow_create_still_deletes_and_revokes(world: World) -> None:
+    # El escenario del hallazgo: `create` termina pasado el plazo de trabajo.
+    clock = FakeClock()
+    _advance_on_secret(world, clock, "create", 50)
+    code = world.wp.create_code()
+    with pytest.raises(FaroError) as info:
+        await world.service(clock=clock).connect(SITE_URL, code)
+    assert info.value.code == "site.timeout"  # `status()` ya no tiene tiempo
+    assert "http GET /wp-json/faro/v1/status" not in world.events
+    # El deshacer usa su reserva (los 5 s que quedan): borra el secreto y revoca.
+    assert [op for op, _ in world.vault.ops] == ["create", "delete"]
+    assert world.vault.store == {}
+    assert world.wp.connection is None
+    assert world.events[-2:] == ["secret delete", "http DELETE /wp-json/faro/v1/connection"]
+    assert world.query("SELECT id FROM sites") == []
+
+
+async def test_connect_without_undo_margin_creates_nothing(world: World) -> None:
+    clock = FakeClock()
+    _advance_on_http(world, clock, "POST", "/pair", 45.5)  # quedan 9,5 s < 10 s de reserva
+    code = world.wp.create_code()
+    with pytest.raises(FaroError) as info:
+        await world.service(clock=clock).connect(SITE_URL, code)
+    assert info.value.code == "site.timeout"
+    assert world.vault.ops == []  # ni `create` ni `delete`
+    assert world.wp.connection is None  # el `pair` se revocó
+    assert world.events[-1] == "http DELETE /wp-json/faro/v1/connection"
+    assert world.query("SELECT id FROM sites") == []
+
+
+async def test_connect_with_just_enough_margin_succeeds(world: World) -> None:
+    clock = FakeClock()
+    _advance_on_http(world, clock, "POST", "/pair", 44.9)
+    code = world.wp.create_code()
+    site = await world.service(clock=clock).connect(SITE_URL, code)
+    assert world.vault.store.keys() == {_ref(site.id)}
+    assert world.wp.connection is not None
+
+
+async def test_connect_undo_delete_comes_first_and_can_use_the_whole_reserve(
+    world: World, log_stream: io.StringIO
+) -> None:
+    clock = FakeClock()
+    world.wp.force("GET", "/faro/v1/status", httpx.Response(500))
+    _advance_on_secret(world, clock, "delete", 10)  # el `delete` se come los 10 s
+    code = world.wp.create_code()
+    with pytest.raises(FaroError) as info:
+        await world.service(clock=clock).connect(SITE_URL, code)
+    assert info.value.code == "site.server_error"
+    assert world.vault.store == {}  # lo crítico se hizo
+    # El `revoke` ya no tiene tiempo: falla sin salir a la red (de buena fe).
+    assert "http DELETE /wp-json/faro/v1/connection" not in world.events
+    assert world.wp.connection is not None
+    assert "sites.rollback_revoke_failed" in log_stream.getvalue()
+
+
+async def test_connect_undo_revoke_has_its_own_short_limit(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = FakeClock()
+    world.wp.force("GET", "/faro/v1/status", httpx.Response(500))
+    # El `revoke` del deshacer recibe 5 s (`UNDO_REVOKE_SECONDS`), no los 10 de la reserva.
+    limits: list[float] = []
+    original = SafeHttpClient.limited_to
+
+    def spy(self: SafeHttpClient, deadline: Deadline) -> AbstractContextManager[None]:
+        limits.append(deadline.remaining())
+        return original(self, deadline)
+
+    monkeypatch.setattr(SafeHttpClient, "limited_to", spy)
+    code = world.wp.create_code()
+    with pytest.raises(FaroError):
+        await world.service(clock=clock).connect(SITE_URL, code)
+    assert limits == [5.0]
+    assert world.wp.connection is None
+
+
+async def test_secret_wait_respects_the_operation_deadline(world: World) -> None:
+    site = await _connect(world)
+    world.vault.ops.clear()
+    with pytest.raises(FaroError) as info:
+        await world.service(seconds=0).check(site.id)
+    assert info.value.code == "vault.secret_timeout"
+    assert world.vault.ops == []  # sin tiempo no se pide nada al núcleo
+
+
+async def test_remove_keeps_time_for_the_delete_after_revoke(world: World) -> None:
+    site = await _connect(world)
+    clock = FakeClock()
+    _advance_on_secret(world, clock, "get", 35)  # `removeSite`: 40 s, `revoke` hasta los 30
+    world.events.clear()
+    result = await world.service(seconds=40, clock=clock).remove(site.id)
+    assert result.remote_revoked is False  # sin tiempo para el `revoke`
+    assert world.events == ["secret get", "secret delete"]
+    assert world.vault.store == {}
+    assert world.query("SELECT id FROM sites") == []
 
 
 async def test_logs_never_contain_code_or_credentials(
