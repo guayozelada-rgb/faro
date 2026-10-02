@@ -58,8 +58,11 @@ class Test_Faro_Connection extends Faro_Test_Case {
 		return (string) $wpdb->get_var( $wpdb->prepare( "SELECT autoload FROM {$wpdb->options} WHERE option_name = %s", $option ) );
 	}
 
-	// (a) touch() con la opción borrada no la recrea.
-
+	/**
+	 * (a) touch() con la opción borrada no la recrea.
+	 *
+	 * @return void
+	 */
 	public function test_touch_after_revoke_does_not_recreate_option(): void {
 		$connection = $this->create_connection();
 		Faro_Connection::revoke();
@@ -105,8 +108,11 @@ class Test_Faro_Connection extends Faro_Test_Case {
 		$this->assertSame( 'wp.revoked', $this->error_code( $after ) );
 	}
 
-	// (b) touch() con una conexión distinta de la leída no pisa la nueva.
-
+	/**
+	 * (b) touch() con una conexión distinta de la leída no pisa la nueva.
+	 *
+	 * @return void
+	 */
 	public function test_touch_with_old_connection_does_not_overwrite_new_one(): void {
 		$old = $this->create_connection();
 		Faro_Clock::freeze( self::NOW + 100 );
@@ -165,8 +171,11 @@ class Test_Faro_Connection extends Faro_Test_Case {
 		$this->assertSame( 200, $new->get_status(), 'La conexión nueva sigue funcionando.' );
 	}
 
-	// (c) El caso normal sigue actualizando last_seen_at, como mucho cada 5 minutos.
-
+	/**
+	 * (c) El caso normal sigue actualizando last_seen_at, como mucho cada 5 minutos.
+	 *
+	 * @return void
+	 */
 	public function test_touch_updates_last_seen_at_most_every_five_minutes(): void {
 		$this->create_connection();
 
