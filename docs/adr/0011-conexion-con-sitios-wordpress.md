@@ -1,7 +1,7 @@
 # ADR 0011 — Conexión con sitios WordPress: quién llama, firma, secreto y una conexión por sitio
 
 - **Fecha:** 2026-09-29
-- **Estado:** aceptado
+- **Estado:** aceptado; actualizado el 2026-10-01 (cierre de F1a, al final)
 - **Spec:** [F1a — Conexión con WordPress](../specs/2026-09-29-f1a-conexion-wordpress.md)
 - **Skills:** `wordpress-plugin`, `llavero-y-cifrado`. **Relacionados:** ADR 0008 (licencia), 0010 (secretos), 0012 (red saliente)
 
@@ -58,3 +58,9 @@ signature = base64_standard( HMAC-SHA256( key = base64url_decode(hmac_secret), c
 - Hay un solo cliente WordPress (`faro_engine/wordpress/`) que reutilizarán auditoría (F2) y publicación (F4). Las escrituras (`/drafts`, `/seo-meta`) se añadirán ahí con `Idempotency-Key`, y en el plugin con adaptadores `Faro_Seo_*`.
 - El núcleo necesita conocer la forma del secreto de `wp/*/token` para validarlo, sin llegar a usarlo.
 - La skill `wordpress-plugin` se actualiza en el cierre de F1a con: clave HMAC en bytes, orden de verificación, `wp.stale_request`, `wp.connection_broken`, `api_version` y cabeceras `Cache-Control: no-store`.
+
+## Actualización (2026-10-01, cierre de F1a)
+
+- **§3**: el núcleo valida el valor de `wp/<site_id>/token` como el JSON compacto **exacto** `{"v":1,"token":"<43>","hmac_secret":"<43>"}`, en ese orden y sin espacios, byte a byte (ADR 0010, actualización D).
+- **§5, escrituras sobre `faro_connection`** (hallazgo B1 de la revisión T13): fuera de vincular (`Faro_Connection::create`) y desconectar (`revoke`), el plugin **nunca** escribe la opción con `update_option`, porque `update_option` hace `add_option` si la fila ya no existe y eso revive una conexión revocada. La única otra escritura, `last_seen_at` (`Faro_Connection::touch`), usa `Faro_Option_Store`: lee el valor crudo de la base, compara e intercambia con `BINARY option_value = %s` y nunca recrea la fila; además solo se ejecuta si el `connection_id` guardado es el que firmó la petición. Una conexión futura con varias entradas (lista por `connection_id`) debe seguir el mismo patrón de escrituras condicionales.
+- **§2, nonces**: guardar el nonce tras leerlo no es atómico (dos peticiones idénticas en paralelo podrían pasar). Se acepta en F1a porque solo hay lecturas y `DELETE /connection`, que son idempotentes; antes de las escrituras de F4 hay que reservar el nonce de forma atómica (`TODO F4` en `class-faro-signature.php`, spec F1a §12).

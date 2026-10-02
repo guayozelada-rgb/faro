@@ -1,7 +1,7 @@
 # ADR 0010 — Protocolo núcleo ↔ motor v2: llave de la base, secretos por concesión y auditoría
 
 - **Fecha:** 2026-09-29
-- **Estado:** aceptado
+- **Estado:** aceptado; actualizado el 2026-10-01 (cierre de F1a, al final)
 - **Spec:** [F1a — Conexión con WordPress](../specs/2026-09-29-f1a-conexion-wordpress.md)
 - **Amplía:** ADR 0004 (protocolo de arranque). **Skills:** `tauri-sidecar-python`, `llavero-y-cifrado`, `contratos-api-local`
 
@@ -71,3 +71,42 @@ En modo desarrollo externo (ADR 0004) no hay stdin/stdout entre núcleo y motor:
 - `engine-operations.json` gana los campos opcionales `timeout_seconds` y `secrets`. Es un cambio aditivo.
 - La skill `llavero-y-cifrado` se actualiza con `op`, concesiones, `{new}` y la auditoría por stdin (cierre de F1a).
 - Las operaciones sin `x-faro-secrets` no pueden obtener ningún secreto, aunque el motor lo pida.
+
+## Actualización (2026-10-01, cierre de F1a)
+
+Cambios decididos durante la implementación y las revisiones de seguridad (T7, T8, T13). El formato de las líneas de §1–2 no cambia.
+
+### A. Concesiones atadas a generación del motor y perfil
+
+- Cada concesión guarda, además del `run_id`, la **generación** del motor (número que sube en cada arranque) y el **perfil** activo cuando se concedió. Si el motor se reinicia, o la concesión caduca, mientras una solicitud espera, la solicitud se rechaza (`vault.secret_not_allowed`, motivo `run_inactive`).
+- El núcleo serializa las operaciones del llavero con un candado y **vuelve a comprobar la concesión después de obtenerlo**; la operación usa el perfil guardado en la concesión, no el actual (corrección de TOCTOU).
+- `{new}` se omite si no hay perfil activo.
+
+### B. `{new}`: una sola `create` y el `delete` de la referencia intentada
+
+Sustituye a la última frase del punto `{new}` de §3:
+
+- La concesión permite **una sola** `create` de `wp/<uuid>/token`, aunque falle (el slot guarda `attempted`).
+- El `delete` vale para la referencia **intentada**, no solo para la creada, porque el motor deshace cuando agota su espera y la `create` puede seguir en la cola del llavero:
+  - si la `create` ya escribió (`created`), se borra del llavero;
+  - si la `create` sigue en cola, el `delete` la marca `cancelled`: cuando le toque, se rechaza sin escribir ni el secreto ni el índice de sitios;
+  - si no se escribió nada, responde `ok` sin tocar el llavero (motivo `not_created` en la auditoría).
+- Riesgo residual conocido (severidad baja): si la `create` ya está ejecutándose en el llavero cuando llega el `delete`, puede quedar un secreto huérfano. Pendiente en spec F1a §12.
+
+### C. Índice de sitios por perfil
+
+- La base con los sitios es del motor y está cifrada; el núcleo no la lee. Para no conceder el secreto de un sitio de otro perfil, el núcleo mantiene su propio índice, que no es secreto: `<app_data_dir>/profile-sites/<perfil>.json` = `{"version":1,"site_ids":[…]}`, ordenado y escrito de forma atómica.
+- Un sitio entra cuando el núcleo crea su `{new}`, **antes** de escribir el secreto en el llavero, y **nunca sale** (así una desconexión a medias todavía se puede terminar).
+- `wp/{site_id}/token` solo entra en una concesión si el sitio está en el índice del perfil activo; si no, la referencia se **omite** (aviso en el log) y cualquier solicitud sobre ella se rechaza.
+- Índice ilegible o con otra forma: cuenta como vacío para conceder (falla cerrado) y no se sobrescribe.
+- Pendientes (spec F1a §12): reconciliar el índice al arrancar si se borra, y valorar marcar los sitios quitados para que `set` no pueda volver a crear su token.
+
+### D. Detalles del canal
+
+- El valor de `wp/*/token` se valida byte a byte con la forma exacta de ADR 0011 §3 (en ese orden y sin espacios).
+- La espera del motor es `min(10 s, plazo restante de la operación)`; sin tiempo, falla con `vault.secret_timeout` sin escribir la solicitud.
+- Una solicitud malformada con `id` válido recibe `vault.secret_not_allowed`; sin `id` válido no se responde. Una respuesta que el motor no espera (código desconocido, forma que no encaja con `op`) cuenta como `vault.secret_not_allowed`.
+
+### E. Qué protegen las concesiones (y qué no)
+
+Las concesiones **no** protegen contra malware que ya corre con el usuario: en Windows, cualquier proceso del usuario puede leer las credenciales genéricas del Administrador de credenciales. Protegen contra **errores de lógica** del motor y contra el **abuso del motor** (por ejemplo, inyección de prompts en las tareas de agentes de F2, que intente leer o borrar el secreto de otro sitio u otra operación). Es una defensa en profundidad dentro de la app, no un límite frente al sistema operativo.

@@ -2,7 +2,7 @@
 
 - **Fecha:** 2026-09-29
 - **Autor:** arquitecto
-- **Estado:** aprobada (2026-09-29, por el usuario)
+- **Estado:** implementada (2026-10-01). Historial: aprobada (2026-09-29, por el usuario) → implementada (2026-10-01, T0–T13 integradas en los PR #13 a #25; cierre T14). Las diferencias entre este documento y el código están en §13 y lo que queda abierto en §12. Verificación manual: parcial (§10 y [lista manual](../qa/2026-10-01-f1a-verificacion-manual.md)).
 - **ADR nuevos:** [0008](../adr/0008-licencia-gpl-del-plugin-wordpress.md) (licencia GPL del plugin, decisión del usuario), [0009](../adr/0009-base-de-datos-local-cifrada.md) (base cifrada), [0010](../adr/0010-protocolo-nucleo-motor-secretos-y-auditoria.md) (protocolo, secretos y auditoría), [0011](../adr/0011-conexion-con-sitios-wordpress.md) (conexión con WordPress), [0012](../adr/0012-red-saliente-del-motor.md) (red saliente y SSRF), [0013](../adr/0013-redaccion-de-secretos-en-logs-por-valor.md) (logs por valor)
 - **ADR anteriores que aplican:** 0001–0007 (sobre todo 0002 errores, 0004 arranque, 0005 CI pública, 0006 CSP, 0007 paleta)
 - **Parte de F0 que se retoma:** pendientes 4 y 5 de §14 de [F0](2026-09-28-f0-esqueleto.md) (quitar `core:default` y cobertura de Rust). El 6 (pruebas extremo a extremo) se pospone otra vez (§2.4).
@@ -237,6 +237,7 @@ faro_engine/sites/          service.py (casos de uso: connect, reconnect, check,
 **Arranque** (`__main__.py`):
 1. Token (sin cambios). 2. Espera la línea `db_key` (10 s). 3. Abre `<data-dir>/profiles/<profile>.db`, aplica migraciones (ADR 0009 §4–5), sobrescribe el `bytearray` de la llave. 4. Si falla, `Database.state = unavailable(code)` y sigue. 5. `ready`.
 - `--allow-local-sites` (rechazado con `sys.frozen`, código 2) y, en `--dev`, `FARO_ENGINE_DEV_DB_KEY`, `FARO_ENGINE_DEV_PROFILE_ID` y `FARO_ALLOW_LOCAL_SITES` desde `.env.local` (ADR 0009, 0012). En `--dev` el `--data-dir` por defecto es `apps/engine/.devdata/` (en `.gitignore`).
+- *(Cierre T14)* En `--dev` el modo de sitios locales se activa con el argumento `--allow-local-sites` **o** con `FARO_ALLOW_LOCAL_SITES=1` en `.env.local` (cualquiera de los dos basta); ADR 0012 se alineó con el código (§13, fila 9).
 
 **Base**: `Database` con una conexión y un candado; las consultas se ejecutan en un hilo (`anyio.to_thread`), transacciones explícitas. Dependencia FastAPI `get_db()` → `503` con el código de `Database.state` si no está disponible.
 
@@ -279,9 +280,9 @@ faro_engine/sites/          service.py (casos de uso: connect, reconnect, check,
 - Escritor de stdin único (tarea + `mpsc`): token → línea `db_key` → eventos (`shutdown`, `secret_response`, `audit`). La línea con la llave se construye en un `Zeroizing<String>`.
 - Despachador de stdout: `ready`, `secret_request` → `SecretBroker`; otras líneas como hoy (sin registrar contenido).
 - `EngineStatus` gana `database_error: FaroErrorData | null`, leído de `/health` en cada consulta de salud. El estado sigue siendo `ready` aunque la base no esté disponible.
-- Lanzamiento con `--allow-local-sites` solo si `cfg!(debug_assertions)` y `.env.local` tiene `FARO_ALLOW_LOCAL_SITES=1`.
+- Lanzamiento con `--allow-local-sites` solo si `cfg!(debug_assertions)` **y** `FARO_ALLOW_LOCAL_SITES` vale exactamente `1` (sin contar espacios). *(Cierre T14)* La variable se lee primero del entorno del proceso y, si no está, de `.env.local` en la raíz del repositorio (`engine/mod.rs`, `local_sites_allowed` y `read_dev_env`). En release el lanzador nunca pasa el argumento, sea cual sea el entorno, y el motor empaquetado lo rechazaría con código 2.
 
-**`SecretBroker`** (`src/secrets/`): gramática de referencias de `llavero-y-cifrado`, concesiones (ADR 0010 §3), validación de valores de `wp/*/token` (ADR 0011 §3), operaciones del llavero en `spawn_blocking`, respuesta por stdin, evento de auditoría por cada solicitud (`secret.used`, `secret.added`, `secret.replaced`, `secret.deleted` o `secret.denied`). Las concesiones se borran al reiniciar el motor.
+**`SecretBroker`** (`src/secrets/`): gramática de referencias de `llavero-y-cifrado`, concesiones (ADR 0010 §3), validación de valores de `wp/*/token` (ADR 0011 §3), operaciones del llavero en `spawn_blocking`, respuesta por stdin, evento de auditoría por cada solicitud (`secret.used`, `secret.added`, `secret.replaced`, `secret.deleted` o `secret.denied`). Las concesiones se borran al reiniciar el motor. *(Cierre T14)* Además: concesiones atadas a generación del motor y perfil, revalidadas tras el candado del llavero; índice de sitios por perfil en `<app_data_dir>/profile-sites/<perfil>.json`; regla del `delete` de `{new}` intentado (§13, filas 1–4; ADR 0010, actualización 2026-10-01).
 
 **`engine_call`** (`src/commands/engine.rs`):
 - `engine-operations.json` incrustado (`include_str!`) y validado en una prueba (métodos, rutas, plantillas de `secrets` con la gramática).
@@ -648,7 +649,7 @@ Con wp-env arriba y `--allow-local-sites`: generar código con `wp eval 'echo Fa
 2. `npx @wordpress/env start` en `packages/wp-plugin` con `FARO_ALLOW_LOCAL_SITES=1`; Configuración → Sitios conectados muestra el estado vacío.
 3. **Guardar el plugin en Descargas** abre la carpeta con `faro-wordpress.zip`. Instalarlo en un WordPress limpio de wp-env con **Subir plugin** funciona.
 4. En wp-admin → Ajustes → Faro, generar código; conectarse con `http://localhost:8888` y el código → tarjeta "Conectado" con conteos correctos (comparar con wp-admin). En el Administrador de credenciales aparece `wp/<uuid>/token.app.faro.desktop`.
-5. Mismo código otra vez → "Este código ya no sirve…". Código incorrecto → mensaje con intentos restantes.
+5. *(Reescrito en el cierre T14: con el sitio conectado no se alcanza, porque el motor responde antes `site.already_connected`.)* Hacerlo en **Volver a conectar** (paso 7), antes de generar el código nuevo: el código ya usado del paso 4 → "Este código ya no sirve…"; después generar un código y escribir otro de 6 números → mensaje con intentos restantes, y el código correcto sigue sirviendo.
 6. Ver contenido: páginas, entradas y productos coinciden con wp-admin; activar y desactivar HPOS en WooCommerce → sigue funcionando.
 7. Desconectar desde wp-admin → al volver a abrir la pestaña (nueva sesión) la tarjeta queda "Desconectado"; **Volver a conectar** con código nuevo → "Conectado".
 8. Cambiar una salt en `wp-config.php` del contenedor → **Comprobar conexión** → "Desconectado" con el mensaje de claves de seguridad; wp-admin muestra la conexión rota.
@@ -670,8 +671,123 @@ Con wp-env arriba y `--allow-local-sites`: generar código con `wp eval 'echo Fa
 
 ## 12. Pendientes que deja F1a
 
-- **Release:** recurso del zip en `bundle.resources` y `wp_plugin_export` desde recursos; enlace profundo "Abrir Faro en el escritorio"; empaquetado PyInstaller con la librería SQLCipher (criterio 6 de ADR 0009 en macOS).
-- **F1b:** pruebas extremo a extremo automáticas (WebdriverIO + tauri-driver).
-- **F2:** sitios solo con URL ("analizar una URL"), inventario de contenido en la base, reutilizar `faro_engine/net` en el rastreador, concesiones que duran toda una tarea de agente.
-- **F4:** `/drafts` y `/seo-meta` con `Idempotency-Key`, adaptadores `Faro_Seo_*`.
-- **Posterior:** restauración de copias y de la llave (`db.key_missing`), visor de auditoría y retención, varias computadoras por sitio.
+Actualizado en el cierre T14 (2026-10-01). Cada punto indica su origen. Ninguno bloquea F1a: los hallazgos de seguridad abiertos son de severidad **baja**.
+
+### 12.1 Antes de dar F1a por cerrada del todo (usuario)
+
+1. **Verificación manual** de [docs/qa/2026-10-01-f1a-verificacion-manual.md](../qa/2026-10-01-f1a-verificacion-manual.md). El usuario verificó el flujo real con wp-env y `npm run dev` el 2026-10-01 (pasos 1b, 3a, 4a, 6a, 10b y 15). El resto de §10 sigue pendiente (1a, 1c, 1d, 2a, 2b, 3b, 4b, 4c, 5a, 5b, 6b, 6c, 7a, 7b, 8, 9a, 9b, 10, 11, 12, 13 y 14). — Origen: T12.
+
+### 12.2 Hallazgos de las revisiones de seguridad de F1a (T13, severidad baja)
+
+2. **`set` en `wp/*` puede volver a crear el token de un sitio quitado.** El índice `profile-sites/` nunca borra; si un motor comprometido llama a `reconnectSite` con el id de un sitio ya quitado, la concesión de `set` sigue siendo válida para ese id. Valorar marcar los sitios quitados en el índice o exigir que el secreto exista para `set`. — `apps/desktop/src-tauri/src/secrets/sites.rs`, `secrets/mod.rs`.
+3. **La auditoría síncrona en el hilo de stdin del motor puede retrasar `secret_response`.** `watch_stdin` inserta cada evento `audit` en la base en el mismo hilo que reparte las respuestas de secretos. Pasar la inserción a una cola o a otro hilo. — `apps/engine/faro_engine/__main__.py`, `core/audit.py`.
+4. **Un fallo al escribir el índice de sitios se informa como `vault.keyring_unavailable`** (con `reason = site_index` solo en la auditoría). Conviene un código propio para no confundirlo con el llavero. — `secrets/mod.rs` (`run_in_keyring`).
+5. **B5: sitio atascado si se borra `profile-sites/`.** Sin índice, el núcleo omite la referencia de ese sitio en las concesiones y no se puede comprobar ni quitar con limpieza. Reconciliar el índice al arrancar (por ejemplo, con la lista de sitios del motor y las credenciales `wp/*` del llavero). — revisión T13.
+6. **Huérfano residual en el llavero** si una `create` se cuelga en el llavero más de unos 10 s: el motor deja de esperar y manda el `delete`, que llega cuando la `create` ya pasó el punto de cancelación; el `delete` responde `ok` sin borrar (`Done::Skipped`) y la `create` termina escribiendo. Resolver con un borrado compensatorio o con la reconciliación del punto 5. — `secrets/mod.rs` (`execute`, `prepare`).
+7. **`pip-audit` y `composer audit` en la máquina del usuario.** La red del usuario tiene Norton interceptando HTTPS. Para PHP se resolvió exportando la CA de Windows a `%USERPROFILE%\.windows-ca.pem`; para `uv`/`pip`, usar `--native-tls` o `SSL_CERT_FILE` (por verificar en la máquina del usuario). En CI no aplica. — T13.
+
+### 12.3 Arrastrados de fases anteriores (F0 y T6)
+
+Hallazgos menores anotados en las revisiones de F0 y de T6; los informes de esas revisiones no están archivados en el repositorio, así que el detalle de cada uno queda **por verificar** cuando se retome.
+
+8. Redacción de `\"` (comilla escapada) en la salida de consola.
+9. Nombre `proxy-authorization` en el filtro de logs por nombre.
+10. Nombres `apikey` y `credentials` en el filtro de logs por nombre.
+11. Error de `GET_LOCK` en el SQLite del plugin (pruebas del plugin).
+12. Detección de salts duplicadas en el plugin.
+13. Cabecera de WooCommerce del plugin: hoy `WC requires at least: 11.1` (`faro.php`); revisar el mínimo real.
+14. Comprobación de `TAURI_CONFIG`.
+15. Código para datos huérfanos.
+16. Permisos de archivos (`profiles.json`, `profile-sites/`, base) en macOS y Linux.
+17. Adoptar un perfil que solo tiene copias de seguridad.
+18. Copias de la llave de la base en memoria de Python (`str` inevitables, ver `core/protocol.py`).
+
+### 12.4 Por fase
+
+**F1b**
+19. Pruebas extremo a extremo automáticas (WebdriverIO + tauri-driver). — §2.4.
+
+**F2 (agentes y auditoría)**
+20. Concesiones que duran toda una tarea de agente, cerradas con un evento `run_finished` o por caducidad (ADR 0010 §3). — §12 original.
+21. Tratar como **datos** el contenido remoto (títulos, URLs, nombre del sitio) en los prompts: nunca como instrucciones. — revisión T13.
+22. Antes de habilitar escrituras, revisar si un atacante podría conectar **su** sitio a Faro mediante XSS en la interfaz o inyección de prompts. — revisión T13.
+23. Sitios solo con URL ("analizar una URL"), inventario de contenido en la base y reutilizar `faro_engine/net` en el rastreador. — §2.2.
+
+**F4 (publicación)**
+24. `/drafts` y `/seo-meta` con `Idempotency-Key` y adaptadores `Faro_Seo_*`. — §2.3.
+25. Reservar el nonce de forma **atómica** antes de las escrituras (hoy leer y guardar el transient no es atómico); hay un `TODO F4` en `packages/wp-plugin/includes/class-faro-signature.php`. — revisión T13.
+
+**Release**
+26. El lanzador PyInstaller nunca pasa `--allow-local-sites` ni `--dev`, con una prueba que lo demuestre. — revisión T13.
+27. Verificación de integridad del binario del sidecar (SHA-256 embebido, skill `tauri-sidecar-python`). — F0.
+28. Empaquetar el zip del plugin como recurso (`bundle.resources`) para `wp_plugin_export`; hoy en release responde `plugin.package_missing`. — §4.3.
+29. Enlace profundo "Abrir Faro en el escritorio". — §2.2.
+30. Empaquetado PyInstaller con la librería SQLCipher (criterio 6 de ADR 0009) y carga de `sqlite-vec` (criterio 5), ambos por verificar. — ADR 0009.
+
+**Más de una conexión por sitio**
+31. `faro_connection` como lista por `connection_id`, con escrituras condicionales (comparar e intercambiar) sobre cada entrada (ADR nuevo). — ADR 0011 §5.
+
+**Soporte Linux**
+32. Revisar los avisos ignorados en `apps/desktop/src-tauri/.cargo/audit.toml` (solo crates exclusivos de Linux). — F0 §14.
+
+**Observaciones del plugin**
+33. Con una caché de objetos persistente (Redis, Memcached), los transients de nonces pueden desalojarse antes de los 10 min y aceptar una repetición dentro de la ventana de ±300 s. — revisión T13.
+34. El límite por IP de `/pair` detrás de un CDN o proxy inverso es compartido por todos los visitantes (no se confía en `X-Forwarded-For`). — revisión T13.
+
+**Posterior**
+35. Restauración de copias y de la llave (`db.key_missing`), visor de auditoría y retención. — §2.3.
+
+---
+
+## 13. Diferencias con lo implementado (cierre T14, 2026-10-01)
+
+Lo construido cumple la spec salvo estas diferencias. Las filas 1–7 y 9 también se reflejan en los ADR 0010, 0012 y 0013 (actualización del 2026-10-01).
+
+### 13.1 Protocolo y secretos
+
+| # | Tema | Spec / ADR original | Implementado | Código |
+| --- | --- | --- | --- | --- |
+| 1 | Formato del protocolo de secretos | ADR 0010 §2 | Sin cambios de forma: stdout motor → núcleo `{"event":"secret_request","id","run_id","op":"get\|create\|set\|delete","ref"[,"value"]}`; stdin núcleo → motor `{"event":"secret_response","id"}` con **uno** de `"value"`, `"ok":true` o `"error"`. Más el evento `audit` por stdin. Detalles nuevos: una línea malformada con `id` válido recibe `vault.secret_not_allowed`; sin `id` válido, se ignora. El motor trata un código de error desconocido o una respuesta que no encaja con `op` como `vault.secret_not_allowed` (falla cerrado). | Motor: `apps/engine/faro_engine/core/secrets.py`, `protocol.py`, `audit.py`. Núcleo: `apps/desktop/src-tauri/src/secrets/` (`request.rs`, `mod.rs`, `audit.rs`) |
+| 2 | Concesiones | Atadas al `run_id`, caducan con la llamada o a `timeout + 5 s` | Además atadas a la **generación del motor** y al **perfil** activos al concederlas. Tras esperar el candado del llavero, el núcleo **revalida** la concesión (sigue viva, mismo motor en marcha) y usa su perfil, no el actual (corrección de TOCTOU). | `secrets/mod.rs` (`Grant`, `prepare`) |
+| 3 | `{new}` | Una sola `create`; `delete` "de lo creado" | Una sola `create` por concesión (aunque falle). El `delete` vale para la referencia **intentada**: si la `create` sigue en cola, la **cancela** (ya no escribirá ni el secreto ni el índice); si no se escribió nada, responde `ok` sin tocar el llavero (`Done::Skipped`, motivo `not_created` en la auditoría). El slot tiene `attempted`, `created` y `cancelled`. | `secrets/mod.rs` (`NewSlot`, `check_grant`, `prepare`) |
+| 4 | Índice de sitios por perfil | No existía | `<app_data_dir>/profile-sites/<perfil>.json` = `{"version":1,"site_ids":[…]}` (ordenado, escritura atómica). Un sitio entra cuando el núcleo crea su `{new}`, **antes** de escribir en el llavero, y **nunca sale**. `wp/{site_id}/token` solo se concede si el sitio es del perfil activo; si no, la ref se **omite** de la concesión (con aviso en el log). Índice ilegible → se falla cerrado y no se sobrescribe. | `secrets/sites.rs` |
+| 5 | Valor de `wp/*/token` | JSON `{"v":1,"token","hmac_secret"}` | JSON compacto **exacto** `{"v":1,"token":"<43>","hmac_secret":"<43>"}` (base64url), en ese orden, sin espacios, ≤ 1 KB, comparado byte a byte. | `secrets/request.rs` (`is_valid_wp_token_value`) |
+| 6 | Espera de cada `secret_request` | 10 s fijos | `min(10 s, plazo restante de la operación)` (`max_wait`); sin tiempo, falla con `vault.secret_timeout` **sin escribir nada** en stdout. | `core/secrets.py` |
+| 7 | Auditoría | Búfer de 500 eventos | Sin cambios: búfer de 500 mientras el motor no está listo o la base no está disponible; descarta los más viejos. | `secrets/audit.rs` (`AUDIT_BUFFER`) |
+
+### 13.2 Motor
+
+| # | Tema | Spec / ADR original | Implementado | Código |
+| --- | --- | --- | --- | --- |
+| 8 | Presupuesto de tiempos de `connectSite` | Núcleo 60 s, motor 55 s | El trabajo (descubrir, `pair`, `create`, `status`, insertar) puede llegar hasta los **45 s**; los últimos **10 s** del plazo del motor (`UNDO_RESERVE_SECONDS`) quedan para deshacer: primero el `delete` del secreto y después el `revoke` remoto, sin reintentos y con **5 s** como mucho (`UNDO_REVOKE_SECONDS`). La inserción en la base también va acotada por el plazo del trabajo (`site.timeout`). Sin tiempo para deshacer, no se envía la `create`. `removeSite` reserva lo mismo para el `delete` final tras el `revoke`. | `core/config.py`, `sites/service.py`, `net/client.py` (`Deadline.ending_before`, `capped`, `SafeHttpClient.limited_to`) |
+| 9 | `--allow-local-sites` | Núcleo: debug + `.env.local`. Motor `--dev`: el valor de `.env.local` | Núcleo: build debug **y** `FARO_ALLOW_LOCAL_SITES=1`, leída del entorno del proceso o de `.env.local`. Motor: rechazado con `sys.frozen` (código 2). En `--dev` basta el argumento **o** la variable. **Decisión T14:** ADR 0012 se alinea con el código (motivos en su actualización). | `src-tauri/src/engine/mod.rs`, `apps/engine/faro_engine/__main__.py` |
+| 10 | Protección de red (más estricta) | ADR 0012 reglas 1–8 | Se rechaza toda dirección que no sea **global** (además de la lista explícita), incluidas IPv4 mapeadas y **NAT64** hacia una prohibida; el `http` del modo local solo va a `localhost`, `127.0.0.1` y `::1` y esos nombres deben resolver solo a loopback; se pide `Accept-Encoding: identity` y se rechaza cualquier respuesta comprimida (`site.bad_response`); el descubrimiento solo envía el código al mismo host o a su variante con o sin `www.` (mismo esquema y puerto), si no `site.moved`; la `url` de cada elemento de contenido debe empezar por `http://` o `https://`; hosts con última etiqueta numérica o hexadecimal se rechazan. | `net/guard.py`, `net/urls.py`, `net/client.py`, `sites/service.py` (`same_site`), `wordpress/client.py` |
+| 11 | Plazo de `getHealth` | "—" en §5.2 | `timeout_seconds = 10` (toda operación declara los dos campos). | `packages/shared/engine-operations.json` |
+
+### 13.3 Interfaz
+
+| # | Tema | Spec original | Implementado | Código |
+| --- | --- | --- | --- | --- |
+| 12 | Enlaces | URL como texto | Confirmado: ningún `<a href>` con URLs del sitio en la interfaz y ninguna capability `opener:*`. `tauri-plugin-opener` se usa solo desde Rust y ni siquiera se registra como plugin. | `src-tauri/capabilities/main.json`, `src-tauri/src/wp_plugin.rs`, `tests/acl.rs` |
+| 13 | Código de vinculación | Sin `useMutation` | Confirmado: el código no pasa por `useMutation`, la caché de Query ni el almacenamiento. | `features/sites/ConnectSiteDialog.tsx` |
+| 14 | Quitar un sitio ya desconectado | Sin aviso | Toast extra de éxito "Quitamos {{name}} de tu lista." (clave `sites.toast.removed`). | `features/sites/RemoveSiteDialog.tsx` |
+| 15 | Chip de conexión | `ConnectionChip` | `SiteStatusChip.tsx` (mismo comportamiento). | `features/sites/` |
+
+### 13.4 Plugin
+
+| # | Tema | Spec original | Implementado | Código |
+| --- | --- | --- | --- | --- |
+| 16 | Escrituras de opciones | `update_option` | `Faro_Option_Store`: leer el valor crudo, **comparar e intercambiar** y borrar condicional con `BINARY option_value = %s`, sin recrear nunca la opción. `Faro_Connection::touch()` (actualiza `last_seen_at`) nunca recrea la conexión y solo se ejecuta si coincide el `connection_id` que firmó la petición (hallazgo B1 de T13). `Faro_Pairing` usa el mismo almacén para los intentos. | `includes/class-faro-option-store.php`, `class-faro-connection.php`, `class-faro-signature.php`, `class-faro-pairing.php` |
+| 17 | Estructura | §4.1 | Clases añadidas: `Faro_Clock`, `Faro_Errors`, `Faro_Connection`, `Faro_Option_Store`. | `packages/wp-plugin/includes/` |
+| 18 | Versiones fijadas | WP 6.x, WooCommerce fijada, PHP 8.3; mínima WP 6.0 + PHP 8.1 | `.wp-env.json`: WordPress 7.1.2 + WooCommerce 11.1.2 + PHP 8.3. `.wp-env.min.json`: WordPress 6.0.16 + PHP 8.1, sin WooCommerce (puertos 8890/8891). `Requires at least: 6.0` se mantiene. PHPStan nivel **8** (spec: ≥ 6). | `packages/wp-plugin/` |
+
+### 13.5 Núcleo, CI y QA
+
+| # | Tema | Spec original | Implementado | Código |
+| --- | --- | --- | --- | --- |
+| 19 | Cobertura de Rust | 80 % global, 95 % en `vault/`, `secrets/`, `profile/`, `engine/protocol.rs` | Confirmado, por líneas, con `scripts/check-rust-coverage.mjs` (un prefijo sin archivos es error). Las pruebas grandes van en archivos aparte (`*_tests.rs` o `tests.rs`, con `#[path]`) para que `cargo llvm-cov` las excluya del informe. `KeyringStore` acepta un constructor de credenciales mock solo bajo `cfg(test)`. En local: `npm run coverage:core`. | `.github/workflows/ci.yml` (`core`), `package.json`, `src/vault/store.rs` |
+| 20 | §10, paso 5 (código ya usado) | Con el sitio conectado | No alcanzable: el motor responde antes `site.already_connected`. Reescrito para hacerlo desde **Volver a conectar**. | §10 |
+| 21 | Lista manual | `docs/qa/2026-xx-xx-…` | `docs/qa/2026-10-01-f1a-verificacion-manual.md`. Verificado por el usuario el 2026-10-01 el flujo real con wp-env; el resto, pendiente (§12.1). | `docs/qa/` |
+| 22 | Filtro de logs por nombre | Solo Python (ADR 0013 §3) | También en Rust, con las mismas listas (prueba de paridad); patrón `Basic …` añadido; ver ADR 0013 (actualización). | `src-tauri/src/logging/redact.rs`, `faro_engine/core/redact.py` |
+| 23 | Librería SQLCipher | A elegir en T1 | `sqlcipher3-wheels` (`>=0.5.7,<0.6`); ver ADR 0009 (actualización). | `apps/engine/pyproject.toml` |
+| 24 | T14 | El arquitecto pide al agente principal que actualice las skills | Con autorización del usuario, el arquitecto actualizó directamente las skills `llavero-y-cifrado`, `tauri-sidecar-python`, `contratos-api-local`, `wordpress-plugin`, `migraciones-sqlite`, `faro-arquitectura` y `pruebas-faro`. | `.claude/skills/` |

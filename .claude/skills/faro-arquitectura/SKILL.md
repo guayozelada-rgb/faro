@@ -20,9 +20,11 @@ Nube mínima (FastAPI + Postgres): licencias, relay de Google Ads, manifiesto de
 ```
 
 Reglas de comunicación:
-- La interfaz **solo** llama comandos Tauri. Nunca abre sockets ni hace `fetch` a localhost.
+- La interfaz **solo** llama comandos Tauri. Nunca abre sockets ni hace `fetch` a localhost. Las operaciones del motor van por un único comando, `engine_call`, con lista permitida (skill `contratos-api-local`).
 - El núcleo es el único que conoce el puerto y el token del motor.
-- El motor pide secretos al núcleo cuando va a usarlos (ver skill `tauri-sidecar-python`); no los guarda en disco.
+- Protocolo por stdin/stdout (ADR 0004 y 0010): token, `db_key`, `ready`, `shutdown`, `secret_request`/`secret_response` y `audit` (skill `tauri-sidecar-python`).
+- El motor pide secretos al núcleo cuando va a usarlos, solo dentro de una concesión por operación (skill `llavero-y-cifrado`); no los guarda en disco. El núcleo nunca habla con sitios WordPress: todas las peticiones a sitios las hace el motor (ADR 0011).
+- Toda petición saliente del motor a una URL no fija en código pasa por `faro_engine/net` (SSRF, IP fijada, tiempos, tamaño; ADR 0012).
 - Google Ads siempre pasa por el relay de la nube; el developer token nunca está en la app.
 
 ## Repositorio
@@ -31,7 +33,10 @@ Reglas de comunicación:
 | --- | --- | --- | --- |
 | `apps/desktop/src` | Interfaz | React + TS | frontend-react |
 | `apps/desktop/src-tauri` | Núcleo | Rust | tauri-rust |
-| `apps/engine/faro_engine/core` | Servidor local, cola, programador, BD | Python 3.12 | motor-python |
+| `apps/engine/faro_engine/core` | Servidor local, protocolo, canal de secretos, auditoría, BD, logs, cola y programador (futuros) | Python 3.12 | motor-python |
+| `apps/engine/faro_engine/net` | Red saliente común: URLs, guardia SSRF, cliente HTTP con plazos | Python | motor-python (F2 lo reutilizan `seo-datos` e `ingeniero-ia`) |
+| `apps/engine/faro_engine/wordpress` | Cliente único del plugin: firma, descubrir, vincular, leer, revocar | Python | motor-python (F4 añade escrituras) |
+| `apps/engine/faro_engine/sites` | Casos de uso de sitios conectados y su repositorio en la BD | Python | motor-python |
 | `apps/engine/faro_engine/agents` | Agentes del producto | Python | ingeniero-ia |
 | `apps/engine/faro_engine/seo` | Crawler, SERP, clustering | Python | seo-datos |
 | `apps/engine/faro_engine/ads` | Google Ads | Python | google-ads |
@@ -40,6 +45,33 @@ Reglas de comunicación:
 | `packages/shared` | Tipos generados desde OpenAPI | TS | frontend-react |
 | `docs/specs`, `docs/adr` | Especificaciones y decisiones | Markdown | arquitecto |
 | `.github/`, `scripts/` | CI/CD y build | YAML, shell | devops-release |
+
+### Módulos del núcleo (`apps/desktop/src-tauri/src`)
+
+| Módulo | Qué hace |
+| --- | --- |
+| `engine/` | Supervisor del motor (lanzador, protocolo stdin/stdout, salud, reinicios) y `call.rs` (`engine_call`: lista permitida, parámetros, plazos, reenvío) |
+| `secrets/` | `SecretBroker`: canal `secret_request`, concesiones por operación, índice de sitios por perfil (`sites.rs`), cola de auditoría (`audit.rs`) |
+| `vault/` | Bóveda de claves de IA y `SecretStore` / `KeyringStore` (llavero del SO) |
+| `profile/` | Perfil activo (`profiles.json`) y llave de la base |
+| `logging/` | `tracing` en JSON con filtro de secretos por nombre y valor (`redact.rs`) |
+| `commands/` | Comandos Tauri (`engine_*`, `vault_*`, `wp_plugin_export`) |
+| `wp_plugin.rs` | Exportar el zip del plugin a Descargas |
+
+### Módulos del motor (`apps/engine/faro_engine`)
+
+```
+__main__.py            arranque: token, db_key, base, ready, hilo de stdin
+core/  app.py security.py protocol.py secrets.py audit.py run_id.py operations.py
+       config.py redact.py logging.py errors.py ids.py
+       db/ (connection, database, migrations, backups, profile, migrations/*.sql)
+       routes/ (health, sites)  schemas/ (common, sites)
+net/   urls.py (normalización)  guard.py (SSRF, IP fijada)  client.py (httpx, Deadline, reintentos)
+wordpress/  signing.py  client.py  errors.py (wp.* → site.*)
+sites/ service.py (connect, reconnect, check, list_content, remove)  repository.py (SQL)
+```
+
+Regla: las rutas (`core/routes/`) solo validan y llaman a un caso de uso; la lógica vive en el paquete de dominio (`sites/`), las peticiones a sitios en `wordpress/` y toda la red en `net/`.
 
 ## Convenciones
 
@@ -75,4 +107,5 @@ Reglas de comunicación:
 ## Documentación
 - Funcionalidad nueva → especificación en `docs/specs/` (agente `arquitecto`).
 - Decisión que afecta a varias funcionalidades → ADR en `docs/adr/`.
-- El plan de producto completo está en el documento "Plan de producto: App de Marketing Digital con Agentes IA".
+- Al cerrar una fase: la spec pasa a "implementada" con una sección de diferencias y otra de pendientes, y se actualizan los ADR y las skills afectados (F0 §13–14, F1a §12–13).
+- Los documentos privados del usuario no van al repositorio: ni su contenido, ni su nombre, ni su ruta.

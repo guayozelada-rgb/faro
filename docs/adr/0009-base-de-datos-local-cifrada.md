@@ -1,7 +1,7 @@
 # ADR 0009 — Base de datos local cifrada: formato, librería, perfil, llave y compatibilidad de versiones
 
 - **Fecha:** 2026-09-29
-- **Estado:** aceptado, con la **elección de librería pendiente de verificación** (tarea T1 de la spec F1a; este ADR se actualiza con el resultado)
+- **Estado:** aceptado. Librería elegida: **`sqlcipher3-wheels`** (actualización del 2026-10-01, al final)
 - **Spec:** [F1a — Conexión con WordPress](../specs/2026-09-29-f1a-conexion-wordpress.md)
 - **Skills:** `migraciones-sqlite`, `llavero-y-cifrado`, `tauri-sidecar-python`
 
@@ -74,3 +74,25 @@ Si **ninguna** cumple 1–4, F1a se bloquea y el arquitecto propone alternativa 
 - `db.key_missing` en F1a no tiene restauración desde la interfaz: se muestra el error. La restauración de copias y llaves queda para una fase posterior.
 - En modo desarrollo externo (`--dev`, ADR 0004) el motor usa una base **de desarrollo** propia (`--data-dir` distinto) cuya llave viene de `.env.local` (`FARO_ENGINE_DEV_DB_KEY`). Es una excepción consciente a "la llave nunca en archivos": solo en `--dev`, rechazado con `sys.frozen`, nunca con datos reales del usuario.
 - `profiles.json` se convierte en el sitio donde se añadirán más perfiles en el futuro.
+
+## Actualización (2026-10-01, cierre de F1a)
+
+### Librería elegida: `sqlcipher3-wheels`
+
+Fijada en `apps/engine/pyproject.toml` como `sqlcipher3-wheels>=0.5.7,<0.6` (0.5.7 en `uv.lock`). Solo la importa `faro_engine/core/db/connection.py` (`from sqlcipher3 import dbapi2`). No hizo falta probar `apsw-sqlite3mc`.
+
+| # | Criterio | Resultado | Evidencia en el repositorio |
+| --- | --- | --- | --- |
+| 1 | Ruedas `cp312` para las cuatro plataformas | Cumplido | `uv.lock`: `win_amd64`, `macosx_11_0_arm64`, `macosx_10_13_x86_64`, `macosx_10_13_universal2`, `manylinux_2_28_x86_64` (y más) |
+| 2 | Pruebas de `tests/db/` en las tres plataformas de CI | Cumplido | Trabajo `engine` con matriz `ubuntu-latest`, `windows-latest`, `macos-latest`, requerido por `ci-ok` |
+| 3 | SQLite ≥ 3.37 | Cumplido | `tests/db/test_connection.py::test_sqlite_supports_strict_tables` |
+| 4 | Ilegible sin llave; otra llave falla | Cumplido | `test_open_creates_encrypted_file_not_readable_without_key`, `test_wrong_key_is_db_wrong_key_and_stderr_stays_empty` |
+| 5 | `enable_load_extension` y `sqlite-vec` | **Por verificar** | No hay prueba marcada `vec` en el repositorio. Se acepta la librería (el criterio no bloquea, §2) y queda para la fase que use `sqlite-vec` |
+| 6 | PyInstaller `--onedir` en Windows | **Por verificar** | Sin script ni evidencia en el repositorio; queda para la fase de release |
+| 7 | Mantenida, licencia compatible, `pip-audit` limpio | `pip-audit` cumplido en CI (trabajo `audit`); mantenimiento y licencia **por verificar** (no documentados en el repositorio) | `.github/workflows/ci.yml` |
+
+### Decisiones de implementación que afectan a todas las fases
+
+- **`PRAGMA cipher_log_level = NONE` antes de `PRAGMA key`** en cada conexión: sin él, SQLCipher escribe texto UTF-16 en stderr (el canal de logs JSON) cuando la llave es incorrecta.
+- La llave llega como `bytearray`; `open_encrypted` no la sobrescribe (lo hace quien la recibió). La sentencia `PRAGMA key` es un `str` inevitable que vive lo mínimo (pendiente "copias de la llave en memoria de Python", spec F1a §12).
+- La única migración de F1a es `0001_initial.sql` (`sites`, `site_connections`, `audit_log`); `user_version = 1`.

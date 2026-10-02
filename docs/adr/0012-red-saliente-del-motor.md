@@ -1,7 +1,7 @@
 # ADR 0012 — Red saliente del motor: SSRF, tiempos, reintentos y sitios locales en desarrollo
 
 - **Fecha:** 2026-09-29
-- **Estado:** aceptado
+- **Estado:** aceptado; actualizado el 2026-10-01 (cierre de F1a, al final)
 - **Spec:** [F1a — Conexión con WordPress](../specs/2026-09-29-f1a-conexion-wordpress.md)
 - **Skill:** `revision-seguridad` §5
 
@@ -33,3 +33,38 @@ Las redes privadas siguen prohibidas también en este modo.
 - El rastreador de F2 reutiliza `faro_engine/net/` (añadirá robots.txt y límites por dominio).
 - Sitios que solo funcionan por `http`, en un puerto distinto de 443, detrás de un proxy corporativo obligatorio o en la red local del usuario no se pueden conectar en F1a. Se acepta: el usuario objetivo tiene su tienda publicada con HTTPS.
 - Cobertura del 95 % exigida en el módulo de guardia de red.
+
+## Actualización (2026-10-01, cierre de F1a)
+
+### 1. Reglas más estrictas que las de arriba (ya implementadas)
+
+- **Regla 2**: además de la lista, se rechaza toda dirección que Python no considere **global** (`is_global`), incluidas las de documentación, y las IPv6 de **NAT64** (`64:ff9b::/96`) o IPv4 mapeadas que apunten a una dirección prohibida.
+- **Regla 1**: se rechazan los hosts cuya última etiqueta es numérica o hexadecimal (formas raras de escribir una IP) y los `*.localhost`.
+- **Modo local**: el `http` solo va a `localhost`, `127.0.0.1` y `::1`, y esos nombres deben resolver **solo** a loopback.
+- **Compresión**: el cliente pide `Accept-Encoding: identity` y rechaza cualquier respuesta con otra `Content-Encoding` (`site.bad_response`), para que el límite de 5 MB no se pueda saltar con una respuesta comprimida.
+- **Descubrimiento (regla 4)**: el código de vinculación solo se envía al mismo host que escribió el usuario o a su variante con o sin `www.` (mismo esquema y puerto). Una redirección a otro host → `site.moved` antes de llamar a `/pair`.
+- **Contenido**: la `url` de cada elemento que devuelve el plugin debe empezar por `http://` o `https://`; si no, la respuesta es inválida.
+
+### 2. Reserva para deshacer dentro del plazo del motor (regla 6)
+
+El plazo total del motor (5 s menos que el `x-faro-timeout-seconds` del núcleo) se reparte así en las operaciones que crean o borran secretos:
+
+- **`connectSite`** (núcleo 60 s, motor 55 s): el trabajo (descubrir, `pair`, `create`, `status`, insertar en la base) puede durar hasta los **45 s**. Los últimos **10 s** (`UNDO_RESERVE_SECONDS`) quedan para deshacer una vinculación a medias: primero el `delete` del secreto (lo crítico: un secreto huérfano no lo ve nadie) y después el `revoke` remoto, sin reintentos y con **5 s** como mucho (`UNDO_REVOKE_SECONDS`). Así el `delete` llega mientras la concesión del núcleo sigue viva (caduca a `timeout + 5 s`).
+- La inserción en la base también va acotada por el plazo del trabajo (`site.timeout`).
+- Si ya no queda tiempo de trabajo, no se envía la `create`: solo se revoca el `pair`.
+- Cada `secret_request` espera `min(10 s, plazo restante)`; sin tiempo, falla cerrado sin escribir nada (ADR 0010, actualización D).
+- **`removeSite`**: el `revoke` termina `UNDO_RESERVE_SECONDS` antes del final, para que el `delete` del secreto tenga su tiempo.
+- Código: `faro_engine/core/config.py`, `sites/service.py`, `net/client.py` (`Deadline.ending_before`, `Deadline.capped`, `SafeHttpClient.limited_to`).
+
+### 3. Modo de sitios locales en `--dev`: se alinea el ADR con el código
+
+**Decisión:** en el motor con `--dev`, el modo de sitios locales se activa con el argumento `--allow-local-sites` **o** con `FARO_ALLOW_LOCAL_SITES=1` en `.env.local`; cualquiera de los dos basta. Sustituye a "o el motor corre con `--dev` y el mismo valor está en `.env.local`" de arriba. El modo gestionado no cambia: el núcleo pasa el argumento solo en un build de depuración **y** con `FARO_ALLOW_LOCAL_SITES=1` (leída del entorno del proceso o de `.env.local`).
+
+Motivos:
+
+- La doble llave del modo gestionado protege contra que el **núcleo** active el modo sin querer. En `--dev` no hay núcleo de por medio: el argumento lo escribe el propio desarrollador en su línea de comandos, que ya es una decisión explícita.
+- `--dev` ya exige un motor no empaquetado (`sys.frozen` → código 2) y un `.env.local` con token propio; un build empaquetado rechaza tanto `--dev` como `--allow-local-sites`.
+- En `--dev` no hay canal de secretos (`engine.secrets_unavailable`): ninguna operación con sitios puede terminar. Como mucho se descubre y vincula un WordPress en loopback, y la vinculación se deshace al fallar la `create`.
+- Las redes privadas siguen prohibidas también en este modo, y el puerto del propio motor también.
+
+Pendiente de release (spec F1a §12): una prueba que demuestre que el lanzador PyInstaller nunca pasa `--allow-local-sites` ni `--dev`.
