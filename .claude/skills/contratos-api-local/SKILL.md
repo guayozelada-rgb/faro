@@ -10,11 +10,16 @@ El motor Python expone una API FastAPI en `127.0.0.1`. Su esquema OpenAPI es la 
 ## Flujo de una llamada
 
 ```
-React → api.call("listCrawlIssues", {crawl_id}) 
-      → invoke("engine_call", {operation, params, body})
-      → Rust valida operation contra la lista permitida, añade Authorization y reenvía
-      → FastAPI → respuesta JSON → Rust → React
+React → api.call("listSiteContent", { path: { site_id }, query: { kind } })
+      → invoke("engine_call", { request: { operation, path?, query?, body? } })
+      → Rust valida operation contra la lista permitida y los parámetros de ruta,
+        crea la concesión de secretos si hace falta, añade Authorization (+ X-Faro-Run-Id) y reenvía
+      → FastAPI → respuesta JSON → Rust → React (los errores {code, message, details} del motor, sin cambios)
 ```
+
+- Parámetros de ruta: `^[A-Za-z0-9_-]{1,64}$` y, si aparecen en `secrets`, UUID canónico (`engine.invalid_request`). Cuerpo JSON ≤ 256 KB. Motor no listo → `engine.not_ready`.
+- `X-Faro-Run-Id` solo va en operaciones con `secrets`. El núcleo nunca registra cuerpos, parámetros de consulta ni respuestas.
+- Datos sensibles del usuario (p. ej. el código de vinculación) **no** van por `useMutation`: llama a la función de `lib/api/` desde el manejador del formulario y luego invalida la consulta.
 
 - El comando Rust `engine_call` solo acepta `operationId` presentes en `packages/shared/engine-operations.json` (generado, incrustado en el núcleo al compilar). Cualquier otro se rechaza con `engine.operation_not_allowed`.
 - De ese mismo archivo el núcleo toma el **tiempo máximo** de cada operación (`engine.timeout`) y los **secretos** que puede pedir durante la llamada (concesión, ADR 0010 §3).
@@ -87,6 +92,20 @@ Eso genera las extensiones `x-faro-timeout-seconds` y `x-faro-secrets` en `opena
 }
 ```
 
+### Operaciones actuales (F1a, `packages/shared/engine-operations.json`)
+
+| `operationId` | Método y ruta | `timeout_seconds` | `secrets` |
+| --- | --- | --- | --- |
+| `getHealth` | GET `/health` | 10 | — |
+| `listSites` | GET `/sites` | 10 | — |
+| `connectSite` | POST `/sites` | 60 | `wp/{new}/token`: `create`, `delete` |
+| `reconnectSite` | PUT `/sites/{site_id}/connection` | 60 | `wp/{site_id}/token`: `set` |
+| `checkSiteConnection` | POST `/sites/{site_id}/check` | 45 | `wp/{site_id}/token`: `get` |
+| `listSiteContent` | GET `/sites/{site_id}/content` | 45 | `wp/{site_id}/token`: `get` |
+| `removeSite` | DELETE `/sites/{site_id}` | 45 | `wp/{site_id}/token`: `get`, `delete` |
+
+El motor construye el plazo de cada operación como `Deadline(timeout_seconds - 5)` (`core/routes/sites.py`). Las operaciones que crean o borran secretos reservan además los últimos 10 s de ese plazo para deshacer (`UNDO_RESERVE_SECONDS`, ADR 0012): si añades una, sigue el patrón de `sites/service.py`.
+
 Reglas (las comprueban `create_app` al arrancar el motor, `scripts/generate-contracts.mjs` al generar y `npm run test:contracts`):
 
 - **Los dos campos son obligatorios** en toda operación; sin secretos, `secrets=[]`. No se admite ninguna otra extensión `x-faro-*`.
@@ -104,6 +123,7 @@ Reglas (las comprueban `create_app` al arrancar el motor, `scripts/generate-cont
 
 Se guarda en el orden canónico `get`, `create`, `set`, `delete`; `secrets` se ordena por `ref`. Una `ref` no puede aparecer dos veces. La tabla vive en `ACCESS_BY_KIND` de `core/operations.py` y de `scripts/generate-contracts.mjs`: cámbiala en los dos a la vez.
 - Pide el mínimo: una operación con `secrets=[]` no obtiene ningún secreto aunque el motor lo pida. **Cualquier cambio en `secrets` requiere revisión de `revisor-seguridad`** (la plantilla de PR lo recuerda desde T10).
+- `wp/{site_id}/token` solo se concede si el sitio está en el índice de sitios del perfil activo del núcleo; `{new}` añade el sitio a ese índice al crear su secreto (skill `llavero-y-cifrado`).
 
 ## Reglas
 - Nunca devuelvas secretos en una respuesta; para claves usa `KeySummary` (`provider`, `alias`, `last4`, `status`, `last_used_at`).
