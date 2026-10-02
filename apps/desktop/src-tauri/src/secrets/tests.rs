@@ -790,6 +790,63 @@ async fn solicitud_malformada_se_rechaza_y_sin_id_no_se_responde() {
     assert_eq!(audit["action"], "secret.denied");
 }
 
+/// Spec F1a §9.1: una `secret_request` malformada o rechazada se ignora sin registrar
+/// su contenido, aunque el motor ponga un secreto en cualquiera de sus campos.
+#[tokio::test(flavor = "current_thread")]
+async fn solicitudes_malformadas_o_rechazadas_no_registran_su_contenido() {
+    let (logs, _guard) = crate::test_logs::capture();
+    let mut s = setup().await;
+    let guard = s.grant("checkSiteConnection", site_path(SITE));
+    let run_id = guard.run_id().to_owned();
+    let value = serde_json::to_string(&wp_value(TOKEN)).unwrap();
+    let lines = [
+        // Tipo inválido (`run_id` numérico) con un valor: se responde por `id`.
+        format!(
+            r#"{{"event":"secret_request","id":"{REQUEST_ID}","run_id":5,"op":"create","ref":"wp/{NEW_SITE}/token","value":{value}}}"#
+        ),
+        // `id` que no es UUID (es el propio token): no se puede responder.
+        format!(
+            r#"{{"event":"secret_request","id":"{TOKEN}","run_id":"{run_id}","op":"create","ref":"wp/{NEW_SITE}/token","value":{value}}}"#
+        ),
+        // JSON cortado con el valor dentro.
+        format!(r#"{{"event":"secret_request","id":"{REQUEST_ID}","value":{value}"#),
+        // Campo desconocido con el valor.
+        format!(
+            r#"{{"event":"secret_request","id":"{REQUEST_ID}","run_id":"{run_id}","op":"get","ref":"wp/{SITE}/token","extra":{value}}}"#
+        ),
+        // Secretos en `run_id`, `op` y `ref`.
+        request_line(TOKEN, "get", &wp(SITE), None),
+        request_line(&run_id, HMAC, &wp(SITE), None),
+        request_line(&run_id, "get", &format!("wp/{TOKEN}/token"), None),
+        // Valor en una operación no concedida.
+        request_line(&run_id, "set", &wp(SITE), Some(&wp_value(TOKEN))),
+    ];
+    let mut outputs = Vec::new();
+    for line in &lines {
+        if let Some(response) = s.broker.handle_line(line).await {
+            let response: Value = serde_json::from_str(&response).unwrap();
+            assert!(response.get("error").is_some(), "{response}");
+            outputs.push(response.to_string());
+        }
+        let audit = s.next_audit().await;
+        assert_eq!(audit["action"], "secret.denied", "{audit}");
+        outputs.push(audit.to_string());
+    }
+    assert_eq!(s.stored(&wp(NEW_SITE)), None);
+    assert_eq!(s.stored(&wp(SITE)), None);
+    let text = logs.text();
+    assert!(
+        text.contains("solicitud de secreto"),
+        "la captura no funciona"
+    );
+    outputs.push(text);
+    for text in outputs {
+        for secret in [TOKEN, HMAC, "ficticio"] {
+            assert!(!text.contains(secret), "contenido en la salida: {text}");
+        }
+    }
+}
+
 // ---------- auditoría, logs y Debug sin secretos ----------
 
 #[tokio::test(flavor = "current_thread")]
