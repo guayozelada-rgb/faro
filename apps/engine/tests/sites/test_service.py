@@ -3,6 +3,7 @@ memoria. Nunca se toca la red ni el llavero real."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -20,7 +21,7 @@ from faro_engine.core.schemas.sites import SiteOut
 from faro_engine.net.client import Deadline, SafeHttpClient
 from faro_engine.sites import repository
 from faro_engine.sites.repository import ConnectionRecord, SiteRecord
-from faro_engine.sites.service import normalize_pairing_code, same_site, site_out
+from faro_engine.sites.service import SitesService, normalize_pairing_code, same_site, site_out
 from tests.fakes.net import SITE_URL, json_response, wp_error
 from tests.fakes.wordpress import FakeConnection
 from tests.sites.conftest import NOW_TEXT, RUN_ID, FakeClock, World
@@ -393,6 +394,39 @@ async def test_connect_without_undo_margin_creates_nothing(world: World) -> None
     assert world.wp.connection is None  # el `pair` se revocó
     assert world.events[-1] == "http DELETE /wp-json/faro/v1/connection"
     assert world.query("SELECT id FROM sites") == []
+
+
+async def test_connect_status_past_work_deadline_skips_insert_and_undoes(world: World) -> None:
+    # `status()` termina pasado el plazo de trabajo: no se inserta y el deshacer conserva
+    # su reserva entera para borrar el secreto y revocar.
+    clock = FakeClock()
+    _advance_on_http(world, clock, "GET", "/faro/v1/status", 45.5)
+    code = world.wp.create_code()
+    with pytest.raises(FaroError) as info:
+        await world.service(clock=clock).connect(SITE_URL, code)
+    assert info.value.code == "site.timeout"
+    assert world.vault.store == {}
+    assert world.wp.connection is None
+    assert world.query("SELECT id FROM sites") == []
+
+
+async def test_connect_slow_insert_is_cut_and_undone(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # La base (candado + busy_timeout) no puede comerse la reserva del deshacer.
+    clock = FakeClock()
+    _advance_on_http(world, clock, "GET", "/faro/v1/status", 44.99)
+
+    async def slow_insert(self: object, record: object, now: str) -> None:
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(SitesService, "_insert", slow_insert)
+    code = world.wp.create_code()
+    with pytest.raises(FaroError) as info:
+        await world.service(clock=clock).connect(SITE_URL, code)
+    assert info.value.code == "site.timeout"
+    assert world.vault.store == {}
+    assert world.wp.connection is None
 
 
 async def test_connect_with_just_enough_margin_succeeds(world: World) -> None:

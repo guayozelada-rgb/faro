@@ -28,6 +28,7 @@ Reglas:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hmac
 import re
@@ -49,6 +50,7 @@ from faro_engine.core.errors import (
     SITE_MOVED,
     SITE_NOT_FOUND,
     SITE_SECRET_MISSING,
+    SITE_TIMEOUT,
     VAULT_NOT_FOUND,
     FaroError,
     site_error,
@@ -350,7 +352,13 @@ class SitesService:
                             **status_fields(remote),  # type: ignore[arg-type]
                         ),
                     )
-                    await self._insert(record, now)
+                    # La base tampoco puede comerse la reserva del deshacer.
+                    work.check()
+                    try:
+                        async with asyncio.timeout(work.remaining()):
+                            await self._insert(record, now)
+                    except TimeoutError:
+                        raise site_error(SITE_TIMEOUT) from None
                 except BaseException:
                     await self._undo_connect(
                         http, wp, found.api_root, credentials, ref if create_sent else None

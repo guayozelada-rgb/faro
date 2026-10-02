@@ -45,7 +45,7 @@ final class Faro_Option_Store {
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Comparar e intercambiar atómico; la caché se invalida abajo.
 		$rows = $wpdb->query(
 			$wpdb->prepare(
-				"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
+				"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND BINARY option_value = %s",
 				$new_raw,
 				$option,
 				$expected_raw
@@ -68,7 +68,7 @@ final class Faro_Option_Store {
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Borrado condicional atómico; la caché se invalida abajo.
 		$rows = $wpdb->query(
 			$wpdb->prepare(
-				"DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
+				"DELETE FROM {$wpdb->options} WHERE option_name = %s AND BINARY option_value = %s",
 				$option,
 				$expected_raw
 			)
