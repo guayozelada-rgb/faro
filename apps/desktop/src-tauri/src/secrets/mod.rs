@@ -9,7 +9,11 @@
 //!    `vault.secret_not_allowed`;
 //! 3. referencia y operación concedidas → `vault.secret_not_allowed`. `{new}` permite
 //!    **una sola** `create` por concesión, de una referencia que no exista
-//!    (`vault.already_exists`), y el `delete` solo de lo creado en esa misma concesión;
+//!    (`vault.already_exists`), y el `delete` solo de la referencia que esa misma
+//!    concesión intentó crear. El `delete` se acepta aunque la `create` siga en cola o
+//!    haya fallado (el motor deshace al agotar su espera): solo borra del llavero si la
+//!    `create` llegó a escribir; si no, responde `ok` sin tocarlo y cancela la `create`
+//!    pendiente, que después se rechaza sin escribir ni el secreto ni el índice;
 //! 4. `db/*` **nunca** → `vault.secret_not_allowed`;
 //! 5. para `get`, que exista → `vault.not_found`;
 //! 6. para `create`/`set`, la forma del valor (`wp/*/token`: ADR 0011 §3) →
@@ -69,12 +73,20 @@ const ALREADY_EXISTS: &str = "vault.already_exists";
 const INVALID_INPUT: &str = "vault.invalid_input";
 const KEYRING_UNAVAILABLE: &str = "vault.keyring_unavailable";
 
-/// `{new}` de una concesión: una sola `create` y el `delete` de lo creado.
+/// `{new}` de una concesión: una sola `create` y el `delete` de esa misma referencia.
+///
+/// Venga en el orden que venga (`create` y luego `delete`, o un `delete` con la `create`
+/// todavía esperando el llavero), al final no queda secreto en el llavero.
 #[derive(Debug)]
 struct NewSlot {
     allow_delete: bool,
-    attempted: bool,
+    /// Referencia de la única `create` de la concesión, haya terminado bien o no.
+    attempted: Option<String>,
+    /// Se fija solo cuando la `create` escribió en el llavero.
     created: Option<String>,
+    /// Llegó un `delete` antes de que la `create` escribiera: si todavía no se ejecutó,
+    /// ya no escribirá.
+    cancelled: bool,
 }
 
 #[derive(Debug)]
@@ -122,7 +134,17 @@ type GrantCheck = Result<(Permit, Option<&'static str>), (Denial, Option<&'stati
 enum Done {
     Value(SecretString),
     Ok(Action),
+    /// Bien sin tocar el llavero (nada que hacer), con el motivo para la auditoría.
+    Skipped(Action, &'static str),
     Failed(Action, &'static str, Option<&'static str>),
+}
+
+/// Qué hacer tras el candado del llavero, según la concesión en ese momento.
+enum Step {
+    /// Ejecutar en el llavero con el perfil de la concesión.
+    Run(Option<String>),
+    /// `delete` de `{new}` sin nada creado: responder bien sin tocar el llavero.
+    Skip,
 }
 
 /// Concesión de una llamada en curso. Al soltarse, la concesión desaparece.
@@ -279,8 +301,9 @@ impl SecretBroker {
                     if profile_id.is_some() {
                         new_slot = Some(NewSlot {
                             allow_delete: ops.contains(&Op::Delete),
-                            attempted: false,
+                            attempted: None,
                             created: None,
+                            cancelled: false,
                         });
                     } else {
                         tracing::warn!(
@@ -489,14 +512,22 @@ impl SecretBroker {
         }
         if let (Some(slot), RefKind::Wp { .. }) = (grant.new_slot.as_mut(), kind) {
             if op == Op::Create {
-                if slot.attempted {
+                if slot.attempted.is_some() {
                     return Err((deny(NOT_ALLOWED, "new_already_used"), operation));
                 }
-                slot.attempted = true;
+                slot.attempted = Some(secret_ref.to_owned());
                 return Ok((Permit::NewCreate, operation));
             }
-            if op == Op::Delete && slot.allow_delete && slot.created.as_deref() == Some(secret_ref)
+            if op == Op::Delete
+                && slot.allow_delete
+                && slot.attempted.as_deref() == Some(secret_ref)
             {
+                if slot.created.is_none() {
+                    // La `create` sigue en cola o falló: si todavía no escribió, ya no lo
+                    // hará. Se marca aquí (no tras el candado) para que gane aunque la
+                    // `create` esté antes en la cola del llavero.
+                    slot.cancelled = true;
+                }
                 return Ok((Permit::NewDelete, operation));
             }
         }
@@ -511,9 +542,13 @@ impl SecretBroker {
         secret: Option<SecretString>,
     ) -> Result<Done, Denial> {
         let _serial = self.keyring.lock().await;
-        // La espera del candado puede cruzarse con el fin de la llamada o un reinicio del
-        // motor: se vuelve a comprobar la concesión y se usa su perfil, no el actual.
-        let profile_id = self.live_grant_profile(context.run_id)?;
+        // La espera del candado puede cruzarse con el fin de la llamada, un reinicio del
+        // motor o un `delete` que cancela la `create`: se vuelve a comprobar la concesión
+        // y se usa su perfil, no el actual.
+        let profile_id = match self.prepare(context, permit)? {
+            Step::Run(profile_id) => profile_id,
+            Step::Skip => return Ok(Done::Skipped(Action::Deleted, "not_created")),
+        };
         let store = Arc::clone(&self.store);
         let sites = self.sites.clone();
         let secret_ref = context.secret_ref.to_owned();
@@ -552,19 +587,44 @@ impl SecretBroker {
         Ok(done)
     }
 
-    /// Perfil de la concesión `run_id` si sigue viva: no caducó y el motor que la
-    /// recibió sigue en marcha.
-    fn live_grant_profile(&self, run_id: &str) -> Result<Option<String>, Denial> {
-        let state = self.lock();
-        match state.grants.get(run_id) {
+    /// Ya con el candado del llavero (ninguna otra solicitud ejecuta): la concesión debe
+    /// seguir viva (no caducó y el motor que la recibió sigue en marcha) y, para `{new}`:
+    ///
+    /// - `create` cancelada por un `delete` → se rechaza sin tocar el llavero ni el índice;
+    /// - `delete` sin nada creado en esta concesión → bien sin tocar el llavero (y la
+    ///   `create`, si llega después, queda cancelada).
+    fn prepare(&self, context: &Context<'_>, permit: Permit) -> Result<Step, Denial> {
+        let mut state = self.lock();
+        let (running, generation) = (state.running, state.generation);
+        let grant = match state.grants.get_mut(context.run_id) {
             Some(grant)
                 if grant.expires_at > Instant::now()
-                    && state.running
-                    && grant.generation == state.generation =>
+                    && running
+                    && grant.generation == generation =>
             {
-                Ok(grant.profile_id.clone())
+                grant
             }
-            _ => Err(deny(NOT_ALLOWED, "run_inactive")),
+            _ => return Err(deny(NOT_ALLOWED, "run_inactive")),
+        };
+        match permit {
+            Permit::NewCreate if grant.new_slot.as_ref().is_some_and(|slot| slot.cancelled) => {
+                Err(deny(NOT_ALLOWED, "new_cancelled"))
+            }
+            Permit::NewDelete => {
+                let created = grant
+                    .new_slot
+                    .as_ref()
+                    .and_then(|slot| slot.created.as_deref())
+                    == Some(context.secret_ref);
+                if created {
+                    return Ok(Step::Run(grant.profile_id.clone()));
+                }
+                if let Some(slot) = grant.new_slot.as_mut() {
+                    slot.cancelled = true;
+                }
+                Ok(Step::Skip)
+            }
+            _ => Ok(Step::Run(grant.profile_id.clone())),
         }
     }
 
@@ -578,6 +638,7 @@ impl SecretBroker {
                 None,
             ),
             Done::Ok(action) => (ok_line(id), action, Outcome::Ok, None, None),
+            Done::Skipped(action, reason) => (ok_line(id), action, Outcome::Ok, None, Some(reason)),
             Done::Failed(action, code, reason) => (
                 error_line(id, code),
                 action,

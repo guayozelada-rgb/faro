@@ -84,12 +84,29 @@ async fn setup() -> Setup {
 }
 
 async fn setup_with_profile(profile: Option<&str>) -> Setup {
-    let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(MemoryStore::new());
+    setup_with_store(profile, store.clone(), store).await
+}
+
+/// Como `setup`, pero el broker usa un llavero vigilado (cuenta los accesos y puede
+/// detener `set`); `put` y `stored` van directos al mismo `MemoryStore` sin contar.
+async fn setup_watched(gated: bool) -> (Setup, Arc<WatchedStore>) {
+    let store = Arc::new(MemoryStore::new());
+    let watched = Arc::new(WatchedStore::new(store.clone(), gated));
+    let setup = setup_with_store(Some(PROFILE), store, watched.clone()).await;
+    (setup, watched)
+}
+
+async fn setup_with_store(
+    profile: Option<&str>,
+    store: Arc<MemoryStore>,
+    broker_store: Arc<dyn SecretStore>,
+) -> Setup {
+    let dir = tempfile::tempdir().unwrap();
     let audit = AuditQueue::spawn(&tokio::runtime::Handle::current());
     let (core, engine) = tokio::io::duplex(1024 * 1024);
     audit.attach(StdinWriter::spawn(Box::new(core)));
-    let broker = Arc::new(SecretBroker::new(store.clone(), dir.path(), audit));
+    let broker = Arc::new(SecretBroker::new(broker_store, dir.path(), audit));
     broker.engine_started(1, profile);
     // Los sitios `SITE` y `SITE_2` son del perfil activo.
     let registry = SiteRegistry::new(dir.path());
@@ -613,6 +630,351 @@ async fn delete_solo_de_lo_creado_en_la_misma_concesion() {
     let (response, _) = s.ask(guard_c.run_id(), "delete", &wp(c_site), None).await;
     assert_eq!(error_of(&response), "vault.secret_not_allowed");
     assert_eq!(s.stored(&wp(c_site)), Some(wp_value(TOKEN)));
+    drop(guard);
+}
+
+// ---------- {new}: delete con la create en cola (B2 de T13) ----------
+
+type Gate = (
+    std::sync::mpsc::Sender<()>,
+    std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+);
+
+/// Llavero que cuenta los accesos del broker y, si tiene compuerta, detiene `set` hasta
+/// que la prueba lo suelte (para simular una escritura lenta).
+struct WatchedStore {
+    inner: Arc<MemoryStore>,
+    calls: std::sync::atomic::AtomicUsize,
+    /// `set` avisa por el primero y espera en el segundo.
+    gate: Option<Gate>,
+    /// Extremos de la prueba: (aviso de que `set` empezó, permiso para seguir).
+    handles: std::sync::Mutex<Option<(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>)>>,
+}
+
+impl WatchedStore {
+    fn new(inner: Arc<MemoryStore>, gated: bool) -> Self {
+        let (gate, handles) = if gated {
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            (
+                Some((entered_tx, std::sync::Mutex::new(release_rx))),
+                Some((entered_rx, release_tx)),
+            )
+        } else {
+            (None, None)
+        };
+        Self {
+            inner,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            gate,
+            handles: std::sync::Mutex::new(handles),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn take_gate(&self) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        self.handles.lock().unwrap().take().unwrap()
+    }
+
+    fn count(&self) {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl SecretStore for WatchedStore {
+    fn get(&self, secret_ref: &str) -> Result<Option<SecretString>, crate::error::AppError> {
+        self.count();
+        self.inner.get(secret_ref)
+    }
+    fn set(&self, secret_ref: &str, secret: &SecretString) -> Result<(), crate::error::AppError> {
+        self.count();
+        if let Some((entered, release)) = &self.gate {
+            entered.send(()).unwrap();
+            release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+        }
+        self.inner.set(secret_ref, secret)
+    }
+    fn delete(&self, secret_ref: &str) -> Result<(), crate::error::AppError> {
+        self.count();
+        self.inner.delete(secret_ref)
+    }
+}
+
+impl Setup {
+    /// Los siguientes `n` eventos de auditoría.
+    async fn audits(&mut self, n: usize) -> Vec<Value> {
+        let mut events = Vec::new();
+        for _ in 0..n {
+            events.push(self.next_audit().await);
+        }
+        events
+    }
+}
+
+/// Encola en orden las solicitudes con el llavero ocupado (`true`: debe quedarse
+/// esperando el candado; `false`: se responde sin llegar al llavero) y lo suelta después.
+async fn queue_while_keyring_busy(s: &Setup, requests: Vec<(String, bool)>) -> Vec<Value> {
+    let busy = s.broker.keyring.lock().await;
+    let mut pending = Vec::new();
+    for (line, waits) in requests {
+        let broker = Arc::clone(&s.broker);
+        let task = tokio::spawn(async move { broker.handle_line(&line).await });
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(!task.is_finished(), waits, "espera del llavero");
+        pending.push(task);
+    }
+    drop(busy);
+    let mut responses = Vec::new();
+    for task in pending {
+        let response = task.await.unwrap().expect("respuesta");
+        responses.push(serde_json::from_str(&response).unwrap());
+    }
+    responses
+}
+
+fn audits_of<'a>(audits: &'a [Value], op: &str) -> Vec<&'a Value> {
+    audits.iter().filter(|a| a["details"]["op"] == op).collect()
+}
+
+/// Ningún evento lleva el valor (ni partes de él) ni `last4`.
+fn assert_no_value(audit: &Value) {
+    let text = audit.to_string();
+    for needle in [TOKEN, HMAC, TOKEN_2, "hmac_secret", "last4", "\"value\""] {
+        assert!(!text.contains(needle), "{needle} en {text}");
+    }
+}
+
+#[tokio::test]
+async fn delete_con_la_create_en_cola_la_cancela_y_no_queda_secreto() {
+    let (mut s, watched) = setup_watched(false).await;
+    let guard = s.grant("connectSite", BTreeMap::new());
+    let run = guard.run_id().to_owned();
+    // El motor agotó su espera de la `create` y la deshace con el `delete` de la misma
+    // referencia, con la `create` todavía esperando el llavero.
+    let responses = queue_while_keyring_busy(
+        &s,
+        vec![
+            (
+                request_line(&run, "create", &wp(NEW_SITE), Some(&wp_value(TOKEN))),
+                true,
+            ),
+            (request_line(&run, "delete", &wp(NEW_SITE), None), true),
+        ],
+    )
+    .await;
+    // La `create` va primero en la cola, pero ya estaba cancelada: no escribe.
+    assert_eq!(error_of(&responses[0]), "vault.secret_not_allowed");
+    assert_eq!(
+        responses[1],
+        json!({"event": "secret_response", "id": REQUEST_ID, "ok": true})
+    );
+    assert_eq!(s.stored(&wp(NEW_SITE)), None);
+    assert!(
+        !SiteRegistry::new(s.dir.path()).contains(PROFILE, NEW_SITE),
+        "el sitio no entra en el índice"
+    );
+    assert_eq!(
+        watched.calls(),
+        0,
+        "ni la create ni el delete tocan el llavero"
+    );
+
+    let audits = s.audits(2).await;
+    let create = audits_of(&audits, "create")[0];
+    assert_denied(
+        &responses[0],
+        create,
+        "vault.secret_not_allowed",
+        "new_cancelled",
+    );
+    assert_eq!(create["secret_ref"], wp(NEW_SITE));
+    assert_eq!(create["run_id"], run);
+    assert_eq!(create["details"]["operation"], "connectSite");
+    assert_eq!(create["details"]["site_id"], NEW_SITE);
+    let delete = audits_of(&audits, "delete")[0];
+    assert_eq!(delete["action"], "secret.deleted", "{delete}");
+    assert_eq!(delete["result"], "ok");
+    assert_eq!(delete["secret_ref"], wp(NEW_SITE));
+    assert_eq!(delete["details"]["reason"], "not_created");
+    assert!(delete["details"].get("error_code").is_none());
+    for audit in &audits {
+        assert_no_value(audit);
+    }
+    drop(guard);
+}
+
+#[tokio::test]
+async fn create_terminada_y_luego_delete_la_borra() {
+    let (mut s, watched) = setup_watched(false).await;
+    let guard = s.grant("connectSite", BTreeMap::new());
+    let run = guard.run_id().to_owned();
+    let (response, added) = s
+        .ask(&run, "create", &wp(NEW_SITE), Some(&wp_value(TOKEN)))
+        .await;
+    assert_eq!(response["ok"], true);
+    assert_eq!(s.stored(&wp(NEW_SITE)), Some(wp_value(TOKEN)));
+    let (response, deleted) = s.ask(&run, "delete", &wp(NEW_SITE), None).await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(s.stored(&wp(NEW_SITE)), None);
+    assert_eq!(watched.calls(), 3, "get y set de la create, delete");
+    assert_eq!(added["action"], "secret.added");
+    assert_eq!(deleted["action"], "secret.deleted");
+    assert_eq!(deleted["result"], "ok");
+    assert!(deleted["details"].get("reason").is_none(), "{deleted}");
+    assert_no_value(&added);
+    assert_no_value(&deleted);
+    drop(guard);
+}
+
+#[tokio::test]
+async fn delete_mientras_la_create_escribe_la_borra_al_terminar() {
+    let (mut s, watched) = setup_watched(true).await;
+    let (entered, release) = watched.take_gate();
+    let guard = s.grant("connectSite", BTreeMap::new());
+    let run = guard.run_id().to_owned();
+    let broker = Arc::clone(&s.broker);
+    let line = request_line(&run, "create", &wp(NEW_SITE), Some(&wp_value(TOKEN)));
+    let create = tokio::spawn(async move { broker.handle_line(&line).await });
+    // La `create` ya pasó todas las comprobaciones y está escribiendo.
+    tokio::task::spawn_blocking(move || entered.recv_timeout(Duration::from_secs(5)))
+        .await
+        .unwrap()
+        .unwrap();
+    let broker = Arc::clone(&s.broker);
+    let line = request_line(&run, "delete", &wp(NEW_SITE), None);
+    let delete = tokio::spawn(async move { broker.handle_line(&line).await });
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!delete.is_finished(), "el delete espera el llavero");
+    release.send(()).unwrap();
+    let create: Value = serde_json::from_str(&create.await.unwrap().unwrap()).unwrap();
+    let delete: Value = serde_json::from_str(&delete.await.unwrap().unwrap()).unwrap();
+    assert_eq!(create["ok"], true, "{create}");
+    assert_eq!(delete["ok"], true, "{delete}");
+    // La `create` escribió, así que el `delete` borró de verdad.
+    assert_eq!(s.stored(&wp(NEW_SITE)), None);
+    let audits = s.audits(2).await;
+    assert_eq!(audits[0]["action"], "secret.added");
+    assert_eq!(audits[1]["action"], "secret.deleted");
+    assert!(audits[1]["details"].get("reason").is_none());
+    drop(guard);
+}
+
+#[tokio::test]
+async fn delete_de_otra_referencia_que_la_intentada_se_rechaza() {
+    let (mut s, _) = setup_watched(false).await;
+    s.put(&wp(SITE), &wp_value(TOKEN_2));
+    let other_new = "0192f0a0-0006-7abc-8def-0123456789ab";
+    let guard = s.grant("connectSite", BTreeMap::new());
+    let run = guard.run_id().to_owned();
+    let responses = queue_while_keyring_busy(
+        &s,
+        vec![
+            (
+                request_line(&run, "create", &wp(NEW_SITE), Some(&wp_value(TOKEN))),
+                true,
+            ),
+            (request_line(&run, "delete", &wp(SITE), None), false),
+            (request_line(&run, "delete", &wp(other_new), None), false),
+        ],
+    )
+    .await;
+    // Los `delete` de otras referencias no cancelan la `create`.
+    assert_eq!(responses[0]["ok"], true, "{}", responses[0]);
+    assert_eq!(s.stored(&wp(NEW_SITE)), Some(wp_value(TOKEN)));
+    assert!(SiteRegistry::new(s.dir.path()).contains(PROFILE, NEW_SITE));
+    assert_eq!(s.stored(&wp(SITE)), Some(wp_value(TOKEN_2)));
+    let audits = s.audits(3).await;
+    let deletes = audits_of(&audits, "delete");
+    assert_eq!(deletes.len(), 2);
+    for (response, audit) in responses[1..].iter().zip(deletes) {
+        assert_denied(response, audit, "vault.secret_not_allowed", "not_granted");
+        assert_no_value(audit);
+    }
+
+    // Una `create` intentada que no escribió (la referencia ya existía): su `delete`
+    // responde bien, pero no borra lo que ya estaba.
+    let guard2 = s.grant("connectSite", BTreeMap::new());
+    let (response, _) = s
+        .ask(guard2.run_id(), "create", &wp(SITE), Some(&wp_value(TOKEN)))
+        .await;
+    assert_eq!(error_of(&response), "vault.already_exists");
+    let (response, audit) = s.ask(guard2.run_id(), "delete", &wp(SITE), None).await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(audit["details"]["reason"], "not_created");
+    assert_eq!(s.stored(&wp(SITE)), Some(wp_value(TOKEN_2)));
+    drop(guard);
+}
+
+#[tokio::test]
+async fn create_cancelada_no_toca_el_llavero_ni_se_repite() {
+    let (mut s, watched) = setup_watched(false).await;
+    let guard = s.grant("connectSite", BTreeMap::new());
+    let run = guard.run_id().to_owned();
+    let responses = queue_while_keyring_busy(
+        &s,
+        vec![
+            (
+                request_line(&run, "create", &wp(NEW_SITE), Some(&wp_value(TOKEN))),
+                true,
+            ),
+            (request_line(&run, "delete", &wp(NEW_SITE), None), true),
+            // Otra `create` en la misma concesión, tras el `delete`: sigue habiendo una sola.
+            (
+                request_line(&run, "create", &wp(NEW_SITE), Some(&wp_value(TOKEN))),
+                false,
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(error_of(&responses[0]), "vault.secret_not_allowed");
+    assert_eq!(responses[1]["ok"], true);
+    assert_eq!(watched.calls(), 0, "el llavero no se tocó");
+    assert_eq!(s.stored(&wp(NEW_SITE)), None);
+    let audits = s.audits(3).await;
+    let creates = audits_of(&audits, "create");
+    let reasons: Vec<&Value> = creates.iter().map(|a| &a["details"]["reason"]).collect();
+    assert!(reasons.contains(&&json!("new_cancelled")), "{reasons:?}");
+    assert!(reasons.contains(&&json!("new_already_used")), "{reasons:?}");
+    assert_denied(
+        &responses[2],
+        creates
+            .iter()
+            .find(|a| a["details"]["reason"] == "new_already_used")
+            .unwrap(),
+        "vault.secret_not_allowed",
+        "new_already_used",
+    );
+    for audit in &audits {
+        assert_no_value(audit);
+    }
+    // Una `delete` repetida tampoco toca el llavero.
+    let (response, _) = s.ask(&run, "delete", &wp(NEW_SITE), None).await;
+    assert_eq!(response["ok"], true);
+    assert_eq!(watched.calls(), 0);
+
+    // La cancelación es de esa concesión: otra llamada puede crear la misma referencia.
+    let guard2 = s.grant("connectSite", BTreeMap::new());
+    let (response, _) = s
+        .ask(
+            guard2.run_id(),
+            "create",
+            &wp(NEW_SITE),
+            Some(&wp_value(TOKEN)),
+        )
+        .await;
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(s.stored(&wp(NEW_SITE)), Some(wp_value(TOKEN)));
     drop(guard);
 }
 
