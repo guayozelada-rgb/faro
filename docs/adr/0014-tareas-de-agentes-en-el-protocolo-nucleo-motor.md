@@ -1,7 +1,7 @@
 # ADR 0014 — Tareas de agentes en el protocolo núcleo ↔ motor: concesiones por ejecución, pausa global y eventos en vivo
 
 - **Fecha:** 2026-10-05
-- **Estado:** propuesto
+- **Estado:** Propuesto (se acepta al aprobar la spec F1b)
 - **Spec:** [F1b — Capa de IA y motor de agentes](../specs/2026-10-05-f1b-capa-ia-y-motor-de-agentes.md)
 - **Amplía:** ADR 0010 (protocolo v2, concesiones por operación). **Relacionados:** ADR 0015 (capa de IA), ADR 0016 (autonomía y aprobaciones)
 - **Skills afectadas:** `llavero-y-cifrado`, `tauri-sidecar-python`, `contratos-api-local`, `tauri-comandos-y-permisos`, `faro-arquitectura`

@@ -1,7 +1,7 @@
 # ADR 0015 — Capa de IA y motor de agentes: dependencias, checkpoints, programador y contenido remoto como datos
 
 - **Fecha:** 2026-10-05
-- **Estado:** propuesto (las dependencias quedan **a confirmar** en la tarea de verificación T2 de la spec, con los criterios de §6)
+- **Estado:** Propuesto (se acepta al aprobar la spec F1b)
 - **Spec:** [F1b — Capa de IA y motor de agentes](../specs/2026-10-05-f1b-capa-ia-y-motor-de-agentes.md)
 - **Relacionados:** ADR 0009 (base cifrada, `sqlite-vec` por verificar), ADR 0010 y 0014 (secretos), ADR 0012 (red saliente), ADR 0016 (autonomía)
 - **Skills nuevas:** `capa-llm`, `agentes-langgraph`, `herramientas-de-agente`, `prompts-y-evals`

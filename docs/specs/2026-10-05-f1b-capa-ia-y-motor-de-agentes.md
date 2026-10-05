@@ -2,7 +2,7 @@
 
 - **Fecha:** 2026-10-05
 - **Autor:** arquitecto
-- **Estado:** borrador, pendiente de aprobación del usuario
+- **Estado:** decisiones del usuario incorporadas (2026-10-05), pendiente de aprobación final
 - **ADR nuevos (propuestos):** [0014](../adr/0014-tareas-de-agentes-en-el-protocolo-nucleo-motor.md) (concesiones por ejecución, pausa global y eventos en vivo), [0015](../adr/0015-capa-de-ia-y-motor-de-agentes.md) (LiteLLM, LangGraph, APScheduler, checkpoints, programador, contenido remoto como datos), [0016](../adr/0016-autonomia-guardarrailes-y-aprobaciones.md) (autonomía, guardarraíles y aprobaciones)
 - **ADR anteriores que aplican:** 0002 (errores), 0003 (prueba de claves en el núcleo), 0005 (CI pública), 0006 (CSP), 0007 (paleta: la IA es **azul**, nunca morado), 0009 (base cifrada), 0010 (protocolo y concesiones), 0012 (red saliente), 0013 (logs)
 - **Parte de F1a que se retoma:** pendiente §12.2-3 (auditoría fuera del hilo de stdin) y §12.4-20/21 (concesiones de tareas largas y contenido remoto como datos, adelantados de F2 a F1b). La prueba extremo a extremo (§12.4-19) pasa a F1c (§2.3).
@@ -36,11 +36,11 @@ Que Ana lance un agente de IA sobre su sitio, vea en vivo qué hace y cuánto cu
 | **Claves `llm/*`** | Solo por la concesión de la ejecución, una petición por llamada lógica al LLM; se sobrescriben al terminar. Ninguna operación de `engine-operations.json` declara `llm/*` en F1b. | Regla 1 de `CLAUDE.md`; ADR 0015 §1. |
 | **Eventos en vivo** | Por stdout (`agent_activity`), validados por el núcleo con esquema cerrado y reenviados como `engine://agents`. Sin SSE. Sin texto libre en los eventos. | ADR 0014 §3. |
 | **Programador con la app cerrada** | **Solo con la app abierta** en F1b; al abrir, cada programación vencida corre **una** vez con aviso. Bandeja del sistema e inicio con el sistema: ADR futuro. | Sin agentes recurrentes valiosos todavía; la bandeja exige autostart, cambiar "cerrar" por "salir" y avisos. ADR 0015 §3. |
-| **Costo del LLM y regla 3** | No pasa por la Bandeja: lo controlan el estimado visible antes de lanzar, el máximo garantizado por tarea y el tope diario por clave. | Pedir aprobación por llamada haría inservibles a los agentes. ADR 0016 §4. **Pregunta 2.** |
-| **Orquestador** | Determinista en F1b: un catálogo de objetivos produce el plan (en producción, objetivos de una tarea). El planificador con LLM llega cuando haya varios agentes (F2). | Con un agente, pedir al LLM que planifique sería gasto sin valor. La interfaz del orquestador y las tareas hijas (`parent_run_id`) quedan listas. **Pregunta 7.** |
+| **Costo del LLM y regla 3** | No pasa por la Bandeja: lo controlan el estimado visible antes de lanzar, el máximo garantizado por tarea y el tope diario por clave. | Pedir aprobación por llamada haría inservibles a los agentes. ADR 0016 §4. **Decidido por el usuario (§11).** |
+| **Orquestador** | Determinista en F1b: un catálogo de objetivos produce el plan (en producción, objetivos de una tarea). El planificador con LLM llega cuando haya varios agentes (F2). | Con un agente, pedir al LLM que planifique sería gasto sin valor. La interfaz del orquestador y las tareas hijas (`parent_run_id`) quedan listas. **Decidido por el usuario (§11).** |
 | **Agente de demostración y aprobación** | "Resumen del sitio" propone **guardar el resumen en Faro** (acción `internal`). Con nivel 1 (predeterminado) espera tu OK; aprobado, se ve en Inicio. | Ejercita la pausa por aprobación, la reanudación y la idempotencia sin publicar nada en el sitio. |
 | **Bandeja** | Mínima en F1b: lista de propuestas pendientes con **Guardar**/**Descartar** (aprobar/rechazar). Editar, lotes, historial y deshacer: F4. | La propuesta del agente de demostración tiene que poder decidirse desde la sección que el usuario espera. |
-| **Selección de proveedor** | El usuario elige "la clave que usan los agentes" entre las que tiene; si no elige, la primera con clave en el orden Anthropic, OpenAI, Gemini. Sin cambio automático a otro proveedor si uno falla. | Cambiar de proveedor solo cambiaría calidad y costo sin que el usuario lo sepa. **Pregunta 4.** |
+| **Selección de proveedor** | El usuario elige "la clave que usan los agentes" entre las que tiene; si no elige, la primera con clave en el orden Anthropic, OpenAI, Gemini. Sin cambio automático a otro proveedor si uno falla. | Cambiar de proveedor solo cambiaría calidad y costo sin que el usuario lo sepa. **Decidido por el usuario (§11).** |
 | **Modelos** | Dos niveles por proveedor fijados en `models.json` (no configurables por el usuario en F1b). | "Selector de modelo por tarea" = el motor elige el nivel según el tipo de tarea. |
 | **Concurrencia** | Una tarea de agente a la vez en toda la app. | El equipo del usuario no se satura y el gasto es predecible. |
 | **Memoria vectorial (`sqlite-vec`)** | Fuera. Solo se verifica que carga con SQLCipher. | Sin consumidor; ADR 0015 §4. |
@@ -99,7 +99,7 @@ Orden: "Qué hacer ahora" (catálogo), gasto de hoy, actividad, programadas.
 
 **Catálogo.** Una tarjeta por agente (F1b: una). Icono `bot` en `ai`, título **Resumen del sitio**, frase "Lee tu sitio y te cuenta en pocas palabras qué vendes y a quién." y botón **Lanzar** (abre §3.3). Si no hay sitios activos: la tarjeta muestra "Conecta tu sitio para usar este agente." con **Conectar tu sitio** (→ Configuración, Sitios conectados). Si no hay claves: "Agrega una clave de IA para usar este agente." con **Agregar clave de IA**.
 
-**Gasto de hoy.** Línea "Hoy los agentes gastaron US$0,12." con tooltip por proveedor ("Anthropic: US$0,12 de US$20,00"). Enlace **Ver límites** → Configuración, Claves de IA.
+**Gasto de hoy.** Línea "Hoy los agentes gastaron US$0,12." con tooltip por proveedor ("Anthropic: US$0,12 de US$5,00"). Enlace **Ver límites** → Configuración, Claves de IA.
 
 **Actividad** (componente `AgentFeed`, `aria-live="polite"`). Últimas 20 tareas, la más reciente arriba. Cada fila: icono del agente (`ai`), "Resumen del sitio · tutienda.com", paso actual ("Leyendo tu sitio…"), costo acumulado y chip de estado:
 
@@ -129,7 +129,7 @@ Clic en la fila → detalle (§3.4). Pasos: `read_site` "Leyendo tu sitio", `cla
 - **Sitio**: selector con los sitios activos (si hay uno, ya elegido).
 - **Costo** (componente `CostEstimate`), se pide al abrir y al cambiar de sitio:
   - Cargando: esqueleto + "Calculando el costo…".
-  - Éxito: "Costo estimado: unos US$0,01. Como mucho: US$0,04." Debajo: "Usará tu clave de Anthropic. Hoy llevas US$0,12 de US$20,00." Tooltip con el desglose: modelo económico y potente (nombres), tokens estimados y máximos.
+  - Éxito: "Costo estimado: unos US$0,01. Como mucho: US$0,04." Debajo: "Usará tu clave de Anthropic. Hoy llevas US$0,12 de US$5,00." Tooltip con el desglose: modelo económico y potente (nombres), tokens estimados y máximos.
   - Bloqueado (`blocking_code`): mensaje del código y botón deshabilitado. `llm.daily_limit_reached` → "Esta tarea podría pasar tu límite de hoy (te quedan US$0,03). Súbelo en Configuración o espera a mañana." con enlace **Cambiar límite**.
   - Error: mensaje + **Intentar de nuevo**.
 - **Repetir**: "Solo esta vez" (predeterminado) / "Cada día" / "Cada semana". Con repetición: hora (y día de la semana). Texto: "Solo corre con Faro abierto."
@@ -160,7 +160,7 @@ Título "Resumen del sitio · tutienda.com", chip de estado, "Empezó {{relative
 ### 3.6 Configuración → Claves de IA (cambia)
 
 - Arriba: selector **Clave que usan los agentes** (solo proveedores con clave; ayuda: "Elige qué IA hace el trabajo de tus agentes."). Sin claves: no se muestra.
-- En cada fila con clave, una línea más: "Hoy: US$0,12 de US$20,00" y, si llegó al tope, chip `warning` "Límite de hoy alcanzado".
+- En cada fila con clave, una línea más: "Hoy: US$0,12 de US$5,00" y, si llegó al tope, chip `warning` "Límite de hoy alcanzado".
 - Menú de la fila → **Cambiar límite diario**: diálogo con campo numérico en dólares ("Límite de gasto por día"), ayuda "Cuando esta clave llega a su límite, los agentes que la usan esperan hasta mañana." Valores de 0,50 a 500 (`llm.invalid_limit`). Botón **Guardar límite**; toast "Guardamos el límite de Anthropic."
 - El "día" es el de tu computadora (empieza a medianoche).
 
@@ -235,7 +235,7 @@ llm/  client.py          LlmClient (protocolo), LlmRequest, LlmResult, LlmUsage
 ```
 Regla: exactamente un modelo por proveedor y nivel; Gemini solo con prefijo de AI Studio (`gemini/`), nunca `vertex_ai/`. Una prueba compara la forma del archivo y que ningún precio sea 0.
 
-**Preferencias y límites:** `settings` (`llm.preferred_provider`) y `credential_limits` (por defecto **US$20/día** por clave = 20 000 000 micros, **pregunta 1**). Cambiar un límite o la preferencia queda en `audit_log` (`llm.limit_changed`, `llm.preference_changed`).
+**Preferencias y límites:** `settings` (`llm.preferred_provider`) y `credential_limits` (por defecto **US$5/día** por clave = 5 000 000 micros, decisión del usuario del 2026-10-05; el usuario puede cambiarlo). Cambiar un límite o la preferencia queda en `audit_log` (`llm.limit_changed`, `llm.preference_changed`).
 
 **Modo `--fake-llm`** (solo desarrollo): el motor lo acepta solo sin `sys.frozen` (si no, código 2); el núcleo lo pasa solo en build de depuración **y** con `FARO_FAKE_LLM=1` (entorno o `.env.local`), igual que `--allow-local-sites`. Usa `FakeLLM` con respuestas fijas por `prompt_id` y un precio de prueba alto (para alcanzar el tope diario con pocas tareas), no pide ninguna clave por `secret_request` (sí pide la concesión de ejecución) y marca cada paso con `model = "fake"`.
 
@@ -274,7 +274,7 @@ agents/  registry.py        AgentSpec (kind, version, requires_site, secrets, ma
 
 **Autonomía** (`autonomy.py`, ADR 0016): `decide(agent_kind, site_id, action_kind)` lee la regla efectiva (sitio → general → nivel 1) y devuelve `suggest` (nivel 0), `propose` (nivel 1, o nivel 2 fuera de límites) o `execute` (nivel 2 dentro de límites, nivel 3). Guardarraíles en código: no existe acción de borrado (el registro falla al arrancar), `publish`/`spend` como máximo nivel 1 en F1b, pausa global ⇒ nunca `execute`. Cada decisión se registra en el paso.
 
-**Aprobaciones** (`approvals.py`): crear (con `payload` validado por el esquema del `action_kind`, `evidence`, `idempotency_key`, `expires_at` = ahora + 14 días), decidir con `UPDATE … WHERE status = 'pending'`, caducar (al arrancar y cada 24 h), leer para ejecutar (`approved` y `executed_at IS NULL`). El nodo `propose_save` llama a `interrupt({"approval_id": id})`; la reanudación llega con `Command(resume={"approval_id": id, "decision": "approve"|"reject"})` y el ejecutor **relee** la aprobación de la base.
+**Aprobaciones** (`approvals.py`): crear (con `payload` validado por el esquema del `action_kind`, `evidence`, `idempotency_key`, `expires_at` = ahora + `approvals.expiry_days`, 14 por defecto, ajustable por plan en el futuro), decidir con `UPDATE … WHERE status = 'pending'`, caducar (al arrancar y cada 24 h), leer para ejecutar (`approved` y `executed_at IS NULL`). El nodo `propose_save` llama a `interrupt({"approval_id": id})`; la reanudación llega con `Command(resume={"approval_id": id, "decision": "approve"|"reject"})` y el ejecutor **relee** la aprobación de la base.
 
 **Orquestador**: `Orchestrator.submit(objective, site_id, trigger, schedule_id=None)` busca el objetivo en el registro (F1b: `site_summary.run` → plan de una tarea `site_summary`), calcula el estimado de cada tarea y crea las filas `agent_runs` (con `parent_run_id` si el plan tiene más de una tarea, y orden por dependencias). Lo usan `startAgentRun` y el programador.
 
@@ -704,7 +704,7 @@ CREATE TABLE IF NOT EXISTS agent_checkpoint_writes (
 ) STRICT;
 ```
 
-- Sin fila en `autonomy_rules` = nivel 1. Sin fila en `credential_limits` = US$20/día.
+- Sin fila en `autonomy_rules` = nivel 1. Sin fila en `credential_limits` = US$5/día.
 - Ninguna tabla guarda prompts completos ni respuestas crudas del proveedor: solo `prompt_id`/`prompt_version`, el resultado validado (`agent_runs.result`, `approvals.payload`, `site_summaries.content`) y el estado del grafo en los checkpoints (que pueden incluir títulos del sitio y salidas del modelo; están en la base cifrada).
 - **Auditoría**: acciones del motor nuevas `autonomy.changed`, `approval.decided`, `approval.executed`, `llm.limit_changed`, `llm.preference_changed`; del núcleo, las de §5.1. Claves de `details` nuevas: `agent_kind`, `approval_id`, `level`, `decision`. Misma validación de valores (ADR 0010 §4).
 - Quitar un sitio (`removeSite`) no borra sus tareas (`site_id` pasa a `NULL`); una tarea `waiting_approval` de ese sitio se cancela al reanudarse con `agent.site_removed`.
@@ -896,13 +896,13 @@ Con **`FARO_FAKE_LLM=1`** salvo donde se indica **(real)**, que usa la clave del
 
 ---
 
-## 11. Preguntas abiertas para el usuario
+## 11. Decisiones del usuario (2026-10-05)
 
-1. **Tope diario por clave predeterminado**: ¿US$20/día (el valor que propone esta spec) o algo más bajo para empezar, como US$5/día? Afecta al valor por defecto, no al diseño.
-2. **Costo de la IA y la Bandeja** (ADR 0016 §4): recomiendo que el consumo de IA no pase por la Bandeja y que lo controlen el estimado visible, el máximo garantizado por tarea y el tope diario. ¿De acuerdo?
-3. **Programador con la app cerrada**: recomiendo que en F1b solo corra con Faro abierto y recupere lo pendiente al abrir, con aviso. ¿De acuerdo, o quieres ya la bandeja del sistema e inicio con Windows?
-4. **Proveedor**: ¿te parece bien que elijas una clave para todos los agentes, sin cambio automático a otro proveedor cuando uno falla?
-5. **Agente de demostración**: ¿"Resumen del sitio" queda visible para los usuarios después de F1b o solo como herramienta de desarrollo? Recomiendo dejarlo visible: es útil y barato.
-6. **Caducidad de las propuestas**: ¿14 días está bien?
-7. **Orquestador**: ¿te parece bien un orquestador determinista en F1b (sin LLM que planifique) hasta que haya varios agentes?
-8. **Plan B de LiteLLM**: si LiteLLM no cumple los criterios de ADR 0015 §6 (red al importar, tamaño, licencias, avisos de seguridad), ¿autorizas pasar al adaptador propio sin volver a consultarte?
+1. **Tope diario por clave predeterminado: US$5/día** (5 000 000 micros). El usuario puede subirlo desde Claves de IA.
+2. **Costo de la IA fuera de la Bandeja:** sí. Lo controlan el estimado visible, el máximo garantizado por tarea y el tope diario (ADR 0016 §4).
+3. **Programador solo con Faro abierto** en F1b, con recuperación y aviso al abrir. Bandeja del sistema e inicio con Windows, más adelante (ADR futuro).
+4. **Una sola clave para todos los agentes**, elegida por el usuario, sin cambio automático de proveedor.
+5. **"Resumen del sitio" visible** para los usuarios después de F1b.
+6. **Las propuestas caducan a los 14 días.** Más adelante podría haber planes premium que extiendan esa ventana: el valor no se fija en el código, sale de una constante o ajuste (`approvals.expiry_days`) para poder cambiarlo por plan.
+7. **Orquestador determinista** (sin LLM que planifique) hasta que haya varios agentes.
+8. **Plan B de LiteLLM autorizado:** si LiteLLM no cumple los criterios de ADR 0015 §6, se pasa al adaptador propio sin volver a consultar (se informa en el PR de T2).

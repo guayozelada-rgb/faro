@@ -1,7 +1,7 @@
 # ADR 0016 — Autonomía de los agentes, guardarraíles fijos y modelo de aprobaciones
 
 - **Fecha:** 2026-10-05
-- **Estado:** propuesto
+- **Estado:** Propuesto (se acepta al aprobar la spec F1b)
 - **Spec:** [F1b — Capa de IA y motor de agentes](../specs/2026-10-05-f1b-capa-ia-y-motor-de-agentes.md)
 - **Relacionados:** ADR 0014 (pausa global y concesiones por ejecución), ADR 0015 (motor de agentes)
 - **Reglas de `CLAUDE.md` que concreta:** 3 (nada que publique o gaste sin autonomía y Bandeja) y 4 (campañas en pausa)
