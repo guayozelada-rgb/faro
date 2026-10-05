@@ -2,7 +2,7 @@
 
 - **Fecha:** 2026-10-05
 - **Autor:** arquitecto
-- **Estado:** decisiones del usuario incorporadas (2026-10-05), pendiente de aprobación final
+- **Estado:** aprobada por el usuario (2026-10-05)
 - **ADR nuevos (propuestos):** [0014](../adr/0014-tareas-de-agentes-en-el-protocolo-nucleo-motor.md) (concesiones por ejecución, pausa global y eventos en vivo), [0015](../adr/0015-capa-de-ia-y-motor-de-agentes.md) (LiteLLM, LangGraph, APScheduler, checkpoints, programador, contenido remoto como datos), [0016](../adr/0016-autonomia-guardarrailes-y-aprobaciones.md) (autonomía, guardarraíles y aprobaciones)
 - **ADR anteriores que aplican:** 0002 (errores), 0003 (prueba de claves en el núcleo), 0005 (CI pública), 0006 (CSP), 0007 (paleta: la IA es **azul**, nunca morado), 0009 (base cifrada), 0010 (protocolo y concesiones), 0012 (red saliente), 0013 (logs)
 - **Parte de F1a que se retoma:** pendiente §12.2-3 (auditoría fuera del hilo de stdin) y §12.4-20/21 (concesiones de tareas largas y contenido remoto como datos, adelantados de F2 a F1b). La prueba extremo a extremo (§12.4-19) pasa a F1c (§2.3).
