@@ -73,18 +73,20 @@ Se aplica al importar `litellm_client.py`; si algo no se puede aplicar, el módu
 
 | Ajuste (LiteLLM 1.104.0) | Por qué (comprobado en T2) |
 | --- | --- |
-| `LITELLM_LOCAL_MODEL_COST_MAP=True` en el entorno **antes** del primer `import litellm` | Sin ella, `import litellm` intenta 3 veces descargar el mapa de precios de `raw.githubusercontent.com` (~10 s). Los precios de Faro salen de `models.json`. |
+| `LITELLM_MODE=PRODUCTION` y `LITELLM_LOCAL_MODEL_COST_MAP=True` en el entorno **antes** del primer `import litellm` | Con `LITELLM_MODE` en `DEV` (valor por defecto), `import litellm` llama a `load_dotenv()` y carga un `.env` buscado hacia arriba (desde el directorio de trabajo o desde la carpeta del paquete): reintroduce variables ya limpiadas, p. ej. `OPENAI_BASE_URL` (revisión de seguridad de T2). Sin el mapa local, `import litellm` intenta 3 veces descargar el mapa de precios de `raw.githubusercontent.com` (~10 s); los precios de Faro salen de `models.json`. |
 | `CUSTOM_TIKTOKEN_CACHE_DIR` = carpeta del motor con `cl100k_base` (archivo `9b5ad71b2ce5302211f9c61530b329a4922fc6a4`, SHA-256 `223921b7…65b2a7`), antes de la primera llamada | LiteLLM 1.104 **no** trae ese vocabulario y lo carga en cada llamada de **Anthropic y Gemini** (OpenAI no): sin él lo descarga de `openaipublic.blob.core.windows.net` y lo escribe en la carpeta del paquete. tiktoken comprueba el SHA-256. T6 lo incluye en el motor (PyInstaller: `--add-data` y el hook `hook-tiktoken.py`). |
-| Fuera del entorno **antes** de importar: `SSL_VERIFY`, `SSLKEYLOGFILE`, `LANGSMITH_*`, `LANGCHAIN_*` | `SSL_VERIFY=False` desactiva la verificación TLS de LiteLLM (gana a `litellm.ssl_verify`); `SSLKEYLOGFILE` escribe las claves de sesión TLS en un archivo (en el equipo del usuario, Norton la apunta a su tubería); LangSmith: skill `agentes-langgraph`. |
+| Fuera del entorno **antes y después** de importar, y comprobado después (si queda alguna, `raise` y el adaptador no se carga): `SSL_VERIFY`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `SSLKEYLOGFILE`, `GOOGLE_API_KEY`, `LANGSMITH_*`, `LANGCHAIN_*`, el resto de `LITELLM_*` (incluido `LITELLM_LOG`) y todas las `OPENAI_*`, `ANTHROPIC_*` y `GEMINI_*` (incluidas `*_API_KEY`, `*_API_BASE` y `*_BASE_URL`) | LiteLLM lee `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `ANTHROPIC_API_BASE`, `ANTHROPIC_BASE_URL` y `GEMINI_API_BASE` cuando no recibe `api_base`: con una apuntando a otro host, la clave se envía allí (el revisor lo reprodujo en loopback). `SSL_VERIFY=False` desactiva la verificación TLS de LiteLLM (gana a `litellm.ssl_verify`); `SSLKEYLOGFILE` escribe las claves de sesión TLS en un archivo (en el equipo del usuario, Norton la fija; `__main__` ya la quita al arrancar); LangSmith: skill `agentes-langgraph`. La limpieza se repite tras el import por si algo la deshace (`load_dotenv`). |
 | `truststore.inject_into_ssl()` al arrancar el motor, **antes de importar LiteLLM** | Al importarse, LiteLLM crea y guarda un contexto TLS con `certifi`: inyectar después no le llega (prueba). Criterio 8: con un antivirus que intercepta HTTPS (Norton en el equipo del usuario) `certifi` falla con `CERTIFICATE_VERIFY_FAILED`. `litellm.ssl_verify = <SSLContext>` **no** sirve (LiteLLM vuelve a `certifi`); la inyección sí llega a su transporte aiohttp. |
 | Sin telemetría ni callbacks: `success_callback`, `failure_callback`, `callbacks`, `input_callback`, `service_callback` vacíos | Ningún prompt, respuesta ni clave sale hacia servicios de observabilidad. Con las listas vacías no hay intentos de red (prueba con sockets bloqueados). |
 | `litellm.turn_off_message_logging = True`, `suppress_debug_info = True`, `log_raw_request_response = False`, `redact_messages_in_exceptions = True`, `disable_hf_tokenizer_download = True` | Nombres verificados en 1.104.0. Los prompts llevan contenido del sitio; nunca van a logs ni a excepciones. Sin descargas de tokenizadores de Hugging Face. |
-| Loggers `LiteLLM*`: quitar sus handlers, `propagate = True`, nivel `WARNING` | Su `LevelRoutingStreamHandler` escribe en **stdout** todo lo que está por debajo de WARNING (p. ej. `LiteLLM completion() model=…`), y stdout es el canal del protocolo. Así pasan por los handlers del motor (JSON a stderr con redacción, ADR 0013). |
+| Loggers `LiteLLM*`: quitar sus handlers, `propagate = True`, nivel `WARNING` | Su `LevelRoutingStreamHandler` escribe en **stdout** todo lo que está por debajo de WARNING (p. ej. `LiteLLM completion() model=…`), y stdout es el canal del protocolo. Así pasan por los handlers del motor (JSON a stderr con redacción, ADR 0013). Prueba obligatoria: con `LITELLM_LOG=DEBUG` en el entorno, stdout solo contiene líneas del protocolo (el núcleo trata como `secret_request` una línea JSON de stdout, que podría venir de una página rastreada). |
 | `num_retries=0` en cada llamada | Los reintentos los hace Faro (§6) para registrar cada intento y respetar la pausa. |
 | Sin caché de respuestas (`litellm.cache = None`) | Una respuesta en caché no es un dato del proveedor y escribiría contenido en disco o memoria larga. |
-| Nunca `api_base`, `base_url`, `extra_headers` ni `custom_llm_provider` libres | Solo los hosts oficiales que implica el prefijo del catálogo. Un `api_base` permitiría mandar la clave a otro host. |
+| **`api_base` fijo al host oficial del catálogo** y `api_key` explícita en cada llamada; nunca `base_url`, `extra_headers` ni `custom_llm_provider` libres | Sin `api_base`, LiteLLM lo toma del entorno (fila anterior). Valores comprobados con 1.104.0: OpenAI `https://api.openai.com/v1`, Anthropic `https://api.anthropic.com`, Gemini `https://generativelanguage.googleapis.com/v1beta` (LiteLLM añade `/chat/completions`, `/v1/messages` y `/models/<id>:generateContent`). Salen de una tabla fija en código revisable en PR (solo `https`, host exacto, sin puerto), nunca del usuario ni del entorno. |
 | Solo modelos del catálogo; Gemini solo `gemini/…` (AI Studio), nunca `vertex_ai/…` | Lista cerrada revisable en PR. Con `gemini/` la clave va en la cabecera `x-goog-api-key`, nunca en la URL (comprobado). |
 | TLS verificado, sin seguir redirecciones a otros hosts, plazo 60 s por intento | ADR 0015 §1. Almacén del sistema con `truststore` (fila anterior). |
+
+Las **condiciones obligatorias de la revisión de seguridad de T2** (lista completa, incluidas las de T7 y T11) están en el informe `docs/qa/2026-10-05-f1b-t2-dependencias.md` §12; T6 las cumple todas y las prueba. `scripts/manual_llm_check.py` ya aplica la limpieza, el modo `PRODUCTION` y el `api_base` fijo (pruebas en `tests/llm/test_manual_llm_check.py`).
 
 Más hechos de 1.104.0 que afectan al diseño (T2):
 - **Importar tarda ~6,5 s** (1040 módulos, incluidos 21 de `litellm.proxy`): importa el adaptador de forma perezosa (primera llamada o en segundo plano después de `ready`), nunca antes de escribir `ready`.
@@ -100,15 +102,38 @@ Plantilla de referencia del adaptador:
 import logging
 import os
 
-# El arranque del motor ya quitó SSL_VERIFY, SSLKEYLOGFILE, LANGSMITH_* y LANGCHAIN_* del
-# entorno y llamó a truststore.inject_into_ssl() (tabla anterior).
-os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"            # antes de importar
-os.environ["CUSTOM_TIKTOKEN_CACHE_DIR"] = str(TIKTOKEN_DIR)    # cl100k_base incluido en el motor
+# `__main__` ya quitó SSLKEYLOGFILE al arrancar y llamó a truststore.inject_into_ssl()
+# antes de este import (tabla anterior). Este módulo se importa de forma perezosa, después
+# de `ready`.
+_REQUIRED_ENV = {"LITELLM_MODE": "PRODUCTION", "LITELLM_LOCAL_MODEL_COST_MAP": "True",
+                 "CUSTOM_TIKTOKEN_CACHE_DIR": str(TIKTOKEN_DIR)}   # cl100k_base incluido
+_SCRUBBED = {"SSL_VERIFY", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+             "SSLKEYLOGFILE", "GOOGLE_API_KEY"}
+_SCRUBBED_PREFIXES = ("LANGSMITH_", "LANGCHAIN_", "LITELLM_", "OPENAI_", "ANTHROPIC_", "GEMINI_")
+API_BASE = {"openai": "https://api.openai.com/v1",                 # fijo, nunca del entorno
+            "anthropic": "https://api.anthropic.com",
+            "gemini": "https://generativelanguage.googleapis.com/v1beta"}
 
+def _clean_env() -> None:
+    for name in list(os.environ):
+        upper = name.upper()
+        if upper not in _REQUIRED_ENV and (upper in _SCRUBBED or upper.startswith(_SCRUBBED_PREFIXES)):
+            del os.environ[name]
+    os.environ.update(_REQUIRED_ENV)
+
+def _check_env() -> None:          # si falla, el módulo no se carga y no se llama a nadie
+    if any(n.upper() not in _REQUIRED_ENV and (n.upper() in _SCRUBBED or n.upper().startswith(_SCRUBBED_PREFIXES))
+           for n in os.environ) or any(os.environ.get(k) != v for k, v in _REQUIRED_ENV.items()):
+        raise RuntimeError("entorno no seguro para LiteLLM")
+
+_clean_env(); _check_env()          # ANTES del import
 import litellm  # noqa: E402  (única importación de litellm en todo el motor)
 from litellm.llms.custom_httpx.async_client_cleanup import close_litellm_async_clients  # noqa: E402
+_clean_env(); _check_env()          # DESPUÉS del import (prueba: `.env` en un directorio padre)
 
 def _harden() -> None:
+    litellm.api_base = None
+    litellm.api_key = None
     for name in ("success_callback", "failure_callback", "callbacks", "input_callback",
                  "service_callback"):
         setattr(litellm, name, [])
@@ -139,8 +164,9 @@ class LiteLlmClient:
         try:
             response = await litellm.acompletion(
                 model=call.litellm_model,          # siempre del catálogo
+                api_base=API_BASE[call.provider],  # fijo al host oficial
                 messages=call.messages,
-                api_key=api_key,
+                api_key=api_key,                   # siempre explícita
                 max_tokens=call.max_output_tokens,
                 timeout=60,
                 num_retries=0,
@@ -325,7 +351,7 @@ async def _call_with_key(self, call: ResolvedCall, deadline: Deadline) -> RawCom
 ## 10. Pruebas
 
 - **`FakeLLM`** (`llm/fake.py`, base de `tests/fakes/llm.py`): implementa `LlmClient`; responde por `prompt_id` con fixtures, cuenta tokens de forma determinista y puede simular cada error de §8, salidas inválidas, llamadas a herramientas y respuestas "que obedecen" a una inyección (skill `prompts-y-evals`).
-- **Adaptador** contra un servidor falso para los tres proveedores (forma de la petición, `api_key` en la cabecera correcta —`authorization`, `x-api-key`, `x-goog-api-key`—, ningún `api_base` en producción, tokens leídos de la respuesta, cada error mapeado). `respx` solo intercepta el transporte de httpx, no el aiohttp que LiteLLM usa por defecto: usa un servidor en loopback como `tests/deps/offline_probe.py`, o `respx` si T6 decide `litellm.disable_aiohttp_transport = True`.
+- **Adaptador** contra un servidor falso para los tres proveedores (forma de la petición, `api_key` en la cabecera correcta —`authorization`, `x-api-key`, `x-goog-api-key`—, `api_base` fijo al host oficial aunque el entorno o un `.env` en un directorio padre traigan `OPENAI_BASE_URL` y compañía apuntando a una trampa en loopback —que no recibe nada—, tokens leídos de la respuesta, cada error mapeado). `respx` solo intercepta el transporte de httpx, no el aiohttp que LiteLLM usa por defecto: usa un servidor en loopback como `tests/deps/offline_probe.py`, o `respx` si T6 decide `litellm.disable_aiohttp_transport = True`.
 - **Sockets bloqueados**: el fixture automático de `tests/conftest.py` impide toda conexión que no sea a loopback. `tests/llm/test_litellm_isolation.py` (creado en T2 contra LiteLLM directamente; T6 lo pasa al adaptador) llama a un servidor falso desde un proceso con la red bloqueada: no sale nada a internet y la caché queda vacía (criterio 4).
 - **Clave falsa** con forma evidente (`sk-ant-test-…`, `AIzaTEST…`): no aparece en logs capturados, `agent_steps`, checkpoints, respuestas ni excepciones.
 - **Obligatorias** (spec §9.2): costo con enteros y redondeo; selección de proveedor y nivel; cada rechazo de §5 con su código y sin pedir la clave; reservas concurrentes no pasan el tope; cambio de día local; reintentos y no-reintentos de §6; `Retry-After`; salida inválida → un reintento → `llm.bad_output`; llamada cancelada → `cost_estimated` con el máximo; catálogo inválido (modelo repetido, precio 0, Vertex) → no arranca; ningún otro módulo importa `litellm`.
@@ -342,7 +368,8 @@ async def _call_with_key(self, call: ResolvedCall, deadline: Deadline) -> RawCom
 
 - [ ] Ningún módulo fuera de `llm/litellm_client.py` importa `litellm`.
 - [ ] La configuración endurecida se aplica al importar y el motor no arranca si falla.
-- [ ] Ningún `api_base`/`base_url`/cabecera extra; modelos solo del catálogo; Gemini solo `gemini/`.
+- [ ] `LITELLM_MODE=PRODUCTION`; entorno limpiado y comprobado antes **y** después de `import litellm`.
+- [ ] `api_base` fijo al host oficial del catálogo y `api_key` explícita; ningún `base_url`/cabecera extra; modelos solo del catálogo; Gemini solo `gemini/`.
 - [ ] Orden de §5 respetado; los rechazos 1–5 no piden la clave.
 - [ ] Costos en micros enteros con redondeo hacia arriba; nada de `float`.
 - [ ] Reservas bajo candado; prueba de concurrencia en verde.

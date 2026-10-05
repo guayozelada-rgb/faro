@@ -106,7 +106,7 @@ Metadatos (`License-Expression`, `License` y clasificadores) de los 77 paquetes 
 
 **Veredicto:** **cumple con condiciones.** LiteLLM cumple el criterio 4 solo con este endurecimiento, que T6 debe aplicar y probar (todo está ya en la skill `capa-llm`, §2 y §9):
 
-1. Antes de importar LiteLLM: `LITELLM_LOCAL_MODEL_COST_MAP=True`; `CUSTOM_TIKTOKEN_CACHE_DIR` apuntando a una carpeta del motor con `cl100k_base` (archivo `9b5ad71b2ce5302211f9c61530b329a4922fc6a4`, SHA-256 `223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7`, que tiktoken comprueba); quitar `SSL_VERIFY`, `SSLKEYLOGFILE`, `LANGSMITH_*` y `LANGCHAIN_*` del entorno; `truststore.inject_into_ssl()`.
+1. Antes de importar LiteLLM: `LITELLM_LOCAL_MODEL_COST_MAP=True`; `CUSTOM_TIKTOKEN_CACHE_DIR` apuntando a una carpeta del motor con `cl100k_base` (archivo `9b5ad71b2ce5302211f9c61530b329a4922fc6a4`, SHA-256 `223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7`, que tiktoken comprueba); quitar del entorno las variables de §12 (lista completa tras la revisión de seguridad), con `LITELLM_MODE=PRODUCTION`; `truststore.inject_into_ssl()`.
 2. Tras importar: callbacks vacíos, `cache = None`, `turn_off_message_logging`, `suppress_debug_info`, `log_raw_request_response = False`, `redact_messages_in_exceptions`, `disable_hf_tokenizer_download`, y quitar los handlers de los loggers `LiteLLM*` para que pasen por los del motor (stderr, con redacción).
 3. Tras cada llamada lógica: `close_litellm_async_clients()` + `flush_cache()`.
 4. `langsmith.configure(enabled=False)` antes de construir un grafo.
@@ -198,8 +198,8 @@ uv run --group bundle python scripts/bundle_smoke_build.py --tiktoken-file <copi
    - `uv run python scripts/manual_llm_check.py openai`
    - `uv run python scripts/manual_llm_check.py gemini`
 
-   Pega la clave cuando la pida. No se muestra, no va en argumentos ni en variables de entorno, no se lee del llavero ni se guarda. El script lista los modelos (sin costo) con `certifi` y con `truststore`, y muestra solo el código HTTP y cuántos modelos devolvió.
-3. Opcional, para probar el transporte exacto del motor: `--completion <proveedor>/<modelo barato>` hace **una** llamada con LiteLLM (`max_tokens=5`, fracciones de centavo).
+   Pega la clave cuando la pida. No se muestra, no va en argumentos ni en variables de entorno, no se lee del llavero, no se escribe en ningún archivo y no se conserva tras salir el proceso (Python no permite borrar el contenido de una `str`; `del` solo suelta la referencia). Antes de pedirla, el script limpia su entorno (incluidas `OPENAI_BASE_URL` y similares, que desviarían la clave a otro host) y aborta si algo queda. El script lista los modelos (sin costo) en el host oficial con `certifi` y con `truststore`, y muestra solo el código HTTP y cuántos modelos devolvió.
+3. Opcional, para probar el transporte exacto del motor: `--completion <proveedor>/<modelo barato>` hace **una** llamada con LiteLLM (`max_tokens=5`, fracciones de centavo), en modo `PRODUCTION` (sin leer ningún `.env`), con `api_base` fijo al host oficial y la clave explícita. Con Anthropic y Gemini, LiteLLM descarga antes `cl100k_base` de `openaipublic.blob.core.windows.net` (sin clave; hallazgo 5 de §10).
 4. Copia aquí las líneas que imprime (no contienen la clave). **Resultado esperado** con Norton: `[certifi] FALLO de conexión … SSLCertVerificationError…` y `[truststore] HTTP 200`.
 
 | Proveedor | `certifi` | `truststore` | LiteLLM (opcional) | Fecha |
@@ -220,7 +220,7 @@ uv run --group bundle python scripts/bundle_smoke_build.py --tiktoken-file <copi
 | # | Hallazgo | Para |
 | --- | --- | --- |
 | 1 | LiteLLM escribe en **stdout** (canal del protocolo) los registros por debajo de WARNING. Hay que quitar sus handlers. | T6 (`ingeniero-ia`), revisor-seguridad |
-| 2 | `SSL_VERIFY=False` en el entorno desactiva TLS en LiteLLM; `SSLKEYLOGFILE` escribe las claves de sesión TLS (en este equipo lo pone Norton). El motor debe quitarlas de su entorno al arrancar. | T6/T7 (`motor-python`), revisor-seguridad |
+| 2 | `SSL_VERIFY=False` en el entorno desactiva TLS en LiteLLM; `SSLKEYLOGFILE` escribe las claves de sesión TLS (en este equipo lo pone Norton). El motor debe quitarlas de su entorno al arrancar. `SSLKEYLOGFILE`: **hecho** en `__main__` (§12, condición 8); el resto, condiciones 1 y 2 de §12. | T6/T7 (`motor-python`), revisor-seguridad |
 | 3 | Con `LANGSMITH_TRACING=true` en el entorno del usuario, el estado de los grafos sale a LangSmith. `langsmith.configure(enabled=False)` y entorno limpio. | T8, revisor-seguridad |
 | 4 | OpenAI: clave en claro dentro de la clave de la caché de clientes y en el `AsyncOpenAI` guardado 1 h. Vaciar tras cada llamada. | T6, revisor-seguridad |
 | 5 | LiteLLM 1.104 no trae `cl100k_base`; Anthropic y Gemini lo descargan y lo escriben en la carpeta del paquete. Incluirlo en el motor con su SHA-256. | T6, T11 |
@@ -236,6 +236,52 @@ uv run --group bundle python scripts/bundle_smoke_build.py --tiktoken-file <copi
 
 - `apps/engine/pyproject.toml`, `apps/engine/uv.lock`: dependencias, grupo `bundle`, marcador `vec`, mypy y ruff para `scripts/`.
 - `apps/engine/scripts/bundle_smoke.py`, `bundle_smoke_build.py`, `manual_llm_check.py`, `pyinstaller_hooks/hook-litellm.py`, `pyinstaller_hooks/hook-tiktoken.py`.
-- `apps/engine/tests/llm/test_litellm_isolation.py`, `tests/deps/offline_probe.py`, `tests/deps/helpers.py`, `tests/deps/test_offline_imports.py`, `tests/db/test_sqlite_vec.py`.
+- `apps/engine/tests/llm/test_litellm_isolation.py`, `tests/llm/test_manual_llm_check.py`, `tests/deps/manual_check_probe.py`, `tests/deps/offline_probe.py`, `tests/deps/helpers.py`, `tests/deps/test_offline_imports.py`, `tests/db/test_sqlite_vec.py`.
 - `.github/workflows/engine-bundle-smoke.yml`; `.github/workflows/ci.yml`, `package.json` y `apps/engine/README.md` (mypy con `scripts/`, uso de los scripts).
 - Skills: `capa-llm`, `agentes-langgraph`, `migraciones-sqlite`, `tauri-sidecar-python` y `release-y-firma`.
+- Correcciones de la revisión de seguridad (§12): `apps/engine/faro_engine/__main__.py` (`SSLKEYLOGFILE`), `apps/engine/tests/test_main.py` y `apps/engine/pyproject.toml` (E402 en `__main__.py`).
+
+## 12. Condiciones obligatorias de la revisión de seguridad
+
+Resultado de la revisión de `revisor-seguridad` sobre T2. Ya corregido en este cambio:
+
+- **B (medio) y G (bajo), `scripts/manual_llm_check.py`.** El script no quitaba `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `ANTHROPIC_API_BASE`, `ANTHROPIC_BASE_URL` ni `GEMINI_API_BASE`, y no fijaba `api_base`: con una de ellas apuntando a otro host, LiteLLM enviaba allí la clave real. Además, en modo `DEV` (por defecto) `import litellm` llama a `load_dotenv()` y reintroduce variables desde un `.env` de un directorio superior. Ahora:
+  - fija `LITELLM_MODE=PRODUCTION` y `LITELLM_LOCAL_MODEL_COST_MAP=True`;
+  - limpia la lista completa de la condición 1 antes de pedir la clave, y otra vez antes **y** después del import, y comprueba que no queda nada (si queda, aborta con código 3 sin enviar la clave);
+  - usa `api_base` fijo al host oficial y `api_key` explícita;
+  - lista los modelos solo en el host oficial (`https`, host exacto, sin puerto, `trust_env=False`);
+  - desactiva los loggers de LiteLLM;
+  - el texto sobre la clave dice ahora que no se conserva tras salir el proceso (`del` no borra el contenido de una `str`).
+
+  Pruebas en `tests/llm/test_manual_llm_check.py`, con la red bloqueada salvo loopback y claves falsas: una trampa en loopback, apuntada por todas esas variables y por un `.env` en el directorio padre, no recibe ninguna conexión con ninguno de los tres proveedores; solo se intenta el host oficial (y la descarga de `cl100k_base`); el `.env` no se carga (una prueba de control muestra que en `DEV` sí); `SSLKEYLOGFILE` no crea su archivo; la salida nunca contiene la clave, también con `LITELLM_LOG=DEBUG`.
+- **D (medio), afecta a F1a.** `ssl.create_default_context` aplica `SSLKEYLOGFILE` y Norton la fija en el equipo del usuario: las claves de sesión TLS de las conexiones a WordPress se escribían en un archivo. `faro_engine/__main__.py` la quita del entorno antes de cualquier otro import. Prueba en `tests/test_main.py`: en un proceso aparte, tras importar el punto de entrada, un contexto TLS nuevo no tiene `keylog_filename` y el archivo no existe (con prueba de control sin quitarla).
+- **I (bajo), skill `capa-llm`.** Lista de variables completada; "nunca `api_base`" sustituido por "`api_base` fijo al host oficial del catálogo"; `LITELLM_MODE=PRODUCTION` y limpieza antes y después del import.
+
+**Condiciones para T6, T7 y T11** (no implementadas en T2; `revisor-seguridad` las comprueba en cada tarea):
+
+1. **Antes de `import litellm`:**
+   - `LITELLM_MODE=PRODUCTION`, `LITELLM_LOCAL_MODEL_COST_MAP=True` y `CUSTOM_TIKTOKEN_CACHE_DIR` apuntando al `cl100k_base` incluido en el motor;
+   - `truststore.inject_into_ssl()`;
+   - quitar del entorno `SSL_VERIFY`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `SSLKEYLOGFILE`, `LANGSMITH_*`, `LANGCHAIN_*`, el resto de `LITELLM_*` (incluido `LITELLM_LOG`) y todas las `OPENAI_*`, `ANTHROPIC_*` y `GEMINI_*`, incluidas `*_API_KEY`, `*_API_BASE` y `*_BASE_URL` (el script quita también `GOOGLE_API_KEY`, que LiteLLM usa como clave de Gemini).
+2. **Después del import:** repetir la limpieza y comprobarla (si queda algo, el adaptador no se carga), con una prueba de `.env` en un directorio padre.
+3. `api_base` fijo al host oficial y `api_key` explícita en cada llamada.
+4. Loggers `LiteLLM*` sin handlers, `propagate=True`, nivel `WARNING`. Prueba: con `LITELLM_LOG=DEBUG`, stdout solo contiene líneas del protocolo. Motivo: el núcleo trata como `secret_request` una línea de stdout con JSON, que podría venir de una página rastreada.
+5. Configuración de LiteLLM:
+   - callbacks vacíos y `cache=None`;
+   - `turn_off_message_logging`, `suppress_debug_info`, `log_raw_request_response=False`, `redact_messages_in_exceptions` y `disable_hf_tokenizer_download`.
+6. `close_litellm_async_clients()` + `flush_cache()` en un `finally` tras cada llamada lógica, también con error o cancelación.
+7. `langsmith.configure(enabled=False)` antes de construir cualquier grafo.
+8. `SSLKEYLOGFILE` fuera del entorno al principio de `__main__`. **Hecho en este cambio.**
+9. Importar LiteLLM de forma perezosa, después de `ready`.
+10. Fixture automático de bloqueo de red en las pruebas, sin confiar en `respx` con el transporte aiohttp. Más adelante, aislamiento a nivel de sistema operativo (`unshare -rn` en la CI de Linux) o `sys.addaudithook`.
+11. **(T7/T11, núcleo):** lanzar el motor con `env_clear()` y una lista de variables permitidas. Hoy `launcher.rs:281-286` hereda todo el entorno.
+12. **(T11):** `hook-litellm.py` con lista permitida (núcleo + openai, anthropic y gemini) en vez de `collect_submodules("litellm")`, y build sin red.
+13. **Vigilar** `httpx2` y `httpcore2`: son paquetes nuevos y sin attestations.
+
+**Recomendación del revisor sobre el hallazgo 6** (`truststore`; afecta también al 7 de §10, `net/client.py` con `certifi` detrás de Norton). Lo decide `arquitecto`:
+
+- adoptar `truststore` para todo el HTTPS del motor, incluido `faro_engine/net/client.py`, con `verify=truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)`;
+- mantener `trust_env=False`, `CERT_REQUIRED`, `check_hostname` y la fijación de IP con `sni_hostname`;
+- modificar el ADR 0012 en ese sentido.
+
+`net/client.py` no cambia en este cambio.
