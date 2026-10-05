@@ -73,6 +73,24 @@ sites/ service.py (connect, reconnect, check, list_content, remove)  repository.
 
 Regla: las rutas (`core/routes/`) solo validan y llaman a un caso de uso; la lógica vive en el paquete de dominio (`sites/`), las peticiones a sitios en `wordpress/` y toda la red en `net/`.
 
+## Skills por capa
+
+Empieza siempre por esta. Después, carga la de la capa que vas a tocar (todas en `.claude/skills/<nombre>/SKILL.md`):
+
+| Capa o tema | Skills |
+| --- | --- |
+| Interfaz | `sistema-diseno-faro`, `i18n-es-primero`, `contratos-api-local` (consumir operaciones) |
+| Núcleo Rust | `tauri-comandos-y-permisos`, `tauri-sidecar-python`, `llavero-y-cifrado` |
+| Motor: API local y base | `contratos-api-local`, `migraciones-sqlite`, `llavero-y-cifrado` |
+| Motor: capa de IA (`faro_engine/llm`) | [`capa-llm`](../capa-llm/SKILL.md) |
+| Motor: agentes (`faro_engine/agents`, `core/jobs`) | [`agentes-langgraph`](../agentes-langgraph/SKILL.md), [`herramientas-de-agente`](../herramientas-de-agente/SKILL.md), [`prompts-y-evals`](../prompts-y-evals/SKILL.md), además de `capa-llm` |
+| Plugin WordPress | `wordpress-plugin` |
+| Pruebas | `pruebas-faro` |
+| Seguridad y revisión | `revision-seguridad` |
+| CI, build y publicación | `release-y-firma` |
+
+Las cuatro skills de IA y agentes (F1b) describen el **diseño de referencia** de la spec F1b; se ajustan al código real al cerrar la fase.
+
 ## Convenciones
 
 **Nombres**
