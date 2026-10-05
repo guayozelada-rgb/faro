@@ -48,6 +48,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# Quita `SSLKEYLOGFILE` del entorno antes de importar nada que pueda crear un contexto TLS.
+"faro_engine/__main__.py" = ["E402"]
 "tests/**" = ["S101", "S105", "S106", "S603", "PLR2004", "ARG001", "S104", "PLC0415"]
 # Herramientas de empaquetado (spec F1b T2): lanzan PyInstaller y el ejecutable, e importan
 # dentro de cada comprobación para que la variante `base` funcione sin las deps de F1b.

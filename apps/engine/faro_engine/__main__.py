@@ -23,14 +23,21 @@ Protocolo (spec F0 §4.4, skill `tauri-sidecar-python`, ADR 0004):
 
 Códigos de salida: 0 = apagado normal, 1 = no se pudo abrir el socket, 2 = uso o token
 inválido. Un problema con la base nunca cambia el código de salida (ADR 0009 §4).
+
+Antes de cualquier otro import se quita `SSLKEYLOGFILE` del entorno: la biblioteca estándar
+la aplica en `ssl.create_default_context` y escribiría las claves de sesión TLS (p. ej. de
+las conexiones a WordPress) en ese archivo. Algunos antivirus la fijan en todo el equipo.
 """
 
 from __future__ import annotations
 
+import os
+
+os.environ.pop("SSLKEYLOGFILE", None)
+
 import argparse
 import asyncio
 import contextlib
-import os
 import signal
 import socket
 import sys

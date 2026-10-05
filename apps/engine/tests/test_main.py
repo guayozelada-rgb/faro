@@ -8,6 +8,8 @@ import os
 import secrets
 import signal
 import socket
+import subprocess
+import sys
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -25,6 +27,7 @@ from faro_engine.core.audit import AuditLog
 from faro_engine.core.db.database import Database
 from faro_engine.core.db.profile import dev_data_dir, profile_db_path
 from faro_engine.core.secrets import SecretBroker
+from tests.conftest import ENGINE_DIR
 from tests.db.helpers import (
     DB_KEY_ERROR_LINE,
     TEST_KEY_HEX,
@@ -622,3 +625,36 @@ def test_run_dev_reads_allow_local_sites(
     thread.join(WAIT)
     assert result == [entry.EXIT_OK]
     assert captured[0].allow_local_sites is expected
+
+
+def test_sslkeylogfile_fuera_del_entorno_antes_de_crear_contextos_tls(tmp_path: Path) -> None:
+    """Revisión de seguridad de F1b T2 (hallazgo D): ningún contexto TLS escribe sus claves."""
+    keylog = tmp_path / "keylog.txt"
+    env = {**os.environ, "SSLKEYLOGFILE": str(keylog)}
+    code = (
+        "import os, ssl, sys\n"
+        "import faro_engine.__main__\n"
+        "context = ssl.create_default_context()\n"
+        "sys.stderr.write(repr((os.environ.get('SSLKEYLOGFILE'), context.keylog_filename)))\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=ENGINE_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr[-2000:]
+    assert completed.stderr.endswith("(None, None)")
+    assert not keylog.exists()
+
+
+def test_motivo_sslkeylogfile_crea_el_archivo_de_claves(tmp_path: Path) -> None:
+    """Sin quitarla, `ssl.create_default_context` abre el archivo de claves de sesión TLS."""
+    keylog = tmp_path / "keylog.txt"
+    env = {**os.environ, "SSLKEYLOGFILE": str(keylog)}
+    code = "import ssl\nssl.create_default_context()\n"
+    subprocess.run([sys.executable, "-c", code], env=env, check=True, timeout=60)
+    assert keylog.exists()
