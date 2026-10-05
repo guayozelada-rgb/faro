@@ -37,6 +37,7 @@ Pasos por plataforma:
 - Entitlements mínimos en `src-tauri/entitlements.plist` (red saliente; Python puede requerir `com.apple.security.cs.allow-unsigned-executable-memory`: documentar cualquier entitlement extra en ADR).
 - Secretos: `APPLE_CERTIFICATE` (p12 en base64), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, y para notarizar `APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_PATH` (o `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`).
 - Verificar después del build: `codesign --verify --deep --strict` y `spctl -a -vv`.
+- La carpeta `--onedir` del motor lleva librerías nativas (`.so`/`.dylib` de `sqlcipher3`, `tokenizers`, `tiktoken`, `orjson`, `pydantic_core`… y, cuando se use, `vec0.dylib` de `sqlite-vec`): **todas** se firman con la misma Developer ID y hardened runtime. `sqlite-vec` se carga con `load_extension`, así que con la validación de librerías del hardened runtime solo carga si `vec0.dylib` está firmada por el mismo equipo; no añadas `com.apple.security.cs.disable-library-validation` sin ADR (F1b T2).
 
 ## Updater
 - Plugin `tauri-plugin-updater` con `createUpdaterArtifacts: true`.
