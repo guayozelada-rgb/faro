@@ -23,7 +23,7 @@
     "lint:py": "uv run --directory apps/engine ruff check .",
     "format": "prettier --write . && cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml && uv run --directory apps/engine ruff format .",
     "format:check": "prettier --check . && cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check && uv run --directory apps/engine ruff format --check .",
-    "typecheck": "npm run typecheck --workspaces --if-present && uv run --directory apps/engine mypy faro_engine tests",
+    "typecheck": "npm run typecheck --workspaces --if-present && uv run --directory apps/engine mypy faro_engine tests scripts",
     "test": "npm run test:desktop && npm run test:core && npm run test:engine && npm run test:contracts && npm run test:scripts",
     "test:desktop": "npm run test -w apps/desktop",
     "test:core": "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",

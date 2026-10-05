@@ -98,7 +98,7 @@ jobs:
         run: uv run --locked ruff check .
 
       - name: Tipos (mypy --strict)
-        run: uv run --locked mypy faro_engine tests
+        run: uv run --locked mypy faro_engine tests scripts
 
       # Umbrales en pyproject.toml y tests/conftest.py: 80 % global, 95 % en los módulos de
       # [tool.faro.coverage] strict_modules (seguridad, protocolo y base cifrada).

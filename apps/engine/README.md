@@ -10,7 +10,7 @@ Motor local de Faro: servidor FastAPI que el núcleo Tauri lanza como proceso hi
 | Pruebas + cobertura | `npm run test:engine` |
 | Lint | `npm run lint:py` |
 | Formato | `uv run --directory apps/engine ruff format --check .` |
-| Tipos | `uv run --directory apps/engine mypy faro_engine tests` |
+| Tipos | `uv run --directory apps/engine mypy faro_engine tests scripts` |
 | Modo externo (desarrollo) | `npm run dev:engine` |
 | Exportar OpenAPI | `uv run --directory apps/engine python -m faro_engine.export_openapi` |
 
@@ -53,3 +53,5 @@ Sin `--dev` nada de esto cambia: EOF y `shutdown` apagan el motor, como exige el
 
 - Incluir las migraciones `.sql` como datos del paquete (por ejemplo, `--collect-data faro_engine`); sin ellas el motor arranca con `db.migration_failed`.
 - Cuando se use `sqlite-vec`, hará falta `--collect-all sqlite_vec` para que su extensión nativa entre en el paquete.
+- Prueba de empaquetado (spec F1b T2): `uv sync --locked --group bundle` y `uv run --locked --group bundle python scripts/bundle_smoke_build.py`. Construye el motor `--onedir` sin y con las dependencias de F1b (hooks en `scripts/pyinstaller_hooks/`), ejecuta `scripts/bundle_smoke.py` empaquetado y mide el tamaño (salida en `build/bundle-smoke/`). En GitHub: workflow manual `engine-bundle-smoke`.
+- Comprobación manual de HTTPS con tu clave real (criterio 8 de ADR 0015 §6, solo en tu equipo): `uv run python scripts/manual_llm_check.py <anthropic|openai|gemini>`. Pide la clave sin mostrarla y no la guarda.
