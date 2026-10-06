@@ -4,20 +4,39 @@ Solo la ejecuta el usuario, en su equipo, con su clave. Nunca en la CI ni por un
 
 Qué hace, para un proveedor (`anthropic`, `openai` o `gemini`):
 
-1. Limpia el entorno del proceso (anulaciones de TLS, `SSLKEYLOGFILE`, LangSmith y las
-   variables `OPENAI_*`, `ANTHROPIC_*`, `GEMINI_*` y `LITELLM_*`, incluidas las que cambian
-   el host de destino como `OPENAI_BASE_URL`), para que nada desvíe la clave a otro host.
+1. Limpia el entorno del proceso para que nada desvíe la clave a otro host ni debilite TLS.
+   Quita (sin distinguir mayúsculas de minúsculas, como hace Windows):
+   - todas las variables que empiezan por `SSL_` (p. ej. `SSL_VERIFY`, `SSL_CERT_FILE`,
+     `SSL_CERT_DIR`, `SSL_CERTIFICATE`, `SSL_SECURITY_LEVEL`, `SSL_ECDH_CURVE`), además de
+     `SSLKEYLOGFILE`, `REQUESTS_CA_BUNDLE` y `CURL_CA_BUNDLE`;
+   - los proxies `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` y `NO_PROXY` (también
+     `http_proxy`, `https_proxy`, `all_proxy` y `no_proxy`);
+   - `DISABLE_AIOHTTP_TRANSPORT`, las que empiezan por `AIOHTTP_` (p. ej.
+     `AIOHTTP_TRUST_ENV`) y `CUSTOM_TIKTOKEN_CACHE_DIR`;
+   - `GOOGLE_API_KEY` y las que empiezan por `LANGSMITH_`, `LANGCHAIN_`, `LITELLM_`,
+     `OPENAI_`, `ANTHROPIC_` y `GEMINI_` (incluidas las que cambian el host de destino,
+     como `OPENAI_BASE_URL`), salvo las `LITELLM_*` que fija el propio script.
+   El proxy del registro de Windows no es una variable: lo evita el cliente propio
+   (`trust_env=False`, puntos 3 y 4).
 2. Pide la clave con `getpass`: no se muestra, no va en argumentos ni variables de entorno,
    no se lee del llavero, no se escribe en ningún archivo y no se conserva tras salir el
    proceso.
 3. Lista los modelos del proveedor (GET, **sin costo**) en su host oficial con httpx dos
    veces: con las raíces de `certifi` y con el almacén del sistema (`truststore`). Así se ve
    si el antivirus que intercepta HTTPS rompe `certifi` y si `truststore` lo resuelve.
+   El cliente no usa proxies ni CA del entorno ni del registro (`trust_env=False`) y no
+   sigue redirecciones.
 4. Con `--completion <modelo>`, hace además **una** llamada mínima con LiteLLM
    (`max_tokens=5`, costo de fracciones de centavo) con el almacén del sistema, para probar
    el transporte que usará el motor. LiteLLM se importa en modo `PRODUCTION` (sin leer
-   ningún `.env`), el entorno se vuelve a limpiar y comprobar después del import y la
-   llamada lleva un `api_base` fijo al host oficial y la clave explícita.
+   ningún `.env`), el entorno se vuelve a limpiar y comprobar después del import, el
+   directorio de trabajo sale de `sys.path` (LiteLLM lo añade al importarse y tiktoken
+   ejecutaría cualquier `tiktoken_ext/*.py` que hubiera ahí) y la llamada lleva un
+   `api_base` fijo al host oficial y la clave explícita. LiteLLM recibe un cliente HTTP
+   propio (parámetro `client`) con `follow_redirects=False`, `trust_env=False` y el
+   almacén del sistema: un 307 del host oficial hacia otro origen no reenvía la clave
+   (LiteLLM sigue redirecciones por defecto y no quita `x-api-key` ni `x-goog-api-key`)
+   y ningún proxy del entorno o del registro de Windows la recibe.
 
 Solo muestra códigos de estado, nombres de error y cuántos modelos devolvió: nunca la clave,
 ni las respuestas, ni los mensajes de error del proveedor.
@@ -40,6 +59,7 @@ import ssl
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final
 from urllib.parse import urlsplit
 
@@ -74,24 +94,34 @@ PROVIDERS: Final = {
     ),
 }
 TIMEOUT_S: Final = 30
+COMPLETION_TIMEOUT_S: Final = 60
 EXIT_UNSAFE_ENV: Final = 3
 
 # Variables que se fijan antes de importar LiteLLM y son las únicas `LITELLM_*` permitidas.
 # PRODUCTION: `import litellm` no llama a `load_dotenv()` (en DEV busca un `.env` hacia
 # arriba y reintroduce variables ya limpiadas). Mapa de precios local: sin descargas.
 REQUIRED_ENV: Final = {"LITELLM_MODE": "PRODUCTION", "LITELLM_LOCAL_MODEL_COST_MAP": "True"}
+# Se comparan en mayúsculas: `https_proxy` y `HTTPS_PROXY` son la misma entrada.
 SCRUBBED_NAMES: Final = frozenset(
     {
-        "SSL_VERIFY",
-        "SSL_CERT_FILE",
-        "SSL_CERT_DIR",
-        "REQUESTS_CA_BUNDLE",
         "SSLKEYLOGFILE",  # escribe las claves de sesión TLS en un archivo
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "HTTP_PROXY",  # httpx (con `trust_env`), aiohttp (`AIOHTTP_TRUST_ENV`) y requests
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "DISABLE_AIOHTTP_TRANSPORT",  # cambia a httpx con los proxies del entorno
+        "CUSTOM_TIKTOKEN_CACHE_DIR",  # vocabulario de tiktoken desde otra carpeta
         "GOOGLE_API_KEY",  # LiteLLM la usa como clave de Gemini si falta la explícita
     }
 )
+# `SSL_*`: `SSL_VERIFY`, `SSL_CERT_FILE`, `SSL_CERTIFICATE`, `SSL_SECURITY_LEVEL`…
+# `AIOHTTP_*`: `AIOHTTP_TRUST_ENV` activa los proxies del entorno en aiohttp.
 # Incluye `*_API_KEY`, `*_API_BASE` y `*_BASE_URL`: cambiarían la clave o el host de destino.
 SCRUBBED_PREFIXES: Final = (
+    "SSL_",
+    "AIOHTTP_",
     "LANGSMITH_",
     "LANGCHAIN_",
     "LITELLM_",
@@ -180,7 +210,8 @@ def list_models(provider: str, key: str, store: str) -> None:
 
         verify = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     try:
-        # `trust_env=False`: ni proxies ni CA del entorno, como el cliente del motor.
+        # `trust_env=False`: ni proxies (tampoco el del registro de Windows, que `getproxies()`
+        # lee si no hay variables) ni CA del entorno, como el cliente del motor.
         with httpx.Client(
             verify=verify, timeout=TIMEOUT_S, follow_redirects=False, trust_env=False
         ) as client:
@@ -196,11 +227,23 @@ def list_models(provider: str, key: str, store: str) -> None:
     _say(f"  [{store:10s}] HTTP {response.status_code} (modelos listados: {count})")
 
 
+def drop_cwd_from_sys_path() -> None:
+    """Quita de `sys.path` el directorio de trabajo (también `""`, que significa lo mismo).
+
+    `import litellm` ejecuta `sys.path.append(os.getcwd())` (`litellm/proxy/proxy_cli.py`) y
+    tiktoken importa todo `tiktoken_ext/*.py` que encuentre en `sys.path`: un archivo puesto
+    en el directorio de trabajo se ejecutaría dentro del proceso que tiene la clave.
+    """
+    cwd = Path.cwd().resolve()
+    sys.path[:] = [entry for entry in sys.path if entry and Path(entry).resolve() != cwd]
+
+
 def import_litellm() -> Any:
     """Importa LiteLLM endurecido: entorno limpio antes **y** después del import.
 
     `truststore` se inyecta antes: LiteLLM guarda al importarse un contexto TLS con certifi.
     Si tras el import queda alguna variable peligrosa, lanza `UnsafeEnvironmentError`.
+    Después del import, el directorio de trabajo sale de `sys.path` (`drop_cwd_from_sys_path`).
     """
     import truststore
 
@@ -209,6 +252,7 @@ def import_litellm() -> Any:
     truststore.inject_into_ssl()
     import litellm
 
+    drop_cwd_from_sys_path()
     clean_environment()
     check_environment()
     litellm.api_base = None
@@ -233,6 +277,81 @@ def import_litellm() -> Any:
     return litellm
 
 
+def _safe_transport() -> Any:
+    """Transporte httpx con el almacén del sistema y sin nada del entorno ni del registro."""
+    import httpx
+    import truststore
+
+    return httpx.AsyncHTTPTransport(
+        verify=truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT), trust_env=False
+    )
+
+
+def build_litellm_client(provider: str, key: str, api_base: str) -> Any:
+    """Cliente propio para el parámetro `client` de `litellm.acompletion` (LiteLLM 1.104.0).
+
+    Sin él, LiteLLM crea su cliente con `follow_redirects=True` (`AsyncHTTPHandler`,
+    `http_handler.py:618`, y el `httpx.AsyncClient` de OpenAI) y, con
+    `DISABLE_AIOHTTP_TRANSPORT` o `AIOHTTP_TRUST_ENV`, usa los proxies del entorno: un 307
+    del host oficial a otro origen recibiría `x-api-key` o `x-goog-api-key` (httpx solo
+    quita `authorization` al cambiar de origen). Con este cliente:
+
+    - `follow_redirects=False`: un 3xx es un error y no se envía nada a otro sitio;
+    - `trust_env=False` en el cliente y en el transporte: ni proxies (tampoco el del registro
+      de Windows), ni `SSL_CERT_FILE`, ni `.netrc`;
+    - verificación TLS con `truststore` (almacén del sistema), sin aiohttp.
+
+    Anthropic y Gemini aceptan un `AsyncHTTPHandler` con `transport` propio (también se usa
+    si LiteLLM recrea el cliente tras un error de conexión). OpenAI exige un `AsyncOpenAI`,
+    que se construye con la clave, el `api_base` fijo y el `httpx.AsyncClient` propio.
+    Hay que cerrarlo con `close_litellm_client`.
+    """
+    if provider == "openai":
+        import httpx
+        import openai
+
+        http_client = httpx.AsyncClient(
+            transport=_safe_transport(),
+            follow_redirects=False,
+            trust_env=False,
+            timeout=COMPLETION_TIMEOUT_S,
+        )
+        return openai.AsyncOpenAI(
+            api_key=key,
+            base_url=api_base,
+            http_client=http_client,
+            max_retries=0,
+            timeout=COMPLETION_TIMEOUT_S,
+        )
+    from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
+
+    return AsyncHTTPHandler(
+        timeout=COMPLETION_TIMEOUT_S, transport=_safe_transport(), follow_redirects=False
+    )
+
+
+async def close_litellm_client(client: Any) -> None:
+    await client.close()
+
+
+async def send_completion(litellm: Any, provider: str, model: str, key: str, api_base: str) -> Any:
+    """`acompletion` con el cliente propio. Las pruebas la llaman con un `api_base` en loopback."""
+    client = build_litellm_client(provider, key, api_base)
+    try:
+        return await litellm.acompletion(
+            model=model,
+            api_base=api_base,
+            api_key=key,
+            client=client,
+            messages=[{"role": "user", "content": "Responde solo: ok"}],
+            max_tokens=5,
+            num_retries=0,
+            timeout=COMPLETION_TIMEOUT_S,
+        )
+    finally:
+        await close_litellm_client(client)
+
+
 async def completion(provider: str, model: str, key: str) -> bool:
     """Una llamada mínima. `False` si se abortó antes de enviar nada."""
     try:
@@ -244,15 +363,7 @@ async def completion(provider: str, model: str, key: str) -> bool:
 
     api_base = _official_url(provider, PROVIDERS[provider].api_base)
     try:
-        response = await litellm.acompletion(
-            model=model,
-            api_base=api_base,
-            api_key=key,
-            messages=[{"role": "user", "content": "Responde solo: ok"}],
-            max_tokens=5,
-            num_retries=0,
-            timeout=60,
-        )
+        response = await send_completion(litellm, provider, model, key, api_base)
         usage = response.usage
         _say(
             f"  [litellm   ] OK (tokens: {usage.prompt_tokens} de entrada, "

@@ -25,6 +25,7 @@ import pytest
 from tests.conftest import ENGINE_DIR
 from tests.deps.helpers import PROBE_TIMEOUT_S
 from tests.deps.manual_check_probe import DOTENV_MARKER, load_script
+from tests.deps.offline_probe import FAKE_KEYS as PROBE_KEYS
 
 # Claves falsas partidas para que no parezcan secretos (gitleaks).
 FAKE_KEYS = {
@@ -169,6 +170,41 @@ def test_la_clave_solo_va_al_host_oficial(provider: str, trap: Trap, workdir: Pa
     assert "[litellm   ] FALLO" in output
 
 
+PROVIDERS = ("openai", "anthropic", "gemini")
+
+
+def test_cliente_propio_no_sigue_redirecciones_ni_usa_proxies(tmp_path: Path) -> None:
+    """Con `send_completion`, un 307 del "host oficial" no llega a otro puerto ni a un proxy.
+
+    El "host oficial" es un servidor en loopback que responde 307 hacia otro puerto; todos
+    los proxies del entorno (y `DISABLE_AIOHTTP_TRANSPORT`, `AIOHTTP_TRUST_ENV`) apuntan a
+    un tercero. Las claves falsas salen de `tests.deps.offline_probe.FAKE_KEYS`.
+    """
+    report, output = run_harness(tmp_path, {}, "client_isolation")
+    for provider in PROVIDERS:
+        result = report["proxies"][provider]
+        assert result["official_key_headers"], result  # la petición llegó directa
+        assert result["other_hits"] == 0, result
+        assert result["proxy_hits"] == 0, result
+        assert "error" in result  # el 307 es un error, no se sigue
+    assert report["attempts"] == []
+    for key in PROBE_KEYS.values():
+        assert key not in output
+
+
+def test_motivo_sin_cliente_propio_litellm_sigue_el_307_y_usa_proxies(tmp_path: Path) -> None:
+    """Control: el cliente por defecto de LiteLLM 1.104.0 reenvía `x-api-key` y
+    `x-goog-api-key` tras un 307 a otro puerto (httpx solo quita `authorization`) y envía
+    la clave al proxy del entorno con `DISABLE_AIOHTTP_TRANSPORT=True`."""
+    report, _ = run_harness(tmp_path, {}, "control_client")
+    redirect = report["redirect"]
+    assert redirect["anthropic"]["other_key_headers"] == ["x-api-key"]
+    assert redirect["gemini"]["other_key_headers"] == ["x-goog-api-key"]
+    assert redirect["openai"]["other_hits"] == 1  # se sigue, aunque sin `authorization`
+    for provider in PROVIDERS:
+        assert report["proxies"][provider]["proxy_key_headers"], report["proxies"][provider]
+
+
 def test_motivo_un_env_en_un_directorio_padre_si_se_carga_en_modo_dev(workdir: Path) -> None:
     """Sin `LITELLM_MODE=PRODUCTION`, `import litellm` carga el `.env` del directorio padre."""
     report, _ = run_harness(workdir, {}, "control_dotenv")
@@ -201,8 +237,19 @@ def test_limpieza_quita_las_variables_peligrosas_y_fija_las_obligatorias() -> No
         "SSL_VERIFY",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
+        "SSL_CERTIFICATE",
+        "SSL_SECURITY_LEVEL",
+        "SSL_ECDH_CURVE",
         "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
         "SSLKEYLOGFILE",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "DISABLE_AIOHTTP_TRANSPORT",
+        "AIOHTTP_TRUST_ENV",
+        "CUSTOM_TIKTOKEN_CACHE_DIR",
         "LANGSMITH_TRACING",
         "LANGCHAIN_API_KEY",
     ]
@@ -217,6 +264,14 @@ def test_limpieza_quita_las_variables_peligrosas_y_fija_las_obligatorias() -> No
     assert os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] == "True"
     assert os.environ["FARO_OTRA"] == "se queda"
     script.check_environment()
+
+
+@pytest.mark.parametrize(
+    "name", ["http_proxy", "https_proxy", "all_proxy", "no_proxy", "aiohttp_trust_env"]
+)
+def test_proxies_en_minusculas_tambien_son_inseguros(name: str) -> None:
+    env = {name: "http://127.0.0.1:1", **script.REQUIRED_ENV}
+    assert script.unsafe_variables(env) == [name]
 
 
 def test_variables_obligatorias_con_otro_valor_son_inseguras() -> None:
@@ -284,6 +339,25 @@ def test_variables_que_reaparecen_al_importar_se_vuelven_a_quitar(
     assert module.api_base is None
     assert module.callbacks == []
     assert module.turn_off_message_logging is True
+
+
+@pytest.mark.usefixtures("environ")
+def test_el_directorio_de_trabajo_sale_de_sys_path_tras_importar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`import litellm` añade `os.getcwd()` a `sys.path`; tiktoken ejecutaría ahí
+    cualquier `tiktoken_ext/*.py`."""
+    monkeypatch.setattr("truststore.inject_into_ssl", lambda: None)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    workdir = tmp_path / "trabajo"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    sys.path.insert(0, "")  # como `python -c`
+    source = "import os, sys\nsys.path.append(os.getcwd())\n"
+    with fake_litellm(tmp_path, source):
+        script.import_litellm()
+    assert "" not in sys.path
+    assert all(Path(entry).resolve() != workdir.resolve() for entry in sys.path)
 
 
 @pytest.mark.usefixtures("environ")

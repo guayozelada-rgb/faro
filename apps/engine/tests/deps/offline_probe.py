@@ -50,6 +50,8 @@ def block_network() -> None:
         raise OSError("offline_probe: red bloqueada")
 
     def getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
+        if isinstance(host, bytes):  # httpcore (anyio) pasa el host en bytes
+            host = host.decode("ascii")
         if host is None or host in LOOPBACK:
             return original_getaddrinfo(host, *args, **kwargs)
         ATTEMPTS.append(str(host))
