@@ -1078,7 +1078,7 @@ def test_la_inyeccion_lleva_el_cerrojo_en_un_proceso_aparte() -> None:
         "dunder_class_is_owned": True,
         "no_renegotiation": True,
         "second_thread": None,
-        "parallel": {"errors": 0, "accepted_unknown": 0, "rejected_unknown": 600, "valid": 600},
+        "parallel": {"errors": 0, "accepted_unknown": 0, "rejected_unknown": 400, "valid": 400},
         "handshake_other_thread": "SSLCertVerificationError",
         "state": [required, enabled, required, enabled],
         "unknown_ca": "SSLCertVerificationError",

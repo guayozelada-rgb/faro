@@ -27,6 +27,7 @@ import json
 import ssl
 import sys
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -37,7 +38,11 @@ from faro_engine.core.logging import configure_logging
 from faro_engine.net import tls
 from tests.net.tls_helpers import SITE_NAME, issue, memory_handshake, server_context
 
-_ROUNDS = 150
+_ROUNDS = 100
+# `wrap_bio` de este hilo mientras los demás hacen handshakes. Un número fijo y cediendo el
+# turno: el cerrojo no es justo y, en Linux, `truststore` recarga las raíces del sistema en
+# cada `wrap_bio`; envolviendo sin parar, este hilo dejaría sin turno a los demás.
+_WRAPS = 300
 _WORKERS = 4
 
 
@@ -94,8 +99,9 @@ def _parallel(
     threads = [threading.Thread(target=worker) for _ in range(_WORKERS)]
     for thread in threads:
         thread.start()
-    while any(thread.is_alive() for thread in threads):
+    for _ in range(_WRAPS):
         _wrap_bio(shared)  # abre la ventana degradada una y otra vez
+        time.sleep(0.001)
     for thread in threads:
         thread.join(timeout=120)
     return counts

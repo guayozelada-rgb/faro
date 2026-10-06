@@ -162,7 +162,8 @@ class TlsServer:
                 pass
             conn.data = data
             if b"\r\n\r\n" in data:
-                tls.sendall(_RESPONSE)
+                with contextlib.suppress(ssl.SSLError, OSError):  # el cliente ya cerró
+                    tls.sendall(_RESPONSE)
 
 
 @functools.cache
