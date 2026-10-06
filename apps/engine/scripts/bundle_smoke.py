@@ -271,12 +271,17 @@ def check_tls(_tmp: Path) -> dict[str, Any]:
     if not _available("litellm"):
         result["litellm_ssl_context"] = "skipped"
         return result
+    import truststore
     from litellm.llms.custom_httpx.http_handler import get_ssl_configuration
 
     context = get_ssl_configuration()
     kind = f"{type(context).__module__}.{type(context).__name__}"
-    if not kind.startswith("truststore"):
-        raise RuntimeError(f"LiteLLM no usa truststore: {kind}")
+    # La inyección pone la subclase con dueño de hilo (ADR 0012, condición 13).
+    owned = isinstance(context, truststore.SSLContext) and (
+        type(context).__name__ == "_ThreadOwnedContext"
+    )
+    if not owned:
+        raise RuntimeError(f"LiteLLM no usa truststore con dueño de hilo: {kind}")
     result["litellm_ssl_context"] = kind
     return result
 

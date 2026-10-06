@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
+import gc
 import importlib
 import json
 import os
@@ -21,8 +23,11 @@ import ssl
 import subprocess
 import sys
 import threading
+import time
+import types
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import certifi
 import httpx
@@ -589,6 +594,148 @@ def test_el_respaldo_con_certifi_no_cambia_al_conectar_desde_varios_hilos(
     assert after == before
 
 
+# --- El handshake también en el hilo dueño (revisión 2 de T2b) -----------------------------
+
+
+class _MemoryPair:
+    """Cliente (del contexto probado) y servidor unidos por `MemoryBIO`, sin sockets."""
+
+    def __init__(self, client: ssl.SSLContext, server: ssl.SSLContext, name: str) -> None:
+        self.c_in, self.c_out = ssl.MemoryBIO(), ssl.MemoryBIO()
+        self.s_in, self.s_out = ssl.MemoryBIO(), ssl.MemoryBIO()
+        self.client = client.wrap_bio(self.c_in, self.c_out, server_hostname=name)
+        self.server = server.wrap_bio(self.s_in, self.s_out, server_side=True)
+
+    def handshake(self) -> None:
+        """Avanza los dos lados hasta que el cliente termina o lanza."""
+        for _ in range(20):
+            for obj in (self.client, self.server):
+                with contextlib.suppress(ssl.SSLWantReadError):
+                    obj.do_handshake()
+            self.s_in.write(self.c_out.read())
+            self.c_in.write(self.s_out.read())
+        self.client.do_handshake()
+
+
+def _owner_inside_wrap_socket(context: ssl.SSLContext, during: Callable[[], None]) -> None:
+    """Este hilo (el dueño) entra en `wrap_socket` y, mientras espera, se ejecuta `during`.
+
+    Un servidor de loopback acepta la conexión y no contesta: el handshake del dueño espera
+    hasta su tiempo límite con el contexto interno en `CERT_NONE` (la ventana del revisor).
+    `during` corre en otro hilo y empieza cuando el dueño ya está dentro.
+    """
+    release = threading.Event()
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        port = listener.getsockname()[1]
+
+        def hold() -> None:
+            conn, _ = listener.accept()
+            with conn:
+                release.wait(10)
+
+        def delayed() -> None:
+            time.sleep(0.3)
+            during()
+
+        holder = threading.Thread(target=hold, daemon=True)
+        other = threading.Thread(target=delayed)
+        holder.start()
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1.5) as raw:
+                other.start()
+                with pytest.raises((OSError, ssl.SSLError)):
+                    context.wrap_socket(raw, server_hostname=SITE_NAME)
+        finally:
+            if other.ident is not None:
+                other.join(timeout=10)
+            release.set()
+            holder.join(timeout=10)
+        assert not other.is_alive()
+
+
+def test_handshake_desde_otro_hilo_falla_cerrado() -> None:
+    """Reproducción `rev2_readside`: CA desconocida y nombre distinto, dueño en `wrap_socket`.
+
+    Antes, el handshake del hilo ajeno leía `CERT_NONE` y aceptaba el certificado.
+    """
+    context, _store = tls._build_tls_context()
+    stranger = server_context(issue(trustme.CA(), OTHER_NAME))
+    pair = _MemoryPair(context, stranger, SITE_NAME)  # este hilo es el dueño
+    errors: list[BaseException | None] = []
+    with capture_logs() as logs:
+        _owner_inside_wrap_socket(context, lambda: errors.append(_in_thread(pair.handshake)))
+    [error] = errors
+    assert isinstance(error, tls.WrongThreadError)
+    assert "net.tls_wrong_thread" in [e["event"] for e in logs]
+    _assert_intact(context)
+    # Control: el mismo intercambio, hecho por el dueño, llega a verificar y lo rechaza.
+    with pytest.raises(ssl.SSLCertVerificationError):
+        _MemoryPair(context, stranger, SITE_NAME).handshake()
+
+
+def test_sslsocket_do_handshake_desde_otro_hilo_falla_antes_de_tocar_el_socket() -> None:
+    context, _store = tls._build_tls_context()
+    _wrap_bio(context)  # este hilo es el dueño
+    socket_class = _inner_context(context).sslsocket_class
+    object_class = _inner_context(context).sslobject_class
+    fake: Any = object()  # si llegara a usarse, fallaría con otro error
+    assert isinstance(_in_thread(lambda: socket_class.do_handshake(fake)), tls.WrongThreadError)
+    assert isinstance(_in_thread(lambda: object_class.do_handshake(fake)), tls.WrongThreadError)
+    _assert_intact(context)
+
+
+def _write_without_handshake(pair: _MemoryPair) -> str | None:
+    """`write()` en el cliente sin llamar antes a `do_handshake()`; el servidor sí lo hace."""
+    for _ in range(20):
+        try:
+            pair.client.write(b"GET / HTTP/1.1\r\n")
+        except ssl.SSLWantReadError:
+            pass
+        except ssl.SSLError as exc:
+            return type(exc).__name__
+        else:
+            pair.s_in.write(pair.c_out.read())
+            assert pair.server.read(64) == b"GET / HTTP/1.1\r\n"
+            pair.server.write(b"HTTP/1.1 200 OK\r\n")
+            pair.c_in.write(pair.s_out.read())
+            assert pair.client.read(64) == b"HTTP/1.1 200 OK\r\n"
+            return None
+        pair.s_in.write(pair.c_out.read())
+        with contextlib.suppress(ssl.SSLWantReadError):
+            pair.server.do_handshake()
+        pair.c_in.write(pair.s_out.read())
+    raise AssertionError("el handshake implícito no terminó")
+
+
+def test_read_y_write_sin_handshake_previo_tambien_verifican(
+    ca: trustme.CA, ca_context: ssl.SSLContext
+) -> None:
+    """Sin `do_handshake()`, OpenSSL haría el handshake con `CERT_NONE` y sin `truststore`."""
+    valid = server_context(issue(ca, SITE_NAME))
+    assert _write_without_handshake(_MemoryPair(ca_context, valid, SITE_NAME)) is None
+    other_name = server_context(issue(ca, OTHER_NAME))
+    assert (
+        _write_without_handshake(_MemoryPair(ca_context, other_name, SITE_NAME))
+        == "SSLCertVerificationError"
+    )
+    unknown = server_context(issue(trustme.CA(), SITE_NAME))
+    pair = _MemoryPair(ca_context, unknown, SITE_NAME)
+    assert _write_without_handshake(pair) == "SSLCertVerificationError"
+    with pytest.raises(ssl.SSLError):
+        pair.client.read(16)  # tampoco por `read()`
+    _assert_intact(ca_context)
+
+
+def test_handshake_falla_cerrado_si_el_contexto_ya_no_existe() -> None:
+    context, _store = tls._build_tls_context()
+    object_class = _inner_context(context).sslobject_class
+    del context
+    gc.collect()
+    fake: Any = object()
+    with pytest.raises(tls.WrongThreadError):
+        object_class.do_handshake(fake)
+
+
 # --- Segunda barrera para bibliotecas (T6) ----------------------------------------------
 
 
@@ -614,8 +761,10 @@ def test_install_system_trust_construye_el_contexto_y_luego_inyecta() -> None:
     with capture_logs() as logs:
         assert tls.install_system_trust_for_libraries() == "system"
         assert tls.install_system_trust_for_libraries() == "system"  # idempotente
-    assert ssl.SSLContext is truststore.SSLContext
-    assert stdlib_context is not truststore.SSLContext
+    # La subclase con dueño de hilo, no `truststore.SSLContext` (revisión 2 de T2b).
+    assert ssl.SSLContext is tls._thread_owned_class()
+    assert issubclass(ssl.SSLContext, truststore.SSLContext)
+    assert stdlib_context is not ssl.SSLContext
     assert [(e["event"], e.get("store")) for e in logs] == [
         ("net.tls_context_ready", "system"),
         ("net.tls_libraries_trust", "system"),
@@ -627,11 +776,65 @@ def test_install_system_trust_construye_el_contexto_y_luego_inyecta() -> None:
 
 
 @pytest.mark.usefixtures("restore_ssl_injection")
+def test_la_inyeccion_sustituye_el_contexto_precargado_y_tolera_que_falte_urllib3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mismos puntos que `truststore.inject_into_ssl()` 0.10.4, con la subclase protegida."""
+    adapters = types.ModuleType("requests.adapters")
+    adapters._preloaded_ssl_context = object()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "requests.adapters", adapters)
+    monkeypatch.setitem(sys.modules, "urllib3.util.ssl_", None)  # → ImportError
+    assert tls.install_system_trust_for_libraries() == "system"
+    assert type(adapters._preloaded_ssl_context) is tls._thread_owned_class()
+    monkeypatch.setitem(sys.modules, "requests.adapters", None)  # → ImportError
+    assert tls.install_system_trust_for_libraries() == "system"
+    assert ssl.SSLContext is tls._thread_owned_class()
+
+
+@pytest.mark.usefixtures("restore_ssl_injection")
 def test_install_system_trust_no_inyecta_con_el_respaldo(monkeypatch: pytest.MonkeyPatch) -> None:
     stdlib_context = ssl.SSLContext
     monkeypatch.setitem(sys.modules, "truststore", None)
     assert tls.install_system_trust_for_libraries() == "certifi"
     assert ssl.SSLContext is stdlib_context
+
+
+def test_la_inyeccion_tiene_dueno_de_hilo_en_un_proceso_aparte() -> None:
+    """Revisión 2 de T2b: los contextos compartidos creados tras inyectar no se degradan."""
+    env = {k: v for k, v in os.environ.items() if k not in {"SSL_CERT_FILE", "SSL_CERT_DIR"}}
+    completed = subprocess.run(
+        [sys.executable, "-m", "tests.net.injection_probe"],
+        cwd=ENGINE_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=PROBE_TIMEOUT_S,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr[-3000:]
+    lines = [line for line in completed.stdout.splitlines() if line.startswith("FARO_PROBE ")]
+    assert len(lines) == 1, completed.stdout[-3000:]
+    report = json.loads(lines[0].removeprefix("FARO_PROBE "))
+    required, enabled = int(ssl.CERT_REQUIRED), True
+    assert report == {
+        "aiohttp_before": False,
+        "store": "system",
+        "ssl_is_owned": True,
+        "urllib3_is_owned": True,
+        "requests_ok": True,
+        "aiohttp_is_owned": True,
+        "default_is_owned": True,
+        "dunder_class_is_owned": True,
+        "second_thread": "WrongThreadError",
+        "parallel_failures": 800,
+        "handshake_other_thread": "WrongThreadError",
+        "state": [required, enabled, required, enabled],
+        "owner_unknown_ca": "SSLCertVerificationError",
+        "state_after": [required, enabled, required, enabled],
+        "extract_ssl": True,
+        "extract_urllib3": True,
+    }
 
 
 # --- Prueba 2: SSL_CERT_FILE y SSL_CERT_DIR (proceso aparte) --------------------------------
@@ -734,6 +937,16 @@ _FORBIDDEN_NAMES = frozenset(
         "build_opener",
         "HTTPSHandler",
         "HTTPSConnection",
+        # Revisión 2 de T2b.
+        "_create_stdlib_context",
+        "get_server_certificate",
+        "set_ciphers",
+        "set_ecdh_curve",
+        "set_alpn_protocols",
+        "set_npn_protocols",
+        "load_cert_chain",
+        "SSLObject",
+        "SSLSocket",
     }
 )
 # Atributos de un contexto que nadie fuera de `net/tls.py` puede asignar (condición 9).
@@ -753,7 +966,30 @@ _CONTEXT_ATTRS = frozenset(
     }
 )
 # Argumentos con nombre que eligen el contexto o las raíces: solo valen `tls_context()`.
-_TLS_KEYWORDS = frozenset({"verify", "ssl", "ssl_context", "context", "cafile", "capath", "cadata"})
+_TLS_KEYWORDS = frozenset(
+    {"verify", "ssl", "ssl_context", "sslcontext", "context", "cafile", "capath", "cadata"}
+)
+# Argumentos con nombre prohibidos con cualquier valor.
+_FORBIDDEN_KEYWORDS = frozenset({"cert_reqs"})
+# Bibliotecas HTTP con su propio TLS: dentro de `faro_engine`, nunca directamente (las
+# usa LiteLLM, al que llega la inyección de `install_system_trust_for_libraries()`).
+_FORBIDDEN_MODULES = frozenset({"requests", "urllib3", "aiohttp"})
+_IMPORTERS = frozenset({"import_module", "__import__"})
+# Transportes y pools que abren conexiones: exigen `verify=`/`ssl_context=tls_context()`.
+_HTTP_TRANSPORTS = frozenset(
+    {
+        "AsyncHTTPTransport",
+        "HTTPTransport",
+        "AsyncConnectionPool",
+        "ConnectionPool",
+        "AsyncHTTPProxy",
+        "HTTPProxy",
+        "AsyncSOCKSProxy",
+        "SOCKSProxy",
+    }
+)
+# Llamadas cuyo contexto TLS solo puede pasarse por nombre: posición máxima permitida.
+_MAX_POSITIONAL = {"open_connection": 2, "create_connection": 3}
 _TLS_MODULES = frozenset({"ssl", "_ssl", "truststore"})
 _HTTP_MODULES = frozenset({"httpx", "httpcore"})
 _HTTPX_FUNCTIONS = frozenset(
@@ -799,7 +1035,7 @@ def _import_violations(node: ast.Import | ast.ImportFrom) -> list[str]:
     if isinstance(node, ast.Import):
         for alias in node.names:
             top = alias.name.split(".")[0]
-            if top in {"truststore", "_ssl"}:
+            if top in {"truststore", "_ssl"} | _FORBIDDEN_MODULES:
                 found.append(f"{node.lineno}:import {alias.name}")
             elif top in _TLS_MODULES | _HTTP_MODULES and alias.asname not in {None, top}:
                 found.append(f"{node.lineno}:import {alias.name} as {alias.asname}")
@@ -809,7 +1045,7 @@ def _import_violations(node: ast.Import | ast.ImportFrom) -> list[str]:
         star = alias.name == "*" and module in _TLS_MODULES | _HTTP_MODULES
         httpx_client = module == "httpx" and alias.name in _HTTPX_FUNCTIONS | _HTTPX_CLIENTS
         if (
-            module in {"truststore", "_ssl"}
+            module in {"truststore", "_ssl"} | _FORBIDDEN_MODULES
             or star
             or httpx_client
             or alias.name in _FORBIDDEN_NAMES
@@ -821,8 +1057,13 @@ def _import_violations(node: ast.Import | ast.ImportFrom) -> list[str]:
 def _keyword_violations(node: ast.Call, root: str | None) -> list[str]:
     found: list[str] = []
     for keyword in node.keywords:
-        if keyword.arg in _TLS_KEYWORDS and not _is_tls_context_call(keyword.value):
+        if keyword.arg in _FORBIDDEN_KEYWORDS or (
+            keyword.arg in _TLS_KEYWORDS and not _is_tls_context_call(keyword.value)
+        ):
             found.append(f"{node.lineno}:{keyword.arg}=")
+        elif keyword.arg == "trust_env" and root in _HTTP_MODULES:
+            if not (isinstance(keyword.value, ast.Constant) and keyword.value.value is False):
+                found.append(f"{node.lineno}:trust_env distinto de False")
         elif keyword.arg == "mounts" and root in _HTTP_MODULES:
             found.append(f"{node.lineno}:mounts=")
         elif keyword.arg is None:
@@ -833,13 +1074,40 @@ def _keyword_violations(node: ast.Call, root: str | None) -> list[str]:
     return found
 
 
+def _is_transport(name: str | None, root: str | None) -> bool:
+    """Transporte, pool o proxy de `httpx`/`httpcore` que abre conexiones (no `MockTransport`)."""
+    if name in _HTTP_TRANSPORTS:
+        return True
+    return (
+        root in _HTTP_MODULES
+        and name is not None
+        and name != "MockTransport"
+        and name.endswith(("Transport", "Pool", "Proxy"))
+    )
+
+
+def _transport_violations(node: ast.Call, name: str | None, root: str | None) -> list[str]:
+    """Transportes sin `verify=tls_context()` y contextos TLS pasados por posición."""
+    found: list[str] = []
+    named = {kw.arg for kw in node.keywords}
+    if _is_transport(name, root) and not named & {"verify", "ssl_context"}:
+        found.append(f"{node.lineno}:{name} sin verify=tls_context()")
+    # `loop.start_tls(transport, protocol, ctx)` y `writer.start_tls(ctx)`: solo por nombre.
+    if name == "start_tls" and "sslcontext" not in named:
+        found.append(f"{node.lineno}:start_tls sin sslcontext=")
+    limit = _MAX_POSITIONAL.get(name or "")
+    if limit is not None and root != "socket" and len(node.args) > limit:
+        found.append(f"{node.lineno}:posicional en {name}")
+    return found
+
+
 def _call_violations(node: ast.Call) -> list[str]:
     name = _call_name(node)
     root = _root_name(node.func) if isinstance(node.func, ast.Attribute) else None
     found = _keyword_violations(node, root)
     if root in _HTTP_MODULES:
         starred = any(isinstance(arg, ast.Starred) for arg in node.args)
-        transport = name is not None and name.endswith(("Transport", "Pool", "Proxy"))
+        transport = _is_transport(name, root)
         if starred or (transport and node.args):
             found.append(f"{node.lineno}:posicional en {name}")
     if root == "httpx" and isinstance(node.func, ast.Attribute):
@@ -847,6 +1115,11 @@ def _call_violations(node: ast.Call) -> list[str]:
             found.append(f"{node.lineno}:httpx.{name}")
         if name in _HTTPX_CLIENTS and not any(kw.arg == "transport" for kw in node.keywords):
             found.append(f"{node.lineno}:{name} sin transport=")
+    found += _transport_violations(node, name, root)
+    if name in _IMPORTERS and node.args and isinstance(node.args[0], ast.Constant):
+        top = str(node.args[0].value).split(".")[0]
+        if top in {"truststore", "_ssl"} | _FORBIDDEN_MODULES:
+            found.append(f"{node.lineno}:{name}({top})")
     if name in _DYNAMIC_ACCESS and node.args:
         texts = {
             a.value for a in node.args if isinstance(a, ast.Constant) and isinstance(a.value, str)
@@ -870,7 +1143,13 @@ def tls_violations(source: str) -> list[str]:
     - `httpx.Client`/`httpx.AsyncClient` sin `transport=`, y `httpx.get`, `post`, `request`,
       `stream`…;
     - asignaciones (o `del`) a los atributos de `_CONTEXT_ATTRS`, y `getattr`/`setattr`
-      con sus nombres.
+      con sus nombres;
+    - (revisión 2 de T2b) `cert_reqs=`; imports de `requests`, `urllib3` y `aiohttp`
+      (también con `import_module` o `__import__`); transportes y pools de `httpx` y
+      `httpcore` sin `verify=`/`ssl_context=`; `start_tls` sin `sslcontext=` y el contexto
+      por posición en `open_connection` y `create_connection`; `trust_env` distinto de
+      `False` en llamadas a `httpx`/`httpcore`; `set_alpn_protocols`, `load_cert_chain`,
+      `SSLObject` y `SSLSocket`.
     """
     found: list[str] = []
     for node in ast.walk(ast.parse(source)):
@@ -969,6 +1248,41 @@ def tls_violations(source: str) -> list[str]:
         "ssl._create_default_https_context = ssl._create_unverified_context",
         "f = ssl._create_unverified_context",
         "from ssl import _create_unverified_context",
+        # Revisión 2 de T2b (casos de `rev2_static`).
+        "import ssl\nssl._create_stdlib_context()",
+        "import ssl\nssl.get_server_certificate(('x', 443))",
+        "ctx.set_ciphers('aNULL')",
+        "ctx.set_ecdh_curve('prime256v1')",
+        "wrap(sock, cert_reqs=ssl.CERT_REQUIRED)",
+        "make(cert_reqs='CERT_NONE')",
+        "import requests\nrequests.get('https://x')",
+        "from requests import Session",
+        "import requests.adapters",
+        "import urllib3\nurllib3.PoolManager()",
+        "from urllib3.util import ssl_",
+        "import aiohttp\naiohttp.ClientSession()",
+        "from aiohttp import ClientSession",
+        "import importlib\nimportlib.import_module('aiohttp')",
+        "__import__('requests')",
+        "import importlib\nimportlib.import_module('truststore').inject_into_ssl",
+        "await loop.start_tls(tr, proto, ctx)",
+        "await loop.start_tls(tr, proto, ctx, server_hostname='x')",
+        "await writer.start_tls(ctx, server_hostname='x')",
+        "await loop.start_tls(tr, proto, sslcontext=ctx)",
+        "await asyncio.open_connection('x', 443, ctx)",
+        "await loop.create_connection(proto, 'x', 443, ctx)",
+        "import httpx\nhttpx.AsyncHTTPTransport()",
+        "import httpx\nhttpx.AsyncHTTPTransport(trust_env=False, http2=False)",
+        "import httpx\nhttpx.AsyncClient(transport=httpx.AsyncHTTPTransport())",
+        "import httpx\nhttpx.HTTPTransport(retries=1)",
+        "import httpcore\nhttpcore.AsyncConnectionPool()",
+        "import httpcore\nhttpcore.AsyncHTTPProxy(proxy_url='http://p')",
+        "from httpx import AsyncHTTPTransport\nAsyncHTTPTransport()",
+        "ctx.set_alpn_protocols(['h2'])",
+        "ctx.load_cert_chain('c.pem')",
+        "import ssl\nssl.SSLObject._create(i, o, False, 'x', None, None)",
+        "import httpx\nhttpx.AsyncHTTPTransport(verify=tls_context(), trust_env=True)",
+        "import httpx\nhttpx.AsyncClient(transport=t, trust_env=flag)",
     ],
 )
 def test_la_comprobacion_estatica_detecta_cada_forma(snippet: str) -> None:
@@ -990,6 +1304,18 @@ def test_la_comprobacion_estatica_detecta_cada_forma(snippet: str) -> None:
         "from faro_engine.net.tls import install_system_trust_for_libraries, tls_context",
         "import ssl",
         "import httpx",
+        # Revisión 2 de T2b: sin falsos positivos.
+        "await loop.start_tls(tr, proto, sslcontext=tls_context(), server_hostname=h)",
+        "await writer.start_tls(sslcontext=tls_context(), server_hostname=h)",
+        "await asyncio.open_connection(host, 443, ssl=tls_context())",
+        "await asyncio.open_connection(host, 443)",
+        "socket.create_connection(('127.0.0.1', port), 5, None)",
+        "httpcore.AsyncConnectionPool(ssl_context=tls_context(), http2=False)",
+        "httpx.MockTransport(handler)",
+        "self.requests = []",
+        "pending = requests_count + aiohttp_like",
+        "import_module('faro_engine.core.errors')",
+        "ctx.get_ciphers()",
     ],
 )
 def test_la_comprobacion_estatica_admite_el_contexto_compartido(snippet: str) -> None:

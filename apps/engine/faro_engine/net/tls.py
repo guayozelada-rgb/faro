@@ -22,15 +22,19 @@ httpcore fija ALPN en cada conexión con el valor de HTTP/1.1.
 `SSL_CERT_FILE` y `SSL_CERT_DIR` los quita `__main__` antes de cualquier import: en Linux,
 `truststore` usa las rutas por defecto de OpenSSL, que leen esas variables.
 
-Un solo hilo por contexto (ADR 0012, actualización 2026-10-06). `truststore` pone el
-contexto interno en `CERT_NONE` y `check_hostname=False` durante cada `wrap_bio` y
-`wrap_socket` y luego restaura lo que había guardado. Si dos hilos se cruzan, uno puede
-"restaurar" el estado degradado del otro y el contexto queda para siempre sin verificar.
-Por eso el contexto de `truststore` es un `_ThreadOwnedContext`: el primer hilo que llama a
-`wrap_bio` o `wrap_socket` pasa a ser su dueño (en el motor, el hilo del bucle de eventos) y
-cualquier otro hilo recibe `ssl.SSLError` **antes** de que se toque nada; el cliente lo
-traduce a `site.tls_error`. Quien necesite TLS fuera del bucle (p. ej. el rastreador de F2
-en hilos de trabajo) usará un contexto propio por hilo construido aquí.
+Un solo hilo por contexto (ADR 0012, actualización 2026-10-06, condición 12). `truststore`
+pone el contexto interno en `CERT_NONE` y `check_hostname=False` durante cada `wrap_bio` y
+`wrap_socket` y luego restaura lo que había guardado; además, en `do_handshake` vuelve a
+leer `verify_mode` y `check_hostname` para decidir si verifica. Si dos hilos se cruzan, uno
+puede "restaurar" el estado degradado del otro (y el contexto queda para siempre sin
+verificar) o hacer un handshake mientras el otro lo tiene degradado (y se acepta un
+certificado sin verificar). Por eso el contexto de `truststore` es un `_ThreadOwnedContext`:
+el primer hilo que llama a `wrap_bio` o `wrap_socket` pasa a ser su dueño (en el motor, el
+hilo del bucle de eventos) y cualquier otro hilo recibe `WrongThreadError` (`ssl.SSLError`)
+**antes** de que se toque nada, tanto al envolver como en `do_handshake` de los
+`SSLObject`/`SSLSocket` que crea el contexto; el cliente lo traduce a `site.tls_error`.
+Quien necesite TLS fuera del bucle (p. ej. el rastreador de F2 en hilos de trabajo) usará un
+contexto propio por hilo construido aquí.
 
 El respaldo con `certifi` es un `ssl.SSLContext` normal y no lleva esta protección:
 `ssl.SSLContext.wrap_bio`/`wrap_socket` no cambian el contexto (OpenSSL lee su
@@ -38,8 +42,13 @@ configuración, que nadie modifica tras construirlo), así que no hay estado que
 
 `install_system_trust_for_libraries()` es la segunda barrera para bibliotecas que crean
 sus propios contextos (LiteLLM, T6): construye antes el contexto del motor y, si el
-almacén es el del sistema, llama a `truststore.inject_into_ssl()`. Es la única forma
-permitida de inyectar; T6 la llama antes de importar LiteLLM.
+almacén es el del sistema, hace lo mismo que `truststore.inject_into_ssl()` (0.10.4) pero
+con la subclase protegida: sustituye `ssl.SSLContext` y `urllib3.util.ssl_.SSLContext`, y el
+contexto precargado de `requests` si existe. Así, los contextos compartidos que esas
+bibliotecas creen después (`ssl.create_default_context()`, el de aiohttp, la caché de
+LiteLLM) también tienen dueño de hilo y fallan cerrados en vez de degradarse.
+`truststore.extract_from_ssl()` la deshace. Es la única forma permitida de inyectar; T6 la
+llama antes de importar LiteLLM.
 
 Registra `net.tls_context_ready` con el almacén (`system` o `certifi`) y la versión de
 `truststore`; nunca certificados, huellas ni nombres de raíces.
@@ -51,7 +60,10 @@ import functools
 import socket
 import ssl
 import threading
-from typing import TYPE_CHECKING, Final, Literal, override
+import weakref
+from collections.abc import Callable
+from importlib import import_module
+from typing import TYPE_CHECKING, Any, Final, Literal, override
 
 import structlog
 
@@ -66,22 +78,95 @@ TlsStore = Literal["system", "certifi"]
 _FALLBACK_ERRORS: Final = (ImportError, OSError, NotImplementedError)
 
 _LOCK: Final = threading.Lock()
+# Marca de un `SSLObject` cuyo handshake ya pasó por la verificación de `truststore`.
+_VERIFIED_ATTR: Final = "_faro_verified"
 
 
 class WrongThreadError(ssl.SSLError):
     """Un hilo que no es el dueño intentó abrir una conexión con el contexto."""
 
 
+def _owner_guard(context: object) -> Callable[[], None]:
+    """Comprobación de dueño para los objetos TLS que crea `context`.
+
+    Guarda una referencia débil: si el contexto ya no existe, falla cerrado.
+    """
+    ref = weakref.ref(context)
+
+    def check() -> None:
+        owner = ref()
+        if owner is None:
+            log.error("net.tls_wrong_thread")
+            raise WrongThreadError("el contexto TLS del motor ya no existe")
+        owner._check_owner()  # type: ignore[attr-defined]
+
+    return check
+
+
+def _guard_handshakes(inner: ssl.SSLContext, check: Callable[[], None]) -> None:
+    """`do_handshake` de los `SSLObject`/`SSLSocket` de `inner` comprueba antes el dueño.
+
+    `truststore` verifica la cadena dentro de `do_handshake` leyendo `verify_mode` y
+    `check_hostname` del contexto interno, que el dueño degrada durante cada `wrap_*`.
+
+    Además, `read`/`write` de un `SSLObject` sin `do_handshake` previo harían el handshake
+    dentro de OpenSSL con el `CERT_NONE` copiado al crearlo, sin la verificación de
+    `truststore`: aquí pasan antes por el `do_handshake` protegido.
+    """
+    object_base: type[ssl.SSLObject] = inner.sslobject_class
+    socket_base: type[ssl.SSLSocket] = inner.sslsocket_class
+
+    def object_handshake(obj: ssl.SSLObject) -> None:
+        check()
+        object_base.do_handshake(obj)
+        setattr(obj, _VERIFIED_ATTR, True)
+
+    def ensure_verified(obj: ssl.SSLObject) -> None:
+        if not getattr(obj, _VERIFIED_ATTR, False):
+            object_handshake(obj)
+
+    def object_read(obj: ssl.SSLObject, len: int = 1024, buffer: Any = None) -> Any:  # noqa: A002 - firma de `ssl.SSLObject`
+        ensure_verified(obj)
+        return object_base.read(obj, len, buffer)
+
+    def object_write(obj: ssl.SSLObject, data: Any) -> int:
+        ensure_verified(obj)
+        return object_base.write(obj, data)
+
+    def socket_handshake(sock: ssl.SSLSocket, block: bool = False) -> None:
+        check()
+        socket_base.do_handshake(sock, block)
+
+    inner.sslobject_class = type(
+        "_OwnedSSLObject",
+        (object_base,),
+        {"do_handshake": object_handshake, "read": object_read, "write": object_write},
+    )
+    inner.sslsocket_class = type(
+        "_OwnedSSLSocket", (socket_base,), {"do_handshake": socket_handshake}
+    )
+
+
 @functools.cache
 def _thread_owned_class() -> type[truststore.SSLContext]:
-    """Subclase de `truststore.SSLContext` ligada al primer hilo que la usa."""
+    """Subclase de `truststore.SSLContext` ligada al primer hilo que la usa.
+
+    Es la que usa el motor y la que inyecta `install_system_trust_for_libraries()`.
+    """
     import truststore  # noqa: PLC0415 - solo si `truststore` se pudo importar
 
     class _ThreadOwnedContext(truststore.SSLContext):
-        def __init__(self, protocol: int) -> None:
-            super().__init__(protocol)
+        def __init__(self, protocol: int | None = None) -> None:
+            super().__init__(protocol)  # type: ignore[arg-type]
             self._faro_owner: threading.Thread | None = None
             self._faro_owner_lock = threading.Lock()
+            _guard_handshakes(self._ctx, _owner_guard(self))
+
+        @property  # type: ignore[misc]
+        def __class__(self) -> type:
+            # `truststore` devuelve aquí `truststore.SSLContext`: `ctx.__class__(...)`
+            # crearía un contexto sin dueño de hilo.
+            return type(self)
 
         def _check_owner(self) -> None:
             # Se guarda el objeto `Thread` (no `get_ident()`, que se reutiliza): mientras
@@ -191,19 +276,42 @@ def tls_store() -> TlsStore:
         return _shared()[1]
 
 
+def _inject_thread_owned_class() -> None:
+    """`truststore.inject_into_ssl()` (0.10.4) con la subclase protegida.
+
+    Los mismos puntos: `ssl.SSLContext`, `urllib3.util.ssl_.SSLContext` y, si existe, el
+    contexto precargado de `requests.adapters`. `truststore.extract_from_ssl()` restaura
+    los dos primeros.
+    """
+    owned = _thread_owned_class()
+    ssl.SSLContext = owned  # type: ignore[misc]
+    try:
+        urllib3_ssl: Any = import_module("urllib3.util.ssl_")
+    except ImportError:
+        pass
+    else:
+        urllib3_ssl.SSLContext = owned
+    try:
+        adapters: Any = import_module("requests.adapters")
+    except ImportError:
+        pass
+    else:
+        if getattr(adapters, "_preloaded_ssl_context", None) is not None:
+            adapters._preloaded_ssl_context = owned(ssl.PROTOCOL_TLS_CLIENT)
+
+
 def install_system_trust_for_libraries() -> TlsStore:
     """Segunda barrera para bibliotecas que crean sus propios contextos (T6, LiteLLM).
 
     Construye primero el contexto del motor (así el respaldo, si hace falta, se decide
-    antes de sustituir `ssl.SSLContext`) y, solo con el almacén del sistema, llama a
-    `truststore.inject_into_ssl()`. Con el respaldo no inyecta: esas bibliotecas siguen
-    con sus raíces (`certifi`), que es más restrictivo. Hay que llamarla antes de importar
-    la biblioteca: un contexto creado antes no cambia. Idempotente.
+    antes de sustituir `ssl.SSLContext`) y, solo con el almacén del sistema, sustituye
+    `ssl.SSLContext` por la subclase con dueño de hilo (como `truststore.inject_into_ssl()`,
+    pero protegida). Con el respaldo no inyecta: esas bibliotecas siguen con sus raíces
+    (`certifi`), que es más restrictivo. Hay que llamarla antes de importar la biblioteca:
+    un contexto creado antes no cambia. Idempotente.
     """
     store = tls_store()
     if store == "system":
-        import truststore  # noqa: PLC0415 - ya importado por `tls_context()`
-
-        truststore.inject_into_ssl()
+        _inject_thread_owned_class()
     log.info("net.tls_libraries_trust", store=store)
     return store
