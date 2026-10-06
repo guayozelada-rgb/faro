@@ -22,11 +22,24 @@ httpcore fija ALPN en cada conexión con el valor de HTTP/1.1.
 `SSL_CERT_FILE` y `SSL_CERT_DIR` los quita `__main__` antes de cualquier import: en Linux,
 `truststore` usa las rutas por defecto de OpenSSL, que leen esas variables.
 
-Uso: solo desde transportes asíncronos en el bucle de eventos del motor. `truststore`
-desactiva la verificación del contexto interno durante cada `wrap_bio`/`wrap_socket` y la
-verificación con el sistema lee ese mismo estado al terminar el handshake; dentro de un
-único hilo las dos cosas no se intercalan, pero un cliente síncrono en otro hilo con este
-mismo objeto podría verlo a mitad del cambio.
+Un solo hilo por contexto (ADR 0012, actualización 2026-10-06). `truststore` pone el
+contexto interno en `CERT_NONE` y `check_hostname=False` durante cada `wrap_bio` y
+`wrap_socket` y luego restaura lo que había guardado. Si dos hilos se cruzan, uno puede
+"restaurar" el estado degradado del otro y el contexto queda para siempre sin verificar.
+Por eso el contexto de `truststore` es un `_ThreadOwnedContext`: el primer hilo que llama a
+`wrap_bio` o `wrap_socket` pasa a ser su dueño (en el motor, el hilo del bucle de eventos) y
+cualquier otro hilo recibe `ssl.SSLError` **antes** de que se toque nada; el cliente lo
+traduce a `site.tls_error`. Quien necesite TLS fuera del bucle (p. ej. el rastreador de F2
+en hilos de trabajo) usará un contexto propio por hilo construido aquí.
+
+El respaldo con `certifi` es un `ssl.SSLContext` normal y no lleva esta protección:
+`ssl.SSLContext.wrap_bio`/`wrap_socket` no cambian el contexto (OpenSSL lee su
+configuración, que nadie modifica tras construirlo), así que no hay estado que degradar.
+
+`install_system_trust_for_libraries()` es la segunda barrera para bibliotecas que crean
+sus propios contextos (LiteLLM, T6): construye antes el contexto del motor y, si el
+almacén es el del sistema, llama a `truststore.inject_into_ssl()`. Es la única forma
+permitida de inyectar; T6 la llama antes de importar LiteLLM.
 
 Registra `net.tls_context_ready` con el almacén (`system` o `certifi`) y la versión de
 `truststore`; nunca certificados, huellas ni nombres de raíces.
@@ -35,11 +48,15 @@ Registra `net.tls_context_ready` con el almacén (`system` o `certifi`) y la ver
 from __future__ import annotations
 
 import functools
+import socket
 import ssl
 import threading
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, override
 
 import structlog
+
+if TYPE_CHECKING:
+    import truststore
 
 log = structlog.get_logger(__name__)
 
@@ -51,10 +68,79 @@ _FALLBACK_ERRORS: Final = (ImportError, OSError, NotImplementedError)
 _LOCK: Final = threading.Lock()
 
 
+class WrongThreadError(ssl.SSLError):
+    """Un hilo que no es el dueño intentó abrir una conexión con el contexto."""
+
+
+@functools.cache
+def _thread_owned_class() -> type[truststore.SSLContext]:
+    """Subclase de `truststore.SSLContext` ligada al primer hilo que la usa."""
+    import truststore  # noqa: PLC0415 - solo si `truststore` se pudo importar
+
+    class _ThreadOwnedContext(truststore.SSLContext):
+        def __init__(self, protocol: int) -> None:
+            super().__init__(protocol)
+            self._faro_owner: threading.Thread | None = None
+            self._faro_owner_lock = threading.Lock()
+
+        def _check_owner(self) -> None:
+            # Se guarda el objeto `Thread` (no `get_ident()`, que se reutiliza): mientras
+            # este contexto exista, ningún otro hilo puede tener esa misma identidad.
+            current = threading.current_thread()
+            with self._faro_owner_lock:
+                if self._faro_owner is None:
+                    self._faro_owner = current
+                    return
+                if self._faro_owner is current:
+                    return
+            log.error("net.tls_wrong_thread")
+            raise WrongThreadError("contexto TLS del motor usado desde otro hilo")
+
+        @override
+        def wrap_socket(
+            self,
+            sock: socket.socket,
+            server_side: bool = False,
+            do_handshake_on_connect: bool = True,
+            suppress_ragged_eofs: bool = True,
+            server_hostname: str | None = None,
+            session: ssl.SSLSession | None = None,
+        ) -> ssl.SSLSocket:
+            self._check_owner()
+            return super().wrap_socket(
+                sock,
+                server_side=server_side,
+                do_handshake_on_connect=do_handshake_on_connect,
+                suppress_ragged_eofs=suppress_ragged_eofs,
+                server_hostname=server_hostname,
+                session=session,
+            )
+
+        @override
+        def wrap_bio(
+            self,
+            incoming: ssl.MemoryBIO,
+            outgoing: ssl.MemoryBIO,
+            server_side: bool = False,
+            server_hostname: str | None = None,
+            session: ssl.SSLSession | None = None,
+        ) -> ssl.SSLObject:
+            self._check_owner()
+            return super().wrap_bio(
+                incoming,
+                outgoing,
+                server_side=server_side,
+                server_hostname=server_hostname,
+                session=session,
+            )
+
+    return _ThreadOwnedContext
+
+
 def _system_context() -> tuple[ssl.SSLContext, str]:
     import truststore  # noqa: PLC0415 - un fallo aquí lleva al respaldo con certifi
 
-    return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT), truststore.__version__
+    return _thread_owned_class()(ssl.PROTOCOL_TLS_CLIENT), truststore.__version__
 
 
 def _certifi_context() -> ssl.SSLContext:
@@ -103,3 +189,21 @@ def tls_store() -> TlsStore:
     """Almacén que usa `tls_context()`: `system` (`truststore`) o `certifi` (respaldo)."""
     with _LOCK:
         return _shared()[1]
+
+
+def install_system_trust_for_libraries() -> TlsStore:
+    """Segunda barrera para bibliotecas que crean sus propios contextos (T6, LiteLLM).
+
+    Construye primero el contexto del motor (así el respaldo, si hace falta, se decide
+    antes de sustituir `ssl.SSLContext`) y, solo con el almacén del sistema, llama a
+    `truststore.inject_into_ssl()`. Con el respaldo no inyecta: esas bibliotecas siguen
+    con sus raíces (`certifi`), que es más restrictivo. Hay que llamarla antes de importar
+    la biblioteca: un contexto creado antes no cambia. Idempotente.
+    """
+    store = tls_store()
+    if store == "system":
+        import truststore  # noqa: PLC0415 - ya importado por `tls_context()`
+
+        truststore.inject_into_ssl()
+    log.info("net.tls_libraries_trust", store=store)
+    return store

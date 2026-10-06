@@ -8,10 +8,10 @@ salvo loopback:
 - `db`: crea una base cifrada de perfil, aplica las migraciones y la vuelve a abrir.
 - `vec`: `sqlite-vec` carga en una conexión `sqlcipher3` (si el paquete está incluido).
 - `tls`: el contexto único del motor (`net/tls.py::tls_context()`) usa `truststore` con el
-  módulo de su plataforma, `CERT_REQUIRED`, `check_hostname`, mínimo TLS 1.2 y sin raíces
-  añadidas, y `default_transport()` lo usa (ADR 0012, actualización 2026-10-06, prueba 6).
-  Si LiteLLM está incluido, además, su contexto TLS (con `truststore` inyectado) usa el
-  almacén del sistema.
+  módulo de su plataforma, con dueño de hilo, `CERT_REQUIRED`, `check_hostname`, mínimo
+  TLS 1.2 y sin raíces añadidas, y `default_transport()` lo usa (ADR 0012, actualización
+  2026-10-06, prueba 6). Si LiteLLM está incluido, además, su contexto TLS (con la
+  inyección de `install_system_trust_for_libraries()`) usa el almacén del sistema.
 - `graph`: un grafo LangGraph con un LLM falso se interrumpe y se reanuda.
 - `scheduler`: APScheduler 3 (`AsyncIOScheduler` + `MemoryJobStore`) dispara un trabajo.
 - `litellm`: `acompletion` contra un servidor falso local (formatos OpenAI y Gemini) y
@@ -240,6 +240,8 @@ def _check_engine_tls() -> dict[str, Any]:
     problems = []
     if tls_store() != "system" or not isinstance(context, truststore.SSLContext):
         problems.append(f"almacén {tls_store()}")
+    if type(context).__name__ != "_ThreadOwnedContext":
+        problems.append("contexto sin dueño de hilo")
     if context is not tls_context():
         problems.append("contexto no compartido")
     if context.verify_mode != ssl.CERT_REQUIRED or context.check_hostname is not True:
@@ -447,10 +449,10 @@ def run_checks(
         os.environ["CUSTOM_TIKTOKEN_CACHE_DIR"] = str(tiktoken)
     guard = _NetworkGuard()
     guard.install()
-    if _available("truststore"):
-        import truststore
+    # Mismo orden que T6: contexto del motor y, después, la inyección para LiteLLM.
+    from faro_engine.net.tls import install_system_trust_for_libraries
 
-        truststore.inject_into_ssl()
+    install_system_trust_for_libraries()
     report: dict[str, Any] = {
         "frozen": bool(getattr(sys, "frozen", False)),
         "python": sys.version.split()[0],
