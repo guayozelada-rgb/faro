@@ -313,7 +313,7 @@ Ninguna prueba queda en `xfail`.
 10. Fixture automático de bloqueo de red en las pruebas, sin confiar en `respx` con el transporte aiohttp. Más adelante, aislamiento a nivel de sistema operativo (`unshare -rn` en la CI de Linux) o `sys.addaudithook`.
 11. **(T7/T11, núcleo):** lanzar el motor con `env_clear()` y una lista de variables permitidas. Hoy `launcher.rs:281-286` hereda todo el entorno.
 12. **(T11):** `hook-litellm.py` con lista permitida (núcleo + openai, anthropic y gemini) en vez de `collect_submodules("litellm")`, y build sin red.
-13. **Vigilar** `httpx2` y `httpcore2`: son paquetes nuevos y sin attestations.
+13. **Vigilar** `httpx2` y `httpcore2`: son paquetes nuevos y sin attestations. Además, crean un `truststore.SSLContext` directamente, sin el cerrojo del motor: es una excepción conocida mientras LangSmith siga desactivado (condición 7), y la prueba de T8 debe comprobar que no crean contextos ni abren conexiones (ADR 0012, condición 13).
 
 **Condiciones nuevas de la segunda revisión de seguridad:**
 
@@ -331,12 +331,12 @@ Ninguna prueba queda en `xfail`.
 16. **Ampliación de la condición 1:** variables de proxy, aiohttp y `SSL_*` (ver la condición 1). Lo mejor sigue siendo el cliente propio de la condición 15.
 17. **Punto de entrada de PyInstaller (T11).** El ejecutable empaquetado del motor debe ejecutar el `os.environ.pop("SSLKEYLOGFILE", None)` de `faro_engine/__main__.py` antes de cualquier otro import, igual que `python -m faro_engine`. Esto incluye los hooks de ejecución de PyInstaller y cualquier script de entrada distinto. Hace falta una prueba de humo con el ejecutable empaquetado: con `SSLKEYLOGFILE` definida, tras una conexión TLS (en loopback), el archivo no se crea.
 
-**Condiciones de la revisión de seguridad de T2b para T6** (ADR 0012, actualización 2026-10-06; informe [`2026-10-06-f1b-t2b-truststore.md`](2026-10-06-f1b-t2b-truststore.md) §6). El contexto TLS del motor tiene dueño de hilo (el hilo del bucle) porque `truststore` lo cambia durante cada `wrap_bio`/`wrap_socket`:
+**Condiciones de la revisión de seguridad de T2b para T6** (ADR 0012, actualización 2026-10-06; informe [`2026-10-06-f1b-t2b-truststore.md`](2026-10-06-f1b-t2b-truststore.md) §6). El contexto TLS del motor lleva un cerrojo por contexto (condición 12 del ADR; antes, un "dueño de hilo" que la revisión final rechazó porque rompía el HTTPS real con anyio) porque `truststore` lo cambia durante cada `wrap_bio`/`wrap_socket`:
 
 18. Solo `acompletion`, con el cliente asíncrono propio de cada llamada (condición 15).
 19. Prohibidos `litellm.completion` síncrono, `litellm.ssl_verify`, `litellm.aclient_session` y cualquier cliente que LiteLLM construya por su cuenta.
 20. La inyección global de la condición 1, solo con `install_system_trust_for_libraries()`.
-21. Una prueba que espíe `wrap_bio` y `wrap_socket` y demuestre que, durante `acompletion` con los tres proveedores, (a) todas las llamadas sobre `tls_context()` ocurren en el hilo del bucle, y (b) no se usa ningún contexto de `_ssl_context_cache` de LiteLLM.
+21. Una prueba que espíe `wrap_bio`, `wrap_socket` y `do_handshake` y demuestre que, durante `acompletion` con los tres proveedores, (a) todos los contextos TLS que se usan son `tls_context()` o un `_LockedContext` (nunca un `truststore.SSLContext` sin cerrojo) y, tras cada llamada, siguen en `CERT_REQUIRED` con `check_hostname`; (b) no se usa ningún contexto de `_ssl_context_cache` de LiteLLM; y (c) nada llama a `wrap_socket` (bloqueante) en el hilo del bucle. Que `wrap_bio` ocurra en un hilo de trabajo (anyio) ya no es un error.
 
 **Correspondencia entre hallazgos y condiciones**
 

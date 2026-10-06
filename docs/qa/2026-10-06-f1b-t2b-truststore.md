@@ -3,7 +3,7 @@
 - **Spec:** [F1b](../specs/2026-10-05-f1b-capa-ia-y-motor-de-agentes.md), tarea T2b.
 - **Decisión:** [ADR 0012, actualización 2026-10-06](../adr/0012-red-saliente-del-motor.md).
 - **Origen:** informe de T2, [§8, hallazgo 7 de §10 y §12](2026-10-05-f1b-t2-dependencias.md).
-- **Estado:** implementado. Revisión de `revisor-seguridad`: APROBADO CON CAMBIOS; los cambios están hechos (§6) y falta que el revisor los confirme. Pendiente: la prueba manual del usuario con un WordPress real y la CI en Windows, macOS y Linux.
+- **Estado:** implementado. Revisiones de `revisor-seguridad`: la 1.ª y la 2.ª, APROBADO CON CAMBIOS (§6 y §7); la final, RECHAZADO porque el "dueño de hilo" rompía todo el HTTPS real con anyio. Corregido con un cerrojo por contexto (§8); falta que el revisor lo confirme. Pendiente: la prueba manual del usuario con un WordPress real.
 
 ## 1. Qué cambia
 
@@ -246,3 +246,85 @@ En este equipo (Windows 11 con Norton):
 
 - `uv run pytest`: 1114 pruebas superadas y 3 omitidas (las de loopback por el interceptor, como en §6.7), con un 100 % de cobertura (`net/tls.py` al 100 %).
 - `ruff format --check`, `ruff check` y `mypy faro_engine tests scripts` pasan.
+
+## 8. Revisión final de seguridad (RECHAZADO) y corrección
+
+### 8.1 El "dueño de hilo" rompía todo el HTTPS real (crítico)
+
+anyio 4.15.1 (`anyio/streams/tls.py:153-168`, `TLSStream.wrap`, que es lo que usa httpcore) comprueba `type(ssl_context) is not ssl.SSLContext`. Si no lo es, como pasa con `truststore.SSLContext` y su subclase, llama a `wrap_bio` con `to_thread.run_sync`, es decir, en un **hilo de trabajo**, y después hace `do_handshake` en el hilo del bucle. Con el dueño de hilo de §6.1 y §7.2, el hilo de trabajo pasaba a ser el dueño y el handshake en el bucle fallaba con `WrongThreadError`. Así, `httpx.AsyncHTTPTransport(verify=tls_context())`, que es `default_transport()`, daba `site.tls_error` en **todas** las conexiones. El revisor lo reprodujo contra example.com, pypi.org y google.com (`rev3_httpx.py`). La CI del PR #33 también fallaba en `engine` (ubuntu, windows y macos), en las tres pruebas de conexión correcta por loopback.
+
+En este equipo no se vio porque esas tres pruebas se omiten por el interceptor de Norton (§3, hallazgo 1), y porque todas las demás pruebas de aceptación hacían el handshake a mano en un solo hilo (`memory_handshake`), sin pasar por anyio. Además, el diseño de anyio implica varios `wrap_bio` a la vez desde distintos hilos de trabajo: justo la carrera que había que evitar.
+
+Comprobación manual con `scripts/manual_tls_check.py` (la sonda que ya existía, contra `https://pypi.org/simple/truststore/`): antes de la corrección, `store=system error=site.tls_error`; después, `store=system HTTP 200`.
+
+### 8.2 Corrección: un cerrojo por contexto (`faro_engine/net/tls.py`)
+
+- `_ThreadOwnedContext` pasa a ser `_LockedContext` (creada por `_locked_class()`), con un `threading.Lock` **no reentrante** por contexto.
+- El cerrojo cubre:
+  - toda la ventana degradada de `wrap_bio` y `wrap_socket`, incluida la restauración;
+  - **cada llamada** a `do_handshake` de los `SSLObject` (`_LockedSSLObject`) y `SSLSocket` (`_LockedSSLSocket`) que crea el contexto, que es donde `truststore` lee `verify_mode` y `check_hostname`.
+- Así, ningún handshake ve el estado degradado y ninguna restauración se cruza, venga del hilo que venga. Las conexiones de varios hilos se serializan en esos puntos y todas verifican.
+- Con BIO no bloqueante (asyncio, anyio), cada `do_handshake` es corto y el cerrojo solo se retiene durante esa llamada.
+- Con `wrap_socket` bloqueante (hoy no se usa), el cerrojo se retiene durante todo el handshake de red. Está documentado en el docstring y en el ADR.
+  - El handshake que `wrap_socket` hace por dentro (`do_handshake_on_connect`) ocurre en el mismo hilo, con el cerrojo ya tomado. Una marca por hilo (`threading.local`) evita que lo vuelva a pedir, porque si no, se bloquearía a sí mismo.
+- Se mantienen:
+  - `read` y `write` sin handshake previo pasan por el handshake verificado (§7.5);
+  - la inyección protegida (§7.1), ahora con `_LockedContext`;
+  - la referencia débil: si el contexto ya no existe, el handshake falla cerrado con `ssl.SSLError` y registra `net.tls_context_gone`;
+  - `__class__` devuelve la subclase;
+  - el respaldo con `certifi`, sin cerrojo (no muta).
+- Se quitan `WrongThreadError`, `_check_owner` y el registro `net.tls_wrong_thread`.
+- **Renegociación (observación de §7.5):** `_harden` añade `OP_NO_RENEGOTIATION` al contexto del motor y al respaldo. El constructor de `_LockedContext` también lo añade, así que llega también a los contextos inyectados (LiteLLM, aiohttp), que no pasan por `_harden`. Mientras se acepte TLS 1.2, una renegociación haría un handshake dentro de OpenSSL con el `CERT_NONE` del objeto y sin `truststore`.
+- `scripts/bundle_smoke.py` (comprobación `tls`) exige `_LockedContext` y `OP_NO_RENEGOTIATION` en el contexto del motor, y `_LockedContext` en el de LiteLLM. Sin empaquetar: `ok`, con `litellm_ssl_context = faro_engine.net.tls._LockedContext`.
+
+### 8.3 `httpx2` y `httpcore2` (excepción conocida)
+
+`langsmith` 0.14.4 trae `httpx2` y `httpcore2` (2.13.1). Los dos llaman directamente a `truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)` (`httpx2/_config.py:41`, `httpcore2/_ssl.py:12`): sin cerrojo y sin que la inyección les llegue. Queda documentado como excepción conocida en la condición 13 del ADR 0012 y en la condición 13 del informe de T2. Se acepta solo mientras LangSmith siga desactivado (condición 7 del informe de T2). La prueba de T8 debe vigilarlo: al construir y ejecutar un grafo, `httpx2` y `httpcore2` no crean contextos TLS ni abren conexiones.
+
+### 8.4 Pruebas
+
+Todas en memoria, sin loopback, así que se ejecutan también en este equipo con Norton. Los montajes nuevos están en `tls_helpers.py`:
+
+- `tls_stream_exchange`: `TLSStream.wrap` real de anyio sobre un par de flujos en memoria, con un servidor de eco;
+- `MemoryNetwork`: una red de httpcore en memoria. Usa el `AnyIOStream` y el `start_tls` reales de httpcore, así que el camino TLS es el de producción. Anota el destino pedido, el SNI y los bytes descifrados;
+- `with_memory_network` y `fetch_in_memory`, para el mismo transporte con esa red.
+
+| Pedido | Pruebas |
+| --- | --- |
+| Patrón anyio | `test_patron_anyio_wrap_bio_en_un_hilo_y_handshake_en_el_bucle`: `wrap_bio` en `anyio.to_thread.run_sync` y `do_handshake` en el bucle, con la CA de prueba inyectada. Se acepta el certificado válido y se rechazan la CA desconocida y otro nombre. `test_tls_stream_de_anyio_verifica_con_wrap_bio_en_un_hilo_de_trabajo`: lo mismo con `TLSStream.wrap` y un intercambio de datos. Un espía comprueba que los tres `wrap_bio` ocurrieron fuera del hilo del bucle (`rev3_httpx` sin red). `test_tls_stream_con_el_contexto_compartido_rechaza_la_ca_de_prueba` |
+| Carrera | `test_carrera_de_hilos_serializada_y_verificada`: ocho hilos sobre el mismo contexto. Dos solo envuelven sin parar y seis hacen 360 handshakes, alternando la CA válida y una desconocida. Resultado: ninguna desconocida aceptada, todas las válidas aceptadas y el contexto sigue en `CERT_REQUIRED` con `check_hostname`. `test_primer_wrap_bio_simultaneo_en_varios_hilos`: 50 veces, ocho hilos a la vez en el primer `wrap_bio`. En el proceso aparte (`injection_probe.py`), sobre un `ssl.create_default_context()` inyectado: cuatro hilos hacen 1200 handshakes mientras otro envuelve sin parar, y se rechazan las 600 desconocidas y se aceptan las 600 válidas |
+| Cliente real | `test_async_http_transport_real_completa_una_peticion`: `httpx.AsyncHTTPTransport(verify=<contexto del motor con la CA de prueba>)` responde 200 con SNI `sitio.test`, y `wrap_bio` ocurre en un hilo de trabajo. `test_el_cliente_del_motor_completa_una_peticion_en_memoria`: `SafeHttpClient` con `default_transport()` responde 200, con la conexión a la IP fijada y `Host`/SNI del nombre. `test_el_cliente_del_motor_rechaza_en_memoria_sin_enviar_la_peticion` (CA desconocida, otro nombre y caducado) y `test_el_contexto_de_produccion_rechaza_en_memoria_una_ca_que_no_esta_en_el_sistema` dan `site.tls_error` y el servidor no recibe ni un byte. Las dos pruebas de loopback que necesitan aceptar un certificado siguen siendo obligatorias en la CI |
+| `rev2_readside` | `test_handshake_desde_otro_hilo_espera_y_verifica`: mientras un hilo está dentro de `wrap_socket` (contexto degradado), el handshake de otro hilo **espera** al cerrojo (más de 0,8 s) y después verifica y rechaza (`SSLCertVerificationError`). Antes se rechazaba con `WrongThreadError` |
+| `rev2_readnohs` | `test_read_y_write_sin_handshake_previo_tambien_verifican`: igual que antes, y además con el objeto creado en otro hilo |
+| `rev2_bypass` | (1) `test_las_vias_que_esquivan_la_subclase_fallan_cerradas`: `ssl.SSLContext.wrap_bio(ctx, …)`, `ssl.SSLObject._create(context=ctx)` y el contexto interno rechazan una CA desconocida. (2) `test_cualquier_hilo_conecta_y_verifica`: el primer hilo termina y los demás siguen verificando. (3) `test_primer_wrap_bio_simultaneo_en_varios_hilos`. (4) `test_dos_bucles_en_dos_hilos_verifican`: un bucle por hilo y `run_in_executor`. Las partes de "otro hilo" ahora se serializan y verifican, en vez de rechazarse |
+| Cerrojo | `test_wrap_y_handshake_esperan_al_cerrojo`: `wrap_bio`, `wrap_socket` y `do_handshake` de `SSLObject`/`SSLSocket` esperan mientras otro hilo tiene el cerrojo y siguen al soltarlo. `test_wrap_socket_desde_otro_hilo_verifica`: `wrap_socket` con `do_handshake_on_connect` desde otro hilo verifica y no se bloquea a sí mismo. `test_handshake_falla_cerrado_si_el_contexto_ya_no_existe` (`net.tls_context_gone`) |
+| Renegociación | `test_ningun_contexto_permite_renegociar`: `OP_NO_RENEGOTIATION` en el contexto del motor, en su contexto interno, en un `_LockedContext` creado como lo haría una biblioteca, en cada objeto TLS y en el respaldo. En el proceso aparte, también en `ssl.create_default_context()` y en el contexto de aiohttp tras la inyección |
+
+Se quitan las pruebas que exigían `WrongThreadError`: `test_wrap_bio_desde_otro_hilo_falla_sin_tocar_el_contexto`, `test_el_primer_hilo_que_conecta_es_el_dueno`, `test_hilos_ajenos_en_paralelo_no_degradan_el_contexto`, `test_en_el_bucle_un_hilo_de_trabajo_no_puede_usar_el_contexto`, `test_el_cliente_traduce_el_hilo_ajeno_a_tls_error`, `test_el_bucle_sigue_conectando_tras_un_intento_desde_otro_hilo` y `test_sslsocket_do_handshake_desde_otro_hilo_falla_antes_de_tocar_el_socket`. Las sustituyen las de la tabla. `test_wrap_socket_desde_otro_hilo_falla_sin_tocar_el_contexto` pasa a `test_wrap_socket_desde_otro_hilo_verifica`, y `test_la_inyeccion_tiene_dueno_de_hilo_en_un_proceso_aparte` a `test_la_inyeccion_lleva_el_cerrojo_en_un_proceso_aparte`.
+
+En `injection_probe.py`, los servidores de prueba se construyen ahora **antes** de inyectar. Después de la inyección, `ssl.create_default_context(Purpose.CLIENT_AUTH)` daría la subclase de `truststore`, que no sirve como servidor (`Peer sent no certificates to verify`). Además, el handshake desde otro hilo une ahora los BIO de cliente y servidor. Antes no estaban unidos, y solo "funcionaba" porque `WrongThreadError` saltaba antes de que se intercambiara nada.
+
+**Las pruebas fallan sin el cerrojo** (comprobado sustituyendo el cerrojo por `contextlib.nullcontext()` y volviéndolo a poner). Fallan la carrera (CA desconocidas aceptadas), el primer `wrap_bio` simultáneo (contexto en `CERT_NONE`), `rev2_readside` (no espera), la espera al cerrojo y el proceso aparte (600 de 600 CA desconocidas aceptadas). Con el código anterior (dueño de hilo), `tls_stream_exchange` y `fetch_in_memory` dan `WrongThreadError` y `site.tls_error` en este equipo, sin necesidad de la CI.
+
+### 8.5 Documentación
+
+- **ADR 0012:**
+  - condición 12, reescrita: cerrojo por contexto en lugar de dueño de hilo, el motivo (anyio), `wrap_socket` bloqueante, `OP_NO_RENEGOTIATION`, la historia y las pruebas;
+  - condición 13: se inyecta `_LockedContext`, y se añade la excepción de `httpx2`/`httpcore2`;
+  - Consecuencias:
+    - T6: la prueba obligatoria ya no exige que todo ocurra en el hilo del bucle (anyio envuelve en hilos de trabajo). Exige que todos los contextos sean `tls_context()` o `_LockedContext`, que sigan intactos, que no se use `_ssl_context_cache` y que no haya `wrap_socket` bloqueante en el bucle;
+    - F2: el contexto por hilo se mantiene por rendimiento (el cerrojo serializaría handshakes con AIA de hasta 15 s), no por corrección.
+- **Informe de T2:** condiciones 13 y 21, y el texto que presenta las condiciones 18 a 21.
+- **Skill `capa-llm`:** cerrojo en vez de dueño de hilo, sin `WrongThreadError`, la prueba nueva de T6 y la excepción de `httpx2`/`httpcore2`.
+
+### 8.6 Resultado
+
+En este equipo (Windows 11 con Norton):
+
+- `uv run pytest`: 1124 pruebas superadas y 2 omitidas, con un 100 % de cobertura (`net/tls.py` al 100 %). Las dos omitidas son las de loopback que necesitan aceptar un certificado (interceptor); lo que comprueban lo cubren ahora también las pruebas en memoria, y en la CI son obligatorias.
+- `ruff format --check`, `ruff check` y `mypy faro_engine tests scripts` pasan.
+- `scripts/bundle_smoke.py` sin empaquetar: `ok` (`engine_store=system`, `truststore._windows`, LiteLLM en `faro_engine.net.tls._LockedContext`).
+- `scripts/manual_tls_check.py`: `store=system HTTP 200`.
+- CI del PR #33: pendiente al escribir esta sección.
+
+`revisor-seguridad` debe revisar este cambio: toca el contexto TLS de todo el HTTPS del motor y la inyección global.
