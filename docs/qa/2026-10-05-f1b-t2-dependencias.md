@@ -355,4 +355,4 @@ Ninguna prueba queda en `xfail`.
 - mantener `trust_env=False`, `CERT_REQUIRED`, `check_hostname` y la fijación de IP con `sni_hostname`;
 - modificar el ADR 0012 en ese sentido.
 
-`net/client.py` no cambia en este cambio.
+`net/client.py` no cambia en este cambio. **Implementado en T2b** (ADR 0012, actualización 2026-10-06): ver [`2026-10-06-f1b-t2b-truststore.md`](2026-10-06-f1b-t2b-truststore.md).
