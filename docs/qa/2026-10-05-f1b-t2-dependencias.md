@@ -292,7 +292,7 @@ Ninguna prueba queda en `xfail`.
 
 1. **Antes de `import litellm`:**
    - `LITELLM_MODE=PRODUCTION`, `LITELLM_LOCAL_MODEL_COST_MAP=True` y `CUSTOM_TIKTOKEN_CACHE_DIR` apuntando al `cl100k_base` incluido en el motor;
-   - `truststore.inject_into_ssl()`;
+   - `truststore.inject_into_ssl()`, **(revisión de T2b)** solo a través de `faro_engine.net.tls.install_system_trust_for_libraries()` (ADR 0012, condición 13);
    - quitar del entorno `SSL_VERIFY`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `SSLKEYLOGFILE`, `LANGSMITH_*`, `LANGCHAIN_*`, el resto de `LITELLM_*` (incluido `LITELLM_LOG`) y todas las `OPENAI_*`, `ANTHROPIC_*` y `GEMINI_*`, incluidas `*_API_KEY`, `*_API_BASE` y `*_BASE_URL` (el script quita también `GOOGLE_API_KEY`, que LiteLLM usa como clave de Gemini);
    - **(segunda revisión)** quitar también:
      - `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` y `NO_PROXY`, en mayúsculas y en minúsculas;
@@ -330,6 +330,13 @@ Ninguna prueba queda en `xfail`.
     También hace falta una prueba en loopback: un 307 a otro puerto no recibe nada, y un proxy del entorno tampoco. Es la misma forma que en el script (`build_litellm_client`) y en sus pruebas. Motivo: por defecto, LiteLLM sigue el 307 y reenvía `x-api-key` y `x-goog-api-key` (prueba de control).
 16. **Ampliación de la condición 1:** variables de proxy, aiohttp y `SSL_*` (ver la condición 1). Lo mejor sigue siendo el cliente propio de la condición 15.
 17. **Punto de entrada de PyInstaller (T11).** El ejecutable empaquetado del motor debe ejecutar el `os.environ.pop("SSLKEYLOGFILE", None)` de `faro_engine/__main__.py` antes de cualquier otro import, igual que `python -m faro_engine`. Esto incluye los hooks de ejecución de PyInstaller y cualquier script de entrada distinto. Hace falta una prueba de humo con el ejecutable empaquetado: con `SSLKEYLOGFILE` definida, tras una conexión TLS (en loopback), el archivo no se crea.
+
+**Condiciones de la revisión de seguridad de T2b para T6** (ADR 0012, actualización 2026-10-06; informe [`2026-10-06-f1b-t2b-truststore.md`](2026-10-06-f1b-t2b-truststore.md) §6). El contexto TLS del motor tiene dueño de hilo (el hilo del bucle) porque `truststore` lo cambia durante cada `wrap_bio`/`wrap_socket`:
+
+18. Solo `acompletion`, con el cliente asíncrono propio de cada llamada (condición 15).
+19. Prohibidos `litellm.completion` síncrono, `litellm.ssl_verify`, `litellm.aclient_session` y cualquier cliente que LiteLLM construya por su cuenta.
+20. La inyección global de la condición 1, solo con `install_system_trust_for_libraries()`.
+21. Una prueba que espíe `wrap_bio` y `wrap_socket` y demuestre que, durante `acompletion` con los tres proveedores, (a) todas las llamadas sobre `tls_context()` ocurren en el hilo del bucle, y (b) no se usa ningún contexto de `_ssl_context_cache` de LiteLLM.
 
 **Correspondencia entre hallazgos y condiciones**
 

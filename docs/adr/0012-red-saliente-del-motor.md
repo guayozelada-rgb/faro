@@ -1,7 +1,7 @@
 # ADR 0012 — Red saliente del motor: SSRF, tiempos, reintentos y sitios locales en desarrollo
 
 - **Fecha:** 2026-09-29
-- **Estado:** aceptado; actualizado el 2026-10-01 (cierre de F1a) y el 2026-10-06 (almacén de certificados del sistema), al final
+- **Estado:** aceptado; actualizado el 2026-10-01 (cierre de F1a) y el 2026-10-06 (almacén de certificados del sistema, con las condiciones 12 a 14 de su revisión de seguridad), al final
 - **Spec:** [F1a — Conexión con WordPress](../specs/2026-09-29-f1a-conexion-wordpress.md)
 - **Skill:** `revision-seguridad` §5
 
@@ -91,7 +91,7 @@ Forma:
 
 - Un único módulo, `faro_engine/net/tls.py`, construye el contexto **de forma explícita y una sola vez por proceso**: `truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)`, con las propiedades de abajo. Lo expone una función con caché (`tls_context()`).
 - Todo cliente HTTPS del motor recibe ese mismo objeto: `httpx.AsyncHTTPTransport(verify=tls_context(), trust_env=False, …)`. Esto vale para `net/client.py` (`default_transport`) y para los transportes de LiteLLM de la condición 15.
-- No se depende de `truststore.inject_into_ssl()`. La inyección global sigue en la capa de IA solo como **segunda barrera**, para los contextos que LiteLLM crea por su cuenta (condición 1 del informe, T6). Lo que protege es el contexto explícito.
+- No se depende de `truststore.inject_into_ssl()`. La inyección global sigue en la capa de IA solo como **segunda barrera**, para los contextos que LiteLLM crea por su cuenta (condición 1 del informe, T6), y solo a través de `net/tls.py::install_system_trust_for_libraries()` (condición 13). Lo que protege es el contexto explícito.
 
 ### Condiciones (obligatorias; las comprueba `revisor-seguridad`)
 
@@ -106,6 +106,19 @@ Forma:
 9. **Contexto inmutable tras construirse.** Nadie cambia sus propiedades después de `tls_context()`. httpcore llama a `set_alpn_protocols` en cada conexión con el mismo valor (`http/1.1`), así que todos los transportes que lo compartan deben usar `http2=False`, como hoy. Si algún día uno necesita HTTP/2, tendrá su propio contexto construido en `net/tls.py`.
 10. **Sin datos sensibles en los registros.** Al construir el contexto se escribe una línea `net.tls_context_ready` con `store` (`system` o `certifi`, ver el plan de respaldo) y la versión de `truststore`. Nunca se registran certificados, huellas ni nombres de las raíces.
 11. **Sin cambios en los errores:** un fallo de verificación sigue siendo `site.tls_error` (en la capa de IA, el código `llm.*` que corresponda), con el mismo texto para el usuario.
+12. **(Revisión de T2b) Un solo hilo por contexto.** `truststore` guarda `verify_mode` y `check_hostname` del contexto interno, pone `CERT_NONE` y `check_hostname=False` durante cada `wrap_bio` y `wrap_socket`, y al salir restaura lo que guardó. `wrap_bio`, que es lo que usa asyncio, no toma ningún cerrojo, y `wrap_socket` solo lo toma al entrar. Si dos hilos se cruzan, uno "restaura" el estado degradado del otro y el contexto compartido queda **para siempre** en `CERT_NONE` (el revisor lo reprodujo 3 de 3). Por eso:
+    - el contexto de `truststore` es una subclase con **dueño de hilo** (`_ThreadOwnedContext`): el primer hilo que llama a `wrap_bio` o `wrap_socket` pasa a ser su dueño (en el motor, el hilo del bucle de eventos), y cualquier otro hilo recibe `ssl.SSLError` (`WrongThreadError`) **antes** de que se toque el contexto. El cliente lo traduce a `site.tls_error` y se registra `net.tls_wrong_thread`. No basta con comprobarlo en `tls_context()`, porque el transporte guarda el objeto;
+    - el respaldo con `certifi` es un `ssl.SSLContext` de la biblioteca estándar y no lleva esta protección: su `wrap_bio` y su `wrap_socket` no cambian el contexto (OpenSSL lee una configuración que nadie modifica, condición 9). Una prueba con cuatro hilos lo comprueba;
+    - pruebas: `wrap_bio` y `wrap_socket` desde otro hilo fallan y el contexto interno sigue en `CERT_REQUIRED` con `check_hostname=True`; la reproducción del revisor (cuatro hilos contra el dueño) ya no lo degrada; `asyncio.to_thread` falla; el cliente devuelve `site.tls_error` sin que salga el ClientHello; y el bucle sigue conectando después.
+13. **(Revisión de T2b) La inyección global, solo con `install_system_trust_for_libraries()`.** Esa función de `net/tls.py` construye primero el contexto del motor (así el respaldo se decide antes de sustituir `ssl.SSLContext`) y, solo si el almacén es el del sistema, llama a `truststore.inject_into_ssl()`. Con el respaldo no inyecta. T6 la llama antes de importar LiteLLM; `__main__` todavía no la llama. La comprobación estática prohíbe `inject_into_ssl` y cualquier import de `truststore` fuera de `net/tls.py`.
+14. **(Revisión de T2b) Comprobación estática ampliada** (condición 1, prueba 5). Además de lo anterior, detecta:
+    - alias de import: `from ssl import create_default_context as mk`, `import ssl as s`, cualquier import de `truststore` o `_ssl`, y alias de `httpx` y `httpcore`;
+    - acceso dinámico: `getattr`, `setattr`, `delattr` y `hasattr` con nombres TLS, y `getattr` sobre `ssl` o `truststore`;
+    - argumentos: `**kwargs`, `*args`, posicionales a transportes y `mounts=` en llamadas a `httpx` y `httpcore`; `ssl=`, `ssl_context=`, `context=`, `cafile=`, `capath=` y `cadata=` con algo distinto de `tls_context()`, también dentro de `**{...}` o `**dict(...)`;
+    - clientes sin control: `httpx.Client` y `httpx.AsyncClient` sin `transport=`; `httpx.get`, `post`, `request`, `stream` y similares; `urlopen`, `build_opener`, `HTTPSHandler` y `HTTPSConnection`;
+    - atributos del contexto: asignaciones a `verify_mode`, `check_hostname`, `minimum_version`, `maximum_version`, `options`, `verify_flags`, `keylog_filename`, `hostname_checks_common_name`, `post_handshake_auth`, `sslobject_class` y `sslsocket_class`, y cualquier referencia a `_create_unverified_context` o `_create_default_https_context`.
+
+    Cada forma tiene su caso en la parametrización de control.
 
 ### Modelo de amenaza: qué cambia y qué no
 
@@ -118,6 +131,7 @@ Forma:
   - la respuesta de `/pair`, que trae el token y el secreto HMAC del sitio.
 - **Por qué se acepta:** instalar una raíz en el almacén exige controlar el equipo, o administrarlo en el caso de una empresa. Quien puede hacer eso ya puede leer la memoria del motor, registrar el teclado o leer el llavero cuando el usuario lo desbloquea. Es el mismo modelo que aplican el navegador y el resto de aplicaciones del sistema. La alternativa (`certifi`) no protege al usuario de su antivirus: solo hace que Faro no funcione.
 - **Validación que hace el sistema operativo:** según el sistema, la validación puede descargar certificados intermedios que falten o consultar listas de revocación por su cuenta, con su propia pila de red. Esas peticiones no pasan por la guardia SSRF ni por `trust_env=False`. Van a URLs que vienen dentro del certificado, no llevan secretos de Faro y su respuesta no llega al motor. Riesgo residual aceptado, igual que en el navegador.
+- **(Revisión de T2b; riesgo conocido, medio) AIA en Windows bloquea el bucle.** En Windows, `truststore` llama a `CertGetCertificateChain` con `chain_flags=0` dentro de `do_handshake`, es decir, **de forma síncrona en el hilo del bucle de eventos**. Si el certificado del servidor no trae el intermedio y su extensión AIA apunta a una URL que no responde (un servidor hostil puede elegirla), Windows intenta descargarlo y el motor entero queda bloqueado unos **15 s por conexión**. El revisor lo reprodujo con una URL AIA en loopback que acepta la conexión y no contesta. Mientras tanto el motor no atiende ninguna otra petición, `/health` incluido. Hoy solo se conecta a los sitios que añade el usuario y a los proveedores de IA, así que se acepta como riesgo conocido. Mitigación prevista: la condición para F2 (Consecuencias); si hiciera falta antes, mover la verificación a un hilo de trabajo con su propio contexto o limitar el tiempo de recuperación de URL de la cadena.
 - **Actualización de las raíces:** las raíces retiradas de la lista de Mozilla dejan de depender de que publiquemos una versión con `certifi` nuevo y pasan a depender de las actualizaciones del sistema. En un sistema sin actualizar puede seguir habiendo raíces que Mozilla ya retiró. Se acepta: Faro exige un sistema con soporte (Windows 10/11, macOS con soporte de Tauri 2).
 
 **Qué no cambia**
@@ -146,8 +160,11 @@ Se hacen con certificados generados en la prueba (`trustme` en el grupo `dev`) y
    - **Variante solo para Windows y macOS:** aunque la variable siga en el entorno (sin la limpieza), `tls_context()` rechaza el servidor.
 3. **Nombre que no coincide, rechazado:** con un contexto construido por la misma función que `tls_context()` (sin caché) y la CA de prueba añadida **solo en la prueba** con `load_verify_locations`, un certificado válido para `otro.test`, pedido con `sni_hostname="sitio.test"` → `site.tls_error`. Con `sni_hostname="otro.test"` → 200. La única diferencia entre los dos casos es el nombre, así que el rechazo se debe a la verificación del nombre. Es la prueba que demuestra que el nombre se sigue validando en Windows y en macOS, donde lo hace `truststore` y no OpenSSL.
 4. **Certificado caducado y certificado de una CA desconocida, rechazados**, con el mismo montaje.
+   - **(Revisión de T2b) IP literal y comodines, en memoria** (se ejecutan en los tres sistemas): un certificado con la IP correcta se acepta; con otra IP, se rechaza; un certificado DNS pedido por IP, se rechaza; un comodín `*.sitio.test` no cubre `a.b.sitio.test`.
 5. **Comprobación estática de la condición 1:** ningún módulo de `faro_engine/` fuera de `net/tls.py` crea contextos TLS ni pasa `verify=` con otro valor.
 6. **Ejecutable congelado:** la comprobación `tls` de `scripts/bundle_smoke.py` construye además `tls_context()` y comprueba sus propiedades (prueba 1) dentro del ejecutable. Esto demuestra que `truststore` y sus módulos de plataforma entran en el paquete.
+
+**(Revisión de T2b) En la CI no se omite nada:** si `CI` o `GITHUB_ACTIONS` están definidas y se detecta un interceptor de TLS en loopback, las pruebas que lo comprueban fallan (`pytest.fail`) en vez de omitirse.
 
 **Una CA del sistema se acepta.** Esto no se puede probar en la CI sin instalar una raíz en el almacén del runner: en Windows exige escribir en el almacén de la máquina como administrador, y en macOS cambiar ajustes de confianza, que puede pedir autorización interactiva. Se verifica así:
 
@@ -169,8 +186,12 @@ Se hacen con certificados generados en la prueba (`trustme` en el grupo `dev`) y
 ### Consecuencias
 
 - **F1a:** los sitios WordPress detrás de un antivirus o un proxy de inspección **transparente** se conectan. Los proxies obligatorios siguen sin estar soportados.
-- **F1b:** T6 usa `tls_context()` en los transportes propios de LiteLLM (condición 15), en vez de construir un `truststore.SSLContext` por llamada (skill `capa-llm`).
-- **F2:** el rastreador hereda el mismo contexto.
+- **F1b:** T6 usa `tls_context()` en los transportes propios de LiteLLM (condición 15), en vez de construir un `truststore.SSLContext` por llamada (skill `capa-llm`). **Condiciones de la revisión de T2b para T6:**
+  - solo `acompletion`, con el cliente asíncrono propio de cada llamada;
+  - prohibidos `completion` síncrono, `litellm.ssl_verify`, `litellm.aclient_session` y cualquier cliente que LiteLLM construya por su cuenta;
+  - la inyección global, solo con `install_system_trust_for_libraries()` antes de importar LiteLLM (condición 13);
+  - una prueba que espíe `wrap_bio` y `wrap_socket` y demuestre que, durante `acompletion` con los tres proveedores, (a) todas las llamadas sobre `tls_context()` ocurren en el hilo del bucle, y (b) no se usa ningún contexto de `_ssl_context_cache` de LiteLLM.
+- **F2 (condición de la revisión de T2b):** el rastreador usa contextos de `net/tls.py` con las mismas condiciones, pero **los handshakes contra hosts no confiables no se hacen en el bucle principal**: van en un proceso aparte o en hilos de trabajo. Cada hilo usa **su propio** contexto construido en `net/tls.py` (con `threading.local` y las mismas condiciones 2–5 y 12), nunca compartido entre hilos. Motivo: el riesgo de AIA en Windows (modelo de amenaza) y la condición 12.
 - **Dependencias:**
   - `truststore` pasa a ser dependencia del núcleo de red, no solo de la capa de IA;
   - `certifi` se queda (dependencia de httpx y respaldo);

@@ -3,7 +3,7 @@
 - **Spec:** [F1b](../specs/2026-10-05-f1b-capa-ia-y-motor-de-agentes.md), tarea T2b.
 - **Decisión:** [ADR 0012, actualización 2026-10-06](../adr/0012-red-saliente-del-motor.md).
 - **Origen:** informe de T2, [§8, hallazgo 7 de §10 y §12](2026-10-05-f1b-t2-dependencias.md).
-- **Estado:** implementado. Pendiente: la prueba manual del usuario con un WordPress real, la CI en Windows, macOS y Linux y la revisión de `revisor-seguridad`.
+- **Estado:** implementado. Revisión de `revisor-seguridad`: APROBADO CON CAMBIOS; los cambios están hechos (§6) y falta que el revisor los confirme. Pendiente: la prueba manual del usuario con un WordPress real y la CI en Windows, macOS y Linux.
 
 ## 1. Qué cambia
 
@@ -53,7 +53,7 @@ Las pruebas "en memoria" hacen el handshake completo con `wrap_bio`, el mismo ca
    - en la prueba 2, la parte de control por red solo se exige sin interceptor; la de memoria se exige siempre;
    - las pruebas de rechazo por red sí se ejecutan aquí, pero en este equipo el rechazo lo provoca la raíz "Untrusted" de Norton. Lo que demuestran el rechazo por la causa correcta son las pruebas en memoria (siempre) y la CI (sin interceptor).
 2. **`truststore.SSLContext.get_ca_certs()` lanza `NotImplementedError`** (0.10.4). El ADR pide `get_ca_certs() == []`. La prueba lo comprueba sobre el contexto interno (`context._ctx`), que es el que usa `truststore` para validar (en Windows y macOS, las raíces cargadas ahí se suman a las del sistema). En el humo del ejecutable se hace igual.
-3. **(Para `revisor-seguridad`) `truststore` cambia el contexto interno durante cada `wrap_bio` y `wrap_socket`.** En Windows y macOS pone `check_hostname=False` y `CERT_NONE` mientras dura la llamada y luego los restaura. La verificación con el sistema, que ocurre después del handshake, lee `verify_mode` y `check_hostname` de ese mismo contexto interno. `wrap_socket` toma un cerrojo, pero la verificación queda fuera de él, y `wrap_bio`, que es lo que usa asyncio, no toma ninguno. Si **otro hilo** abre una conexión con el mismo objeto justo cuando termina la verificación de una conexión, esa verificación puede ejecutarse con `CERT_NONE` y aceptar cualquier certificado.
+3. **(Resuelto tras la revisión, §6.1) `truststore` cambia el contexto interno durante cada `wrap_bio` y `wrap_socket`.** En Windows y macOS pone `check_hostname=False` y `CERT_NONE` mientras dura la llamada y luego los restaura. La verificación con el sistema, que ocurre después del handshake, lee `verify_mode` y `check_hostname` de ese mismo contexto interno. `wrap_socket` toma un cerrojo, pero la verificación queda fuera de él, y `wrap_bio`, que es lo que usa asyncio, no toma ninguno. Si **otro hilo** abre una conexión con el mismo objeto justo cuando termina la verificación de una conexión, esa verificación puede ejecutarse con `CERT_NONE` y aceptar cualquier certificado.
    - En el motor hoy no ocurre: todo el HTTPS es asíncrono y va en el hilo del bucle de eventos, y entre el cambio y la restauración no hay `await`.
    - Queda documentado en el docstring de `net/tls.py`: solo para transportes asíncronos en el bucle del motor.
    - Si en el futuro algún cliente síncrono en otro hilo, como un `httpx.Client` dentro de `run_in_threadpool`, usara `tls_context()`, haría falta un contexto propio por hilo. Esto afecta a la condición 9 (contexto inmutable) y a T6, por los transportes de LiteLLM.
@@ -83,3 +83,89 @@ Resultado esperado con Norton: `store=system HTTP 200` y código de salida 0. An
 | Windows | CryptoAPI (`CertGetCertificateChain` + política SSL con el nombre del SNI) | Comprobado aquí: pruebas en memoria, rechazo por red y `manual_tls_check.py` con 200 a través de Norton. |
 | macOS | Security.framework (`SecTrust` con política SSL y nombre) | Solo en la CI (`macos-latest`). Falta comprobarlo en el ejecutable firmado con hardened runtime antes de la primera versión para macOS (ADR). |
 | Linux (solo CI y desarrollo) | OpenSSL con las rutas por defecto de la distribución | `truststore` llama a `set_default_verify_paths()` en cada conexión, así que `SSL_CERT_FILE` y `SSL_CERT_DIR` sí cambiarían las raíces; las quita `__main__` (prueba 2). La variante "sin limpieza" se omite en Linux a propósito. |
+
+## 6. Revisión de seguridad (APROBADO CON CAMBIOS) y correcciones
+
+### 6.1 Carrera de hilos en `truststore` (medio; crítico si ocurre)
+
+`truststore` (`_api.py`, `wrap_bio` sin cerrojo; `_windows.py` y `_macos.py`, `_configure_context`) guarda `verify_mode` y `check_hostname`, pone `CERT_NONE` y `check_hostname=False` y al salir restaura lo guardado. Con dos hilos cruzados, el contexto compartido queda **para siempre** en `CERT_NONE`; el revisor lo reprodujo 3 de 3. El hallazgo 3 de §3 lo anticipaba como "no ocurre hoy", pero nada lo impedía.
+
+Corrección en `faro_engine/net/tls.py`:
+
+- `_ThreadOwnedContext`, subclase de `truststore.SSLContext` creada por `_thread_owned_class()`. El primer hilo que llama a `wrap_bio` o `wrap_socket` pasa a ser su dueño. Se guarda el objeto `Thread`, no `get_ident()`, que se reutiliza. Cualquier otro hilo recibe `WrongThreadError` (subclase de `ssl.SSLError`) **antes** de tocar el contexto, y se registra `net.tls_wrong_thread`.
+- El cliente lo traduce a `site.tls_error`: httpcore lo envuelve en `ConnectError` y `_is_tls_error` encuentra el `SSLError` en la cadena. Comprobado en una prueba, sin que salga el ClientHello.
+- **Respaldo con `certifi`, sin protección, y por qué:** es un `ssl.SSLContext` de la biblioteca estándar, cuyo `wrap_bio`/`wrap_socket` no cambia el contexto (OpenSSL lee una configuración que nadie modifica, condición 9 del ADR). Una prueba con cuatro hilos y 1200 conexiones lo comprueba.
+- `scripts/bundle_smoke.py` (comprobación `tls`) exige además que el contexto sea un `_ThreadOwnedContext` dentro del ejecutable.
+
+Pruebas nuevas en `tests/net/test_tls.py`:
+
+- `test_wrap_bio_desde_otro_hilo_falla_sin_tocar_el_contexto`: `SSLError`, contexto interno en `CERT_REQUIRED` y `check_hostname=True`; el dueño sigue aceptando un certificado válido y rechazando uno con otro nombre.
+- `test_el_primer_hilo_que_conecta_es_el_dueno`.
+- `test_wrap_socket_desde_otro_hilo_falla_sin_tocar_el_contexto`.
+- `test_hilos_ajenos_en_paralelo_no_degradan_el_contexto`: la reproducción del revisor (cuatro hilos contra el dueño). Las 1200 llamadas ajenas fallan y el contexto queda intacto.
+- `test_en_el_bucle_un_hilo_de_trabajo_no_puede_usar_el_contexto`: con `asyncio.to_thread`.
+- `test_el_cliente_traduce_el_hilo_ajeno_a_tls_error`.
+- `test_el_bucle_sigue_conectando_tras_un_intento_desde_otro_hilo`: 200, intento ajeno y 200 otra vez. Necesita loopback directo: se omite en este equipo y se ejecuta en la CI.
+- `test_el_respaldo_con_certifi_no_cambia_al_conectar_desde_varios_hilos`.
+
+Los dos casos de respaldo por error de construcción parchean ahora `truststore.SSLContext.__init__`, porque el motor construye la subclase.
+
+### 6.2 Comprobación estática incompleta (bajo)
+
+`tls_violations` detecta ahora todas las formas de la condición 14 del ADR:
+
+- alias de import de `ssl`, `truststore`, `_ssl`, `httpx` y `httpcore`, incluido `from ssl import create_default_context as mk`;
+- `getattr`, `setattr`, `delattr` y `hasattr` con nombres TLS, y `getattr` sobre `ssl` o `truststore`;
+- `**kwargs`, `*args`, posicionales a transportes y `mounts=` en `httpx` y `httpcore`;
+- `ssl=`, `ssl_context=`, `context=`, `cafile=`, `capath=` y `cadata=`, y `verify` dentro de `**{...}` o `**dict(...)`;
+- `httpx.Client` y `httpx.AsyncClient` sin `transport=`; `httpx.get`, `post`, `request`, `stream` y similares;
+- `urlopen`, `build_opener`, `HTTPSHandler` y `HTTPSConnection`;
+- asignaciones a `verify_mode`, `check_hostname`, `minimum_version`, `maximum_version`, `options`, `verify_flags`, `keylog_filename`, `hostname_checks_common_name`, `post_handshake_auth`, `sslobject_class` y `sslsocket_class`;
+- cualquier referencia a `_create_unverified_context` o `_create_default_https_context`.
+
+`test_la_comprobacion_estatica_detecta_cada_forma` pasa de 14 a 71 casos, que cubren los 12 de la reproducción del revisor. `test_la_comprobacion_estatica_admite_el_contexto_compartido` tiene 12 casos que no deben dar aviso (`ssl.SSLError`, `getattr(socket, …)`, `Model(**fields)`, lecturas de `.options`…). El recorrido de `faro_engine/` sigue sin violaciones.
+
+### 6.3 Salvaguarda en la CI (bajo)
+
+`loopback_is_direct()`: si `CI` o `GITHUB_ACTIONS` están definidas y se detecta un interceptor en loopback, `pytest.fail` en vez de `pytest.skip`. Lo usan el fixture `direct_loopback` y la parte de control por red de la prueba 2. La prueba es `test_en_la_ci_un_interceptor_hace_fallar_en_vez_de_omitir`, con cinco casos.
+
+### 6.4 `inject_into_ssl` (bajo)
+
+Nueva `install_system_trust_for_libraries()` en `net/tls.py`:
+
+- construye primero el contexto del motor y, solo con `store=system`, llama a `truststore.inject_into_ssl()`; con el respaldo no inyecta;
+- es idempotente y registra `net.tls_libraries_trust`;
+- T6 la llamará antes de importar LiteLLM; `__main__` todavía no la llama;
+- `scripts/bundle_smoke.py` ya la usa en lugar de `truststore.inject_into_ssl()`.
+
+Pruebas: `test_install_system_trust_construye_el_contexto_y_luego_inyecta` y `test_install_system_trust_no_inyecta_con_el_respaldo`. Las dos deshacen la inyección al terminar. La skill `capa-llm`, el ADR (condición 13) y §12 del informe de T2 apuntan a esta función.
+
+### 6.5 IP literal (bajo)
+
+Pruebas en memoria, que se ejecutan en los tres sistemas de la CI y también con Norton:
+
+- `test_en_memoria_ip_literal_correcta_se_acepta_y_otra_se_rechaza` (`203.0.113.10` frente a `.11`);
+- `test_en_memoria_certificado_dns_pedido_por_ip_se_rechaza`;
+- `test_en_memoria_el_comodin_cubre_un_solo_nivel` (`*.sitio.test` acepta `a.sitio.test` y rechaza `a.b.sitio.test`).
+
+### 6.6 Documentación
+
+- **ADR 0012:**
+  - condiciones 12 (un hilo por contexto), 13 (inyección solo con la función) y 14 (comprobación estática ampliada);
+  - el riesgo conocido de AIA en Windows (medio) en el modelo de amenaza;
+  - la condición para F2 y las condiciones para T6 en Consecuencias;
+  - las pruebas de IP literal y la salvaguarda de la CI en "Pruebas exigidas".
+- **Riesgo conocido de AIA en Windows (medio).** La verificación llama a `CertGetCertificateChain` con `chain_flags=0` dentro de `do_handshake`, de forma síncrona en el hilo del bucle. Un certificado sin intermedio, con una AIA que no responde, bloquea el motor unos 15 s por conexión; el revisor lo reprodujo. Se acepta por ahora. La mitigación es la condición de F2.
+- **Condición para F2 (rastreador):** los handshakes contra hosts no confiables no se hacen en el bucle principal. Van en un proceso aparte o en hilos de trabajo, y cada hilo usa **su propio** contexto de `net/tls.py` (`threading.local`, con las mismas condiciones), nunca compartido.
+- **Condiciones para T6** (también en la skill `capa-llm` y en §12 del informe de T2, condiciones 18 a 21):
+  - solo `acompletion` con el cliente asíncrono propio de cada llamada;
+  - prohibidos `completion` síncrono, `litellm.ssl_verify`, `aclient_session` y cualquier cliente que LiteLLM construya por su cuenta;
+  - una prueba que espíe `wrap_bio` y `wrap_socket` y demuestre que, durante `acompletion` con los tres proveedores, (a) todas las llamadas sobre `tls_context()` ocurren en el hilo del bucle, y (b) no se usa ningún contexto de `_ssl_context_cache` de LiteLLM.
+
+### 6.7 Resultado
+
+En este equipo (Windows 11 con Norton):
+
+- `uv run pytest`: 1063 pruebas superadas y 3 omitidas, con un 100 % de cobertura. Se omiten tres pruebas por el interceptor en loopback; en la CI fallarían en vez de omitirse.
+- `ruff format --check`, `ruff check` y `mypy faro_engine tests scripts` pasan.
+- `scripts/bundle_smoke.py` sin empaquetar, comprobación `tls`: `ok` (`engine_store=system`, `truststore._windows`, LiteLLM en `truststore._api.SSLContext`).
