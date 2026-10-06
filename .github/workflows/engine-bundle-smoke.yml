@@ -1,0 +1,62 @@
+# Empaquetado de prueba del motor con PyInstaller (spec F1b §4.7 y T2, ADR 0015 §6
+# criterios 5, 6 y 7).
+#
+# Solo manual (`workflow_dispatch`): construye el motor `--onedir` sin y con las dependencias
+# de F1b, ejecuta la prueba de humo de cada variante (base cifrada, migraciones, sqlite-vec,
+# grafo LangGraph con un LLM falso, APScheduler y LiteLLM contra un servidor falso local) y
+# escribe los tamaños en el resumen. Falla si una prueba falla o si el aumento supera
+# 150 MiB. No entra en `ci-ok`.
+#
+# Repositorio público (ADR 0005): sin `pull_request_target`, sin secretos, GITHUB_TOKEN de
+# solo lectura y acciones fijadas por SHA completo.
+name: engine-bundle-smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engine-bundle-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.11.33"
+  FORCE_COLOR: "1"
+
+jobs:
+  engine-bundle-smoke:
+    name: engine-bundle-smoke (Windows, PyInstaller --onedir)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/engine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: apps/engine/uv.lock
+
+      # Grupo `bundle` (PyInstaller fijado en uv.lock) + `dev` (sqlite-vec).
+      - name: uv sync --locked --group bundle
+        run: uv sync --locked --group bundle
+
+      # Descarga `cl100k_base.tiktoken` de la URL oficial y comprueba su SHA-256.
+      - name: Empaquetar, probar y medir (base y full)
+        run: uv run --locked --group bundle python scripts/bundle_smoke_build.py --out build/bundle-smoke
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: engine-bundle-smoke-summary
+          path: apps/engine/build/bundle-smoke/summary.json
+          if-no-files-found: warn
+          retention-days: 14

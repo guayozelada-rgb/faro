@@ -149,6 +149,11 @@ def build_graph(deps: AgentDeps, ctx: RunContext) -> CompiledGraph:
 
 ADR 0015 §2. No se usa `langgraph-checkpoint-sqlite` (espera `sqlite3`, crea tablas fuera de nuestras migraciones y abre otra conexión).
 
+Versiones y entorno (verificado en T2, `docs/qa/2026-10-05-f1b-t2-dependencias.md`):
+- Fijadas: `langgraph==1.2.13`, `langgraph-checkpoint==4.2.0` (incluye las correcciones de deserialización CVE-2025-64439 → 3.0.0, CVE-2026-27794 → 4.0.0 y CVE-2026-48775 → 4.1.1) y, por transitividad, `langchain-core` 1.6.6 (≥ 1.3.3, última corrección conocida). No bajes de esas versiones.
+- **LangSmith apagado siempre.** `langchain-core` arrastra `langsmith`: con `LANGSMITH_TRACING=true` (o `LANGCHAIN_TRACING_V2`) en el entorno del usuario, cada ejecución de un grafo envía su estado (títulos del sitio, salidas del modelo) a `api.smith.langchain.com` desde un hilo propio. El arranque del motor quita `LANGSMITH_*` y `LANGCHAIN_*` del entorno y llama a `langsmith.configure(enabled=False)` antes de construir cualquier grafo (gana al entorno; prueba en `tests/deps/test_offline_imports.py`).
+- Importar `langgraph.graph` tarda ~1,5 s; ejecutar un grafo con `interrupt()` y `Command(resume=…)` no abre conexiones.
+
 - Implementa los métodos **asíncronos** de `BaseCheckpointSaver` (`aget_tuple`, `alist`, `aput`, `aput_writes`) sobre `Database.run` (una conexión, un candado). Los síncronos lanzan `NotImplementedError`: el motor solo usa `ainvoke`. **(verificar en T8)** qué otros métodos exige la versión fijada (p. ej. `get_next_version`, borrado por hilo).
 - Tablas `agent_checkpoints` y `agent_checkpoint_writes` de la migración 0002 (claves compuestas que espera LangGraph). `thread_id` = `agent_runs.id`.
 - **Serializador solo JSON, sin `pickle` ni importación dinámica de clases.** Implementa el protocolo de serialización de LangGraph (`dumps_typed`/`loads_typed`) con `type = "json"` y rechaza cualquier otro `type` al leer (un `BLOB` con `pickle` → `agent.state_unreadable`, con prueba). Los tipos internos de LangGraph que aparecen en checkpoints o escrituras pendientes (p. ej. el objeto de una interrupción) se convierten con una **lista cerrada** de tipos conocidos, nunca con "importa la clase que diga el dato" **(verificar en T8: qué tipos internos aparecen con la versión fijada)**.

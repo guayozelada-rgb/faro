@@ -13,7 +13,15 @@ description: Cómo se empaqueta el motor Python de Faro con PyInstaller, cómo e
   - `faro-engine-aarch64-apple-darwin`
   - `faro-engine-x86_64-apple-darwin`
 - Declarado en `tauri.conf.json`: `"bundle": { "externalBin": ["binaries/faro-engine"] }`.
-- Dependencias Python fijadas con `uv lock`; el build usa exactamente el lock.
+- Dependencias Python fijadas con `uv lock`; el build usa exactamente el lock. PyInstaller va en el grupo `bundle` (`uv sync --locked --group bundle`).
+- Lo que aprendió F1b T2 con `apps/engine/scripts/bundle_smoke_build.py` (trabajo manual `engine-bundle-smoke`), que el build de release debe repetir:
+  - `--collect-data faro_engine` (migraciones `.sql`) y `--additional-hooks-dir apps/engine/scripts/pyinstaller_hooks` (`hook-litellm.py`: submódulos perezosos de LiteLLM sin el proxy y sus datos; `hook-tiktoken.py`: sin él falla "Unknown encoding cl100k_base").
+  - Incluir `cl100k_base` de tiktoken con `--add-data` (SHA-256 comprobado) y apuntar `CUSTOM_TIKTOKEN_CACHE_DIR` a esa carpeta (skill `capa-llm`).
+  - `LITELLM_LOCAL_MODEL_COST_MAP=True` también en el entorno de PyInstaller: el análisis importa LiteLLM y, sin ella, intenta descargar el mapa de precios.
+  - `--exclude-module litellm.rust_bridge._native` ahorra ~45 MB (LiteLLM 1.104 no lo usa en `acompletion`).
+  - `--collect-all sqlite_vec` solo cuando una fase use `sqlite-vec`.
+  - Tamaño `--onedir` en Windows: F1a ≈ 42 MiB; con las dependencias de F1b, ver el informe de T2 (límite de aumento: 150 MiB, ADR 0015 §6).
+  - El motor empaquetado tarda en arrancar: importar LiteLLM cuesta ~6,5 s, así que no se importa antes de `ready` (límite de 20 s del núcleo).
 - Playwright y su navegador **no** se empaquetan: se descargan bajo demanda a `$APPDATA/Faro/browsers` cuando el usuario activa el renderizado JS.
 
 ## Protocolo de arranque

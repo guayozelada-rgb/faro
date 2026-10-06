@@ -7,12 +7,17 @@ requires-python = ">=3.12,<3.13"
 license = { text = "Propietario. Todos los derechos reservados." }
 dependencies = [
     "anyio>=4.15.1",
+    "apscheduler>=3.11.3,<4",
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
     "idna>=3.20",
+    "langgraph==1.2.13",
+    "langgraph-checkpoint==4.2.0",
+    "litellm==1.104.0",
     "pydantic>=2.13.5",
     "sqlcipher3-wheels>=0.5.7,<0.6",
     "structlog>=26.1.0",
+    "truststore==0.10.4",
     "uvicorn>=0.54.0",
 ]
 
@@ -43,14 +48,24 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# Quita `SSLKEYLOGFILE` del entorno antes de importar nada que pueda crear un contexto TLS.
+"faro_engine/__main__.py" = ["E402"]
 "tests/**" = ["S101", "S105", "S106", "S603", "PLR2004", "ARG001", "S104", "PLC0415"]
+# Herramientas de empaquetado (spec F1b T2): lanzan PyInstaller y el ejecutable, e importan
+# dentro de cada comprobación para que la variante `base` funcione sin las deps de F1b.
+"scripts/**" = ["S603", "PLC0415"]
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 warn_unreachable = true
-files = ["faro_engine", "tests"]
+files = ["faro_engine", "tests", "scripts"]
+
+# Dependencias sin tipos (spec F1b T2): APScheduler 3, sqlite-vec y PyInstaller (hooks).
+[[tool.mypy.overrides]]
+module = ["apscheduler.*", "sqlite_vec", "PyInstaller.*"]
+ignore_missing_imports = true
 
 [tool.pydantic-mypy]
 init_forbid_extra = true
@@ -75,6 +90,7 @@ addopts = [
 markers = [
     "slow: pruebas de más de 2 s (solo CI nocturno)",
     "wp_env: integración motor ↔ plugin contra wp-env (Docker); CI wp-plugin-integration",
+    "vec: carga de sqlite-vec en la base cifrada (ADR 0009 criterio 5; sqlite-vec solo en dev)",
 ]
 filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]
 
@@ -113,6 +129,9 @@ strict_modules = [
 strict_fail_under = 95
 
 [dependency-groups]
+bundle = [
+    "pyinstaller==6.22.3",
+]
 dev = [
     "httpx>=0.28.1",
     "mypy>=2.3.1",
@@ -121,4 +140,5 @@ dev = [
     "pytest-cov>=7.1.0",
     "respx>=0.23.1",
     "ruff>=0.16.9",
+    "sqlite-vec==0.1.9",
 ]
