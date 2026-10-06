@@ -281,6 +281,13 @@ def scenario_litellm_call(provider: str, stub_encoding: bool) -> dict[str, Any]:
 
     # Como el motor (`configure_logging`): el logger raíz en INFO, con salida a stderr.
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+    if not stub_encoding:
+        # Caché de tiktoken vacía y propia: si la carpeta de LiteLLM ya trae el
+        # vocabulario (otra ejecución lo descargó), la sonda no vería el intento de red.
+        import os
+        import tempfile
+
+        os.environ["CUSTOM_TIKTOKEN_CACHE_DIR"] = tempfile.mkdtemp(prefix="faro-tiktoken-")
     import litellm
     from litellm.llms.custom_httpx.async_client_cleanup import close_litellm_async_clients
 
