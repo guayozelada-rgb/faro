@@ -21,7 +21,7 @@
 
 - **Tamaño (criterio 7):** el motor `--onedir` en Windows pasa de **42,4 MiB** (F1a) a **113,8 MiB**: **+71,4 MiB** (límite 150 MiB). Si se incluye el puente nativo de LiteLLM, son 158,1 MiB (+115,6 MiB), también dentro del límite.
 - **`truststore` hace falta:** detrás de Norton, todo HTTPS con las raíces de `certifi` falla (`CERTIFICATE_VERIFY_FAILED`); con `truststore` funciona, también en el transporte de LiteLLM.
-- **Pendiente del usuario:** la llamada real con su clave (criterio 8). El procedimiento está en §6.
+- **Comprobación con la clave real del usuario (criterio 8):** Anthropic hecha el 2026-10-05 (listado de modelos: HTTP 200 con `certifi` y con `truststore`; Norton no intercepta ese dominio, ver §8). OpenAI y Gemini, pendientes. El procedimiento está en §8.
 - **Paquetes:** el lock pasa de 35 a 112 paquetes (77 nuevos, de los que 7 son solo del grupo `bundle` y 1 de `dev`). En producción quedan 89.
 
 ## 1. Criterio 1 — Ruedas por plataforma
@@ -199,14 +199,24 @@ uv run --group bundle python scripts/bundle_smoke_build.py --tiktoken-file <copi
    - `uv run python scripts/manual_llm_check.py gemini`
 
    Pega la clave cuando la pida. No se muestra, no va en argumentos ni en variables de entorno, no se lee del llavero, no se escribe en ningún archivo y no se conserva tras salir el proceso (Python no permite borrar el contenido de una `str`; `del` solo suelta la referencia). Antes de pedirla, el script limpia su entorno (incluidas `OPENAI_BASE_URL` y similares, que desviarían la clave a otro host) y aborta si algo queda. El script lista los modelos (sin costo) en el host oficial con `certifi` y con `truststore`, y muestra solo el código HTTP y cuántos modelos devolvió.
-3. Opcional, para probar el transporte exacto del motor: `--completion <proveedor>/<modelo barato>` hace **una** llamada con LiteLLM (`max_tokens=5`, fracciones de centavo), en modo `PRODUCTION` (sin leer ningún `.env`), con `api_base` fijo al host oficial y la clave explícita. Con Anthropic y Gemini, LiteLLM descarga antes `cl100k_base` de `openaipublic.blob.core.windows.net` (sin clave; hallazgo 5 de §10).
+3. Opcional, para probar el transporte exacto del motor: `--completion <proveedor>/<modelo barato>` hace **una** llamada con LiteLLM (`max_tokens=5`, fracciones de centavo), en modo `PRODUCTION` (sin leer ningún `.env`), con `api_base` fijo al host oficial, la clave explícita y un cliente HTTP propio sin redirecciones ni proxies (§12). Con Anthropic y Gemini, LiteLLM descarga antes `cl100k_base` de `openaipublic.blob.core.windows.net` (sin clave; hallazgo 5 de §10).
 4. Copia aquí las líneas que imprime (no contienen la clave). **Resultado esperado** con Norton: `[certifi] FALLO de conexión … SSLCertVerificationError…` y `[truststore] HTTP 200`.
 
 | Proveedor | `certifi` | `truststore` | LiteLLM (opcional) | Fecha |
 | --- | --- | --- | --- | --- |
-| Anthropic | ⏳ | ⏳ | ⏳ | |
-| OpenAI | ⏳ | ⏳ | ⏳ | |
-| Gemini (AI Studio) | ⏳ | ⏳ | ⏳ | |
+| Anthropic | OK, HTTP 200 (13 modelos) | OK, HTTP 200 (13 modelos) | No ejecutada | 2026-10-05 |
+| OpenAI | ⏳ sin probar | ⏳ sin probar | ⏳ | |
+| Gemini (AI Studio) | ⏳ sin probar | ⏳ sin probar | ⏳ | |
+
+Salida que pegó el usuario (Anthropic, sin `--completion`; no contiene la clave):
+
+```
+anthropic: listado de modelos (sin costo)
+  [certifi   ] HTTP 200 (modelos listados: 13)
+  [truststore] HTTP 200 (modelos listados: 13)
+```
+
+**Observación.** Con Anthropic, `certifi` funcionó, aunque en T2 falló contra `pypi.org` (tabla anterior). Norton intercepta HTTPS de forma **selectiva, según el dominio**: en `api.anthropic.com` no intercepta. `truststore` sigue siendo necesario, porque en otros dominios (`pypi.org`, y probablemente sitios WordPress) sí intercepta. OpenAI y Gemini quedan sin probar.
 
 ## 9. Trabajo de CI `engine-bundle-smoke`
 
@@ -240,6 +250,7 @@ uv run --group bundle python scripts/bundle_smoke_build.py --tiktoken-file <copi
 - `.github/workflows/engine-bundle-smoke.yml`; `.github/workflows/ci.yml`, `package.json` y `apps/engine/README.md` (mypy con `scripts/`, uso de los scripts).
 - Skills: `capa-llm`, `agentes-langgraph`, `migraciones-sqlite`, `tauri-sidecar-python` y `release-y-firma`.
 - Correcciones de la revisión de seguridad (§12): `apps/engine/faro_engine/__main__.py` (`SSLKEYLOGFILE`), `apps/engine/tests/test_main.py` y `apps/engine/pyproject.toml` (E402 en `__main__.py`).
+- Correcciones de la segunda revisión (§12): `apps/engine/scripts/manual_llm_check.py` (limpieza ampliada, cliente propio, `sys.path`), `apps/engine/tests/llm/test_manual_llm_check.py`, `apps/engine/tests/deps/manual_check_probe.py` (escenarios `client_isolation` y `control_client`) y `apps/engine/tests/deps/offline_probe.py` (el bloqueo de red anota bien los hosts en `bytes` de httpcore).
 
 ## 12. Condiciones obligatorias de la revisión de seguridad
 
@@ -257,12 +268,37 @@ Resultado de la revisión de `revisor-seguridad` sobre T2. Ya corregido en este 
 - **D (medio), afecta a F1a.** `ssl.create_default_context` aplica `SSLKEYLOGFILE` y Norton la fija en el equipo del usuario: las claves de sesión TLS de las conexiones a WordPress se escribían en un archivo. `faro_engine/__main__.py` la quita del entorno antes de cualquier otro import. Prueba en `tests/test_main.py`: en un proceso aparte, tras importar el punto de entrada, un contexto TLS nuevo no tiene `keylog_filename` y el archivo no existe (con prueba de control sin quitarla).
 - **I (bajo), skill `capa-llm`.** Lista de variables completada; "nunca `api_base`" sustituido por "`api_base` fijo al host oficial del catálogo"; `LITELLM_MODE=PRODUCTION` y limpieza antes y después del import.
 
+**Segunda revisión de seguridad.** Ya corregido en `scripts/manual_llm_check.py` (hallazgos bajos del script):
+
+- **Limpieza de variables.** Antes solo quitaba 3 nombres `SSL_*`. Ahora quita todas las que empiezan por `SSL_` y por `AIOHTTP_`, además de `SSLKEYLOGFILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` (la comparación es en mayúsculas, así que también quita `http_proxy` y las demás en minúsculas), `DISABLE_AIOHTTP_TRANSPORT` y `CUSTOM_TIKTOKEN_CACHE_DIR`. El docstring dice exactamente qué se limpia.
+- **Cliente propio para `--completion`.** LiteLLM 1.104.0 lo admite con el parámetro `client` de `acompletion`, sin tocar nada interno:
+  - Anthropic y Gemini: `AsyncHTTPHandler(transport=httpx.AsyncHTTPTransport(verify=truststore.SSLContext(...), trust_env=False), follow_redirects=False)`. Con `transport` propio, LiteLLM crea el `httpx.AsyncClient` con `trust_env=False` y sin montar proxies, también si lo recrea tras un error de conexión.
+  - OpenAI exige un `AsyncOpenAI`: se construye con la clave, el `api_base` fijo, `max_retries=0` y un `httpx.AsyncClient(transport=<el mismo transporte>, follow_redirects=False, trust_env=False)`.
+  - `litellm.aclient_session` solo lo usa OpenAI y es global: se descartó.
+  - El cliente se cierra en un `finally` tras la llamada.
+
+  `trust_env=False` evita también el proxy del registro de Windows, que `urllib.request.getproxies()` lee cuando no hay variables.
+- **`sys.path` limpio.** Tras `import litellm`, el script quita de `sys.path` el directorio de trabajo (y `""`).
+
+Pruebas en `tests/llm/test_manual_llm_check.py`, en proceso aparte, con la red bloqueada salvo loopback y las claves falsas de `tests/deps/offline_probe.py` (construidas por concatenación):
+
+- `test_cliente_propio_no_sigue_redirecciones_ni_usa_proxies`: un "host oficial" falso en loopback responde 307 hacia otro puerto, y todos los proxies del entorno, junto con `DISABLE_AIOHTTP_TRANSPORT=True` y `AIOHTTP_TRUST_ENV=True`, apuntan a un tercer servidor. Con los tres proveedores, la petición llega directa al "host oficial"; ni el otro puerto ni el proxy reciben nada.
+- `test_motivo_sin_cliente_propio_litellm_sigue_el_307_y_usa_proxies` (control): con el cliente por defecto de LiteLLM, el 307 se sigue con los tres proveedores. Anthropic reenvía `x-api-key` y Gemini `x-goog-api-key`; httpx solo quita `authorization` al cambiar de origen, así que OpenAI no la reenvía. Con proxies en el entorno, el proxy recibe la clave de los tres.
+- `test_el_directorio_de_trabajo_sale_de_sys_path_tras_importar`, más las pruebas de la limpieza ampliada, también en minúsculas.
+
+Ninguna prueba queda en `xfail`.
+
 **Condiciones para T6, T7 y T11** (no implementadas en T2; `revisor-seguridad` las comprueba en cada tarea):
 
 1. **Antes de `import litellm`:**
    - `LITELLM_MODE=PRODUCTION`, `LITELLM_LOCAL_MODEL_COST_MAP=True` y `CUSTOM_TIKTOKEN_CACHE_DIR` apuntando al `cl100k_base` incluido en el motor;
    - `truststore.inject_into_ssl()`;
-   - quitar del entorno `SSL_VERIFY`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `SSLKEYLOGFILE`, `LANGSMITH_*`, `LANGCHAIN_*`, el resto de `LITELLM_*` (incluido `LITELLM_LOG`) y todas las `OPENAI_*`, `ANTHROPIC_*` y `GEMINI_*`, incluidas `*_API_KEY`, `*_API_BASE` y `*_BASE_URL` (el script quita también `GOOGLE_API_KEY`, que LiteLLM usa como clave de Gemini).
+   - quitar del entorno `SSL_VERIFY`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `SSLKEYLOGFILE`, `LANGSMITH_*`, `LANGCHAIN_*`, el resto de `LITELLM_*` (incluido `LITELLM_LOG`) y todas las `OPENAI_*`, `ANTHROPIC_*` y `GEMINI_*`, incluidas `*_API_KEY`, `*_API_BASE` y `*_BASE_URL` (el script quita también `GOOGLE_API_KEY`, que LiteLLM usa como clave de Gemini);
+   - **(segunda revisión)** quitar también:
+     - `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` y `NO_PROXY`, en mayúsculas y en minúsculas;
+     - `DISABLE_AIOHTTP_TRANSPORT` y `AIOHTTP_TRUST_ENV`;
+     - `SSL_SECURITY_LEVEL`, `SSL_ECDH_CURVE` y `SSL_CERTIFICATE` (lo más sencillo: todo `SSL_*`, como el script);
+   - el proxy del registro de Windows no es una variable y no se puede quitar: lo evita solo un cliente con `trust_env=False`. Por eso la medida principal sigue siendo el cliente propio sin proxies (condición 15); la limpieza es una segunda barrera.
 2. **Después del import:** repetir la limpieza y comprobarla (si queda algo, el adaptador no se carga), con una prueba de `.env` en un directorio padre.
 3. `api_base` fijo al host oficial y `api_key` explícita en cada llamada.
 4. Loggers `LiteLLM*` sin handlers, `propagate=True`, nivel `WARNING`. Prueba: con `LITELLM_LOG=DEBUG`, stdout solo contiene líneas del protocolo. Motivo: el núcleo trata como `secret_request` una línea de stdout con JSON, que podría venir de una página rastreada.
@@ -277,6 +313,40 @@ Resultado de la revisión de `revisor-seguridad` sobre T2. Ya corregido en este 
 11. **(T7/T11, núcleo):** lanzar el motor con `env_clear()` y una lista de variables permitidas. Hoy `launcher.rs:281-286` hereda todo el entorno.
 12. **(T11):** `hook-litellm.py` con lista permitida (núcleo + openai, anthropic y gemini) en vez de `collect_submodules("litellm")`, y build sin red.
 13. **Vigilar** `httpx2` y `httpcore2`: son paquetes nuevos y sin attestations.
+
+**Condiciones nuevas de la segunda revisión de seguridad:**
+
+14. **Directorio de trabajo en `sys.path` (medio; T6, T7 y T11).** `import litellm` ejecuta `sys.path.append(os.getcwd())` en `litellm/proxy/proxy_cli.py`, y tiktoken importa todo `tiktoken_ext/*.py` que encuentre en `sys.path`: un archivo puesto en el directorio de trabajo se ejecutaría dentro del motor, que tiene las claves en memoria. Hace falta:
+    - después del import, quitar `os.getcwd()` de `sys.path`;
+    - que el núcleo lance el motor con un directorio de trabajo fijo y no escribible (T7/T11);
+    - una prueba: con un `tiktoken_ext/x.py` en el directorio de trabajo, tras cargar el adaptador y pedir `cl100k_base`, ese archivo no se ejecuta.
+
+    El script ya hace lo primero, con su prueba.
+15. **Sin redirecciones ni proxies en LiteLLM (medio; T6).** Cada llamada usa un cliente propio, pasado con `client=`, con `follow_redirects=False`, `trust_env=False` y contexto de `truststore`:
+    - Anthropic y Gemini: `AsyncHTTPHandler` con `transport` propio;
+    - OpenAI: `AsyncOpenAI` con `http_client` propio.
+
+    También hace falta una prueba en loopback: un 307 a otro puerto no recibe nada, y un proxy del entorno tampoco. Es la misma forma que en el script (`build_litellm_client`) y en sus pruebas. Motivo: por defecto, LiteLLM sigue el 307 y reenvía `x-api-key` y `x-goog-api-key` (prueba de control).
+16. **Ampliación de la condición 1:** variables de proxy, aiohttp y `SSL_*` (ver la condición 1). Lo mejor sigue siendo el cliente propio de la condición 15.
+17. **Punto de entrada de PyInstaller (T11).** El ejecutable empaquetado del motor debe ejecutar el `os.environ.pop("SSLKEYLOGFILE", None)` de `faro_engine/__main__.py` antes de cualquier otro import, igual que `python -m faro_engine`. Esto incluye los hooks de ejecución de PyInstaller y cualquier script de entrada distinto. Hace falta una prueba de humo con el ejecutable empaquetado: con `SSLKEYLOGFILE` definida, tras una conexión TLS (en loopback), el archivo no se crea.
+
+**Correspondencia entre hallazgos y condiciones**
+
+| Revisión | Hallazgo | Qué era | Condición o commit |
+| --- | --- | --- | --- |
+| 1.ª | A | `.env` cargado por LiteLLM en modo `DEV` | Condiciones 1 y 2 (`LITELLM_MODE=PRODUCTION`, limpieza tras el import, prueba del `.env` en un directorio padre). En el script: commit `3667614` |
+| 1.ª | B | Script con variables `*_BASE_URL` | Condiciones 1 y 3. En el script: commit `3667614` |
+| 1.ª | C | stdout de LiteLLM | Condición 4. En el script (loggers desactivados): commit `3667614` |
+| 1.ª | D | `SSLKEYLOGFILE` | Condición 8, hecha en el commit `ebfdb60`; en el ejecutable empaquetado, condición 17 |
+| 1.ª | E | Límites de las sondas de red (código nativo; IP literal en `ProactorEventLoop`) | Condición 10 |
+| 1.ª | F | `collect_submodules` en el hook | Condición 12 |
+| 1.ª | G | Texto de `del key` | Commit `3667614` |
+| 1.ª | H | `httpx2` y `httpcore2` sin attestations | Condición 13 |
+| 1.ª | I | Skill `capa-llm` incompleta | Commit `bcbe509`; ampliada con la segunda revisión en este cambio |
+| 2.ª | Directorio de trabajo | `os.getcwd()` en `sys.path` y `tiktoken_ext` | Condición 14. En el script, este cambio |
+| 2.ª | Redirecciones | 307 a otro origen con `x-api-key` | Condición 15. En el script, este cambio |
+| 2.ª | Proxies | Variables de proxy, aiohttp, `SSL_*` y registro de Windows | Condiciones 1, 15 y 16. En el script, este cambio |
+| 2.ª | Entrada de PyInstaller | `SSLKEYLOGFILE` antes de cualquier import en el ejecutable | Condición 17 |
 
 **Recomendación del revisor sobre el hallazgo 6** (`truststore`; afecta también al 7 de §10, `net/client.py` con `certifi` detrás de Norton). Lo decide `arquitecto`:
 
