@@ -8,6 +8,7 @@ license = { text = "Propietario. Todos los derechos reservados." }
 dependencies = [
     "anyio>=4.15.1",
     "apscheduler>=3.11.3,<4",
+    "certifi>=2026.7.22",
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
     "idna>=3.20",
@@ -124,6 +125,7 @@ strict_modules = [
     "faro_engine/net/guard.py",
     "faro_engine/net/urls.py",
     "faro_engine/net/client.py",
+    "faro_engine/net/tls.py",
     "faro_engine/wordpress/signing.py",
 ]
 strict_fail_under = 95
@@ -141,4 +143,5 @@ dev = [
     "respx>=0.23.1",
     "ruff>=0.16.9",
     "sqlite-vec==0.1.9",
+    "trustme==1.2.1",
 ]

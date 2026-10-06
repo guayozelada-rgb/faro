@@ -24,16 +24,23 @@ Protocolo (spec F0 §4.4, skill `tauri-sidecar-python`, ADR 0004):
 Códigos de salida: 0 = apagado normal, 1 = no se pudo abrir el socket, 2 = uso o token
 inválido. Un problema con la base nunca cambia el código de salida (ADR 0009 §4).
 
-Antes de cualquier otro import se quita `SSLKEYLOGFILE` del entorno: la biblioteca estándar
-la aplica en `ssl.create_default_context` y escribiría las claves de sesión TLS (p. ej. de
-las conexiones a WordPress) en ese archivo. Algunos antivirus la fijan en todo el equipo.
+Antes de cualquier otro import se quitan del entorno (`TLS_ENV_REMOVED`):
+- `SSLKEYLOGFILE`: la biblioteca estándar la aplica en `ssl.create_default_context` y
+  escribiría las claves de sesión TLS (p. ej. de las conexiones a WordPress) en ese
+  archivo. Algunos antivirus la fijan en todo el equipo.
+- `SSL_CERT_FILE` y `SSL_CERT_DIR` (ADR 0012, actualización 2026-10-06, condición 6): en
+  Linux, `truststore` usa las rutas por defecto de OpenSSL, que leen esas variables, y en
+  cualquier sistema añadirían raíces a un contexto que cargara las de por defecto. El
+  motor solo confía en el almacén del sistema (`net/tls.py`).
 """
 
 from __future__ import annotations
 
 import os
 
-os.environ.pop("SSLKEYLOGFILE", None)
+TLS_ENV_REMOVED = ("SSLKEYLOGFILE", "SSL_CERT_FILE", "SSL_CERT_DIR")
+for _name in TLS_ENV_REMOVED:
+    os.environ.pop(_name, None)
 
 import argparse
 import asyncio

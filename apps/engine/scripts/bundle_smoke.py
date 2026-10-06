@@ -7,7 +7,11 @@ salvo loopback:
 - `engine`: la app FastAPI del motor se construye.
 - `db`: crea una base cifrada de perfil, aplica las migraciones y la vuelve a abrir.
 - `vec`: `sqlite-vec` carga en una conexión `sqlcipher3` (si el paquete está incluido).
-- `tls`: con `truststore` inyectado, el contexto TLS de LiteLLM usa el almacén del sistema.
+- `tls`: el contexto único del motor (`net/tls.py::tls_context()`) usa `truststore` con el
+  módulo de su plataforma, `CERT_REQUIRED`, `check_hostname`, mínimo TLS 1.2 y sin raíces
+  añadidas, y `default_transport()` lo usa (ADR 0012, actualización 2026-10-06, prueba 6).
+  Si LiteLLM está incluido, además, su contexto TLS (con `truststore` inyectado) usa el
+  almacén del sistema.
 - `graph`: un grafo LangGraph con un LLM falso se interrumpe y se reanuda.
 - `scheduler`: APScheduler 3 (`AsyncIOScheduler` + `MemoryJobStore`) dispara un trabajo.
 - `litellm`: `acompletion` contra un servidor falso local (formatos OpenAI y Gemini) y
@@ -37,6 +41,9 @@ for _name in list(os.environ):
     if _name.startswith(("LANGSMITH_", "LANGCHAIN_")):
         del os.environ[_name]
 os.environ.pop("SSL_VERIFY", None)
+# Como `faro_engine/__main__.py`: sin claves de sesión TLS en archivo ni raíces añadidas.
+for _name in ("SSLKEYLOGFILE", "SSL_CERT_FILE", "SSL_CERT_DIR"):
+    os.environ.pop(_name, None)
 
 import argparse  # noqa: E402
 import asyncio  # noqa: E402
@@ -60,7 +67,7 @@ FAKE_KEYS = {
     "openai": "sk-faro-smoke-" + "0" * 24,
     "gemini": "AIzaFaroSmoke" + "0" * 26,
 }
-F1B_MODULES = ("litellm", "langgraph", "apscheduler", "truststore")
+F1B_MODULES = ("litellm", "langgraph", "apscheduler")
 TIKTOKEN_DIRNAME = "faro_tiktoken"
 
 
@@ -217,14 +224,59 @@ def check_vec(tmp: Path) -> dict[str, Any]:
     return {"vec_version": str(version), "hits": len(hits)}
 
 
+_TRUSTSTORE_PLATFORM = {"win32": "truststore._windows", "darwin": "truststore._macos"}
+
+
+def _check_engine_tls() -> dict[str, Any]:
+    """Prueba 1 de ADR 0012 (actualización 2026-10-06) dentro del ejecutable."""
+    import ssl
+
+    import truststore
+
+    from faro_engine.net.client import default_transport
+    from faro_engine.net.tls import tls_context, tls_store
+
+    context = tls_context()
+    problems = []
+    if tls_store() != "system" or not isinstance(context, truststore.SSLContext):
+        problems.append(f"almacén {tls_store()}")
+    if context is not tls_context():
+        problems.append("contexto no compartido")
+    if context.verify_mode != ssl.CERT_REQUIRED or context.check_hostname is not True:
+        problems.append("verificación desactivada")
+    if context.minimum_version != ssl.TLSVersion.TLSv1_2:
+        problems.append(f"mínimo {context.minimum_version!r}")
+    if context._ctx.get_ca_certs():  # type: ignore[attr-defined]
+        problems.append("raíces añadidas")
+    pool = default_transport()._pool  # type: ignore[attr-defined]
+    if pool._ssl_context is not context or pool._http2:
+        problems.append("default_transport no usa el contexto compartido")
+    # El módulo de plataforma (CryptoAPI o Security.framework) debe estar en el paquete.
+    platform_module = _TRUSTSTORE_PLATFORM.get(sys.platform, "truststore._openssl")
+    if platform_module not in sys.modules:
+        problems.append(f"falta {platform_module}")
+    if problems:
+        raise RuntimeError("; ".join(problems))
+    return {
+        "engine_store": tls_store(),
+        "engine_platform_module": platform_module,
+        "truststore": truststore.__version__,
+    }
+
+
 def check_tls(_tmp: Path) -> dict[str, Any]:
+    result = _check_engine_tls()
+    if not _available("litellm"):
+        result["litellm_ssl_context"] = "skipped"
+        return result
     from litellm.llms.custom_httpx.http_handler import get_ssl_configuration
 
     context = get_ssl_configuration()
     kind = f"{type(context).__module__}.{type(context).__name__}"
     if not kind.startswith("truststore"):
         raise RuntimeError(f"LiteLLM no usa truststore: {kind}")
-    return {"litellm_ssl_context": kind}
+    result["litellm_ssl_context"] = kind
+    return result
 
 
 class _GraphState(TypedDict):
@@ -363,7 +415,7 @@ CHECKS: tuple[tuple[str, Callable[[Path], dict[str, Any]], tuple[str, ...]], ...
     ("engine", check_engine, ()),
     ("db", check_db, ()),
     ("vec", check_vec, ("sqlite_vec",)),
-    ("tls", check_tls, ("litellm", "truststore")),
+    ("tls", check_tls, ()),  # truststore es del núcleo de red (T2b): siempre exigida
     ("graph", check_graph, ("langgraph",)),
     ("scheduler", check_scheduler, ("apscheduler",)),
     ("litellm", check_litellm, ("litellm",)),
