@@ -325,6 +325,6 @@ En este equipo (Windows 11 con Norton):
 - `ruff format --check`, `ruff check` y `mypy faro_engine tests scripts` pasan.
 - `scripts/bundle_smoke.py` sin empaquetar: `ok` (`engine_store=system`, `truststore._windows`, LiteLLM en `faro_engine.net.tls._LockedContext`).
 - `scripts/manual_tls_check.py`: `store=system HTTP 200`.
-- CI del PR #33: pendiente al escribir esta sección.
+- CI del PR #33 (ejecución 37504246633): todos los trabajos en verde. `engine`: Windows y macOS, 1126 superadas sin omitir ninguna; Ubuntu, 1125 superadas y 1 omitida (la variante "sin limpieza", que en Linux se omite a propósito). Las pruebas de conexión correcta por loopback se ejecutan y pasan en los tres sistemas. En la ejecución anterior (37502722806) fallaron dos trabajos. En Ubuntu, `injection_probe` agotó su tiempo (corregido, ver §8.4). En `wp-plugin-integration (actual)` falló `Test_Faro_Crypto_Uninstall::test_decrypt_fails_with_other_salts_or_tampering`, del plugin PHP, que este cambio no toca; en la ejecución siguiente pasó. Parece una prueba inestable y conviene que la mire quien lleva el plugin.
 
 `revisor-seguridad` debe revisar este cambio: toca el contexto TLS de todo el HTTPS del motor y la inyección global.
