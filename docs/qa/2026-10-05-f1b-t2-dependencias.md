@@ -298,6 +298,7 @@ Ninguna prueba queda en `xfail`.
      - `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` y `NO_PROXY`, en mayúsculas y en minúsculas;
      - `DISABLE_AIOHTTP_TRANSPORT` y `AIOHTTP_TRUST_ENV`;
      - `SSL_SECURITY_LEVEL`, `SSL_ECDH_CURVE` y `SSL_CERTIFICATE` (lo más sencillo: todo `SSL_*`, como el script);
+     - `CURL_CA_BUNDLE` y `CUSTOM_TIKTOKEN_CACHE_DIR` heredada (el motor fija la suya), como el script y la skill `capa-llm`;
    - el proxy del registro de Windows no es una variable y no se puede quitar: lo evita solo un cliente con `trust_env=False`. Por eso la medida principal sigue siendo el cliente propio sin proxies (condición 15); la limpieza es una segunda barrera.
 2. **Después del import:** repetir la limpieza y comprobarla (si queda algo, el adaptador no se carga), con una prueba de `.env` en un directorio padre.
 3. `api_base` fijo al host oficial y `api_key` explícita en cada llamada.
