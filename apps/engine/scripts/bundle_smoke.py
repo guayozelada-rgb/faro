@@ -8,10 +8,11 @@ salvo loopback:
 - `db`: crea una base cifrada de perfil, aplica las migraciones y la vuelve a abrir.
 - `vec`: `sqlite-vec` carga en una conexión `sqlcipher3` (si el paquete está incluido).
 - `tls`: el contexto único del motor (`net/tls.py::tls_context()`) usa `truststore` con el
-  módulo de su plataforma, con dueño de hilo, `CERT_REQUIRED`, `check_hostname`, mínimo
-  TLS 1.2 y sin raíces añadidas, y `default_transport()` lo usa (ADR 0012, actualización
-  2026-10-06, prueba 6). Si LiteLLM está incluido, además, su contexto TLS (con la
-  inyección de `install_system_trust_for_libraries()`) usa el almacén del sistema.
+  módulo de su plataforma, con el cerrojo por contexto, `CERT_REQUIRED`, `check_hostname`,
+  mínimo TLS 1.2, sin renegociación y sin raíces añadidas, y `default_transport()` lo usa
+  (ADR 0012, actualización 2026-10-06, prueba 6). Si LiteLLM está incluido, además, su
+  contexto TLS (con la inyección de `install_system_trust_for_libraries()`) usa el almacén
+  del sistema con el cerrojo.
 - `graph`: un grafo LangGraph con un LLM falso se interrumpe y se reanuda.
 - `scheduler`: APScheduler 3 (`AsyncIOScheduler` + `MemoryJobStore`) dispara un trabajo.
 - `litellm`: `acompletion` contra un servidor falso local (formatos OpenAI y Gemini) y
@@ -240,14 +241,16 @@ def _check_engine_tls() -> dict[str, Any]:
     problems = []
     if tls_store() != "system" or not isinstance(context, truststore.SSLContext):
         problems.append(f"almacén {tls_store()}")
-    if type(context).__name__ != "_ThreadOwnedContext":
-        problems.append("contexto sin dueño de hilo")
+    if type(context).__name__ != "_LockedContext":
+        problems.append("contexto sin cerrojo")
     if context is not tls_context():
         problems.append("contexto no compartido")
     if context.verify_mode != ssl.CERT_REQUIRED or context.check_hostname is not True:
         problems.append("verificación desactivada")
     if context.minimum_version != ssl.TLSVersion.TLSv1_2:
         problems.append(f"mínimo {context.minimum_version!r}")
+    if not context.options & ssl.OP_NO_RENEGOTIATION:
+        problems.append("renegociación permitida")
     if context._ctx.get_ca_certs():  # type: ignore[attr-defined]
         problems.append("raíces añadidas")
     pool = default_transport()._pool  # type: ignore[attr-defined]
@@ -276,12 +279,12 @@ def check_tls(_tmp: Path) -> dict[str, Any]:
 
     context = get_ssl_configuration()
     kind = f"{type(context).__module__}.{type(context).__name__}"
-    # La inyección pone la subclase con dueño de hilo (ADR 0012, condición 13).
-    owned = isinstance(context, truststore.SSLContext) and (
-        type(context).__name__ == "_ThreadOwnedContext"
+    # La inyección pone la subclase con cerrojo (ADR 0012, condiciones 12 y 13).
+    locked = isinstance(context, truststore.SSLContext) and (
+        type(context).__name__ == "_LockedContext"
     )
-    if not owned:
-        raise RuntimeError(f"LiteLLM no usa truststore con dueño de hilo: {kind}")
+    if not locked:
+        raise RuntimeError(f"LiteLLM no usa truststore con cerrojo: {kind}")
     result["litellm_ssl_context"] = kind
     return result
 

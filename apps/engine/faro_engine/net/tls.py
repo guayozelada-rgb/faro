@@ -22,21 +22,38 @@ httpcore fija ALPN en cada conexión con el valor de HTTP/1.1.
 `SSL_CERT_FILE` y `SSL_CERT_DIR` los quita `__main__` antes de cualquier import: en Linux,
 `truststore` usa las rutas por defecto de OpenSSL, que leen esas variables.
 
-Un solo hilo por contexto (ADR 0012, actualización 2026-10-06, condición 12). `truststore`
-pone el contexto interno en `CERT_NONE` y `check_hostname=False` durante cada `wrap_bio` y
+Un cerrojo por contexto (ADR 0012, actualización 2026-10-06, condición 12). `truststore` pone
+el contexto interno en `CERT_NONE` y `check_hostname=False` durante cada `wrap_bio` y
 `wrap_socket` y luego restaura lo que había guardado; además, en `do_handshake` vuelve a
 leer `verify_mode` y `check_hostname` para decidir si verifica. Si dos hilos se cruzan, uno
 puede "restaurar" el estado degradado del otro (y el contexto queda para siempre sin
 verificar) o hacer un handshake mientras el otro lo tiene degradado (y se acepta un
-certificado sin verificar). Por eso el contexto de `truststore` es un `_ThreadOwnedContext`:
-el primer hilo que llama a `wrap_bio` o `wrap_socket` pasa a ser su dueño (en el motor, el
-hilo del bucle de eventos) y cualquier otro hilo recibe `WrongThreadError` (`ssl.SSLError`)
-**antes** de que se toque nada, tanto al envolver como en `do_handshake` de los
-`SSLObject`/`SSLSocket` que crea el contexto; el cliente lo traduce a `site.tls_error`.
-Quien necesite TLS fuera del bucle (p. ej. el rastreador de F2 en hilos de trabajo) usará un
-contexto propio por hilo construido aquí.
+certificado sin verificar). Y varios hilos sí lo usan: anyio (`TLSStream.wrap`, que usa
+httpx) llama a `wrap_bio` en un hilo de trabajo cuando el contexto no es exactamente
+`ssl.SSLContext`, y luego hace `do_handshake` en el hilo del bucle.
 
-El respaldo con `certifi` es un `ssl.SSLContext` normal y no lleva esta protección:
+Por eso el contexto de `truststore` es un `_LockedContext`, con un `threading.Lock` (no
+reentrante) propio que cubre:
+
+- toda la ventana degradada de `wrap_bio` y `wrap_socket`, incluida la restauración;
+- cada llamada a `do_handshake` de los `SSLObject`/`SSLSocket` que crea el contexto, que es
+  donde `truststore` lee `verify_mode` y `check_hostname`.
+
+Así ningún handshake ve el estado degradado y ninguna restauración se cruza con otra,
+venga del hilo que venga: las llamadas se **serializan** y todas verifican. Con BIO no
+bloqueante (asyncio, anyio) cada `do_handshake` es corto y el cerrojo solo se retiene
+durante esa llamada. Con `wrap_socket` bloqueante (hoy no se usa en el motor) el cerrojo se
+retiene durante todo el handshake de red, y ningún otro hilo puede conectar con ese
+contexto mientras tanto; el handshake que `wrap_socket` hace dentro (`do_handshake_on_connect`)
+no vuelve a tomar el cerrojo, que ya tiene su hilo. `read` y `write` de un `SSLObject` sin
+`do_handshake` previo pasan antes por el `do_handshake` protegido. Los objetos TLS guardan
+una referencia débil al contexto: si ya no existe, el handshake falla cerrado
+(`ssl.SSLError`). Además, todo contexto (también los inyectados) lleva
+`OP_NO_RENEGOTIATION`: con TLS 1.2, una renegociación pedida por el servidor haría un
+handshake nuevo dentro de OpenSSL con el `CERT_NONE` copiado al crear el objeto y sin la
+verificación de `truststore`.
+
+El respaldo con `certifi` es un `ssl.SSLContext` normal y no lleva el cerrojo:
 `ssl.SSLContext.wrap_bio`/`wrap_socket` no cambian el contexto (OpenSSL lee su
 configuración, que nadie modifica tras construirlo), así que no hay estado que degradar.
 
@@ -46,7 +63,7 @@ almacén es el del sistema, hace lo mismo que `truststore.inject_into_ssl()` (0.
 con la subclase protegida: sustituye `ssl.SSLContext` y `urllib3.util.ssl_.SSLContext`, y el
 contexto precargado de `requests` si existe. Así, los contextos compartidos que esas
 bibliotecas creen después (`ssl.create_default_context()`, el de aiohttp, la caché de
-LiteLLM) también tienen dueño de hilo y fallan cerrados en vez de degradarse.
+LiteLLM) también llevan el cerrojo y serializan sus conexiones en vez de degradarse.
 `truststore.extract_from_ssl()` la deshace. Es la única forma permitida de inyectar; T6 la
 llama antes de importar LiteLLM.
 
@@ -56,12 +73,14 @@ Registra `net.tls_context_ready` con el almacén (`system` o `certifi`) y la ver
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import socket
 import ssl
 import threading
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, Final, Literal, override
 
@@ -82,32 +101,33 @@ _LOCK: Final = threading.Lock()
 _VERIFIED_ATTR: Final = "_faro_verified"
 
 
-class WrongThreadError(ssl.SSLError):
-    """Un hilo que no es el dueño intentó abrir una conexión con el contexto."""
+def _context_hold(context: object) -> Callable[[], AbstractContextManager[None]]:
+    """Cerrojo del contexto para los objetos TLS que crea `context`.
 
-
-def _owner_guard(context: object) -> Callable[[], None]:
-    """Comprobación de dueño para los objetos TLS que crea `context`.
-
-    Guarda una referencia débil: si el contexto ya no existe, falla cerrado.
+    Guarda una referencia débil (el contexto interno no debe mantener vivo al externo): si
+    el contexto ya no existe, falla cerrado.
     """
     ref = weakref.ref(context)
 
-    def check() -> None:
+    def hold() -> AbstractContextManager[None]:
         owner = ref()
         if owner is None:
-            log.error("net.tls_wrong_thread")
-            raise WrongThreadError("el contexto TLS del motor ya no existe")
-        owner._check_owner()  # type: ignore[attr-defined]
+            log.error("net.tls_context_gone")
+            raise ssl.SSLError("el contexto TLS del motor ya no existe")
+        held: AbstractContextManager[None] = owner._faro_hold()  # type: ignore[attr-defined]
+        return held
 
-    return check
+    return hold
 
 
-def _guard_handshakes(inner: ssl.SSLContext, check: Callable[[], None]) -> None:
-    """`do_handshake` de los `SSLObject`/`SSLSocket` de `inner` comprueba antes el dueño.
+def _guard_handshakes(
+    inner: ssl.SSLContext, hold: Callable[[], AbstractContextManager[None]]
+) -> None:
+    """`do_handshake` de los `SSLObject`/`SSLSocket` de `inner` toma antes el cerrojo.
 
     `truststore` verifica la cadena dentro de `do_handshake` leyendo `verify_mode` y
-    `check_hostname` del contexto interno, que el dueño degrada durante cada `wrap_*`.
+    `check_hostname` del contexto interno, que cada `wrap_*` degrada mientras tiene el
+    cerrojo: con él, el handshake nunca ve ese estado.
 
     Además, `read`/`write` de un `SSLObject` sin `do_handshake` previo harían el handshake
     dentro de OpenSSL con el `CERT_NONE` copiado al crearlo, sin la verificación de
@@ -117,8 +137,8 @@ def _guard_handshakes(inner: ssl.SSLContext, check: Callable[[], None]) -> None:
     socket_base: type[ssl.SSLSocket] = inner.sslsocket_class
 
     def object_handshake(obj: ssl.SSLObject) -> None:
-        check()
-        object_base.do_handshake(obj)
+        with hold():
+            object_base.do_handshake(obj)
         setattr(obj, _VERIFIED_ATTR, True)
 
     def ensure_verified(obj: ssl.SSLObject) -> None:
@@ -134,52 +154,56 @@ def _guard_handshakes(inner: ssl.SSLContext, check: Callable[[], None]) -> None:
         return object_base.write(obj, data)
 
     def socket_handshake(sock: ssl.SSLSocket, block: bool = False) -> None:
-        check()
-        socket_base.do_handshake(sock, block)
+        with hold():
+            socket_base.do_handshake(sock, block)
 
     inner.sslobject_class = type(
-        "_OwnedSSLObject",
+        "_LockedSSLObject",
         (object_base,),
         {"do_handshake": object_handshake, "read": object_read, "write": object_write},
     )
     inner.sslsocket_class = type(
-        "_OwnedSSLSocket", (socket_base,), {"do_handshake": socket_handshake}
+        "_LockedSSLSocket", (socket_base,), {"do_handshake": socket_handshake}
     )
 
 
 @functools.cache
-def _thread_owned_class() -> type[truststore.SSLContext]:
-    """Subclase de `truststore.SSLContext` ligada al primer hilo que la usa.
+def _locked_class() -> type[truststore.SSLContext]:
+    """Subclase de `truststore.SSLContext` con un cerrojo por contexto (condición 12).
 
     Es la que usa el motor y la que inyecta `install_system_trust_for_libraries()`.
     """
     import truststore  # noqa: PLC0415 - solo si `truststore` se pudo importar
 
-    class _ThreadOwnedContext(truststore.SSLContext):
+    class _LockedContext(truststore.SSLContext):
         def __init__(self, protocol: int | None = None) -> None:
             super().__init__(protocol)  # type: ignore[arg-type]
-            self._faro_owner: threading.Thread | None = None
-            self._faro_owner_lock = threading.Lock()
-            _guard_handshakes(self._ctx, _owner_guard(self))
+            self._faro_lock = threading.Lock()
+            # Marca del hilo que está dentro de `wrap_socket` (y ya tiene el cerrojo).
+            self._faro_local = threading.local()
+            # También en los contextos inyectados, que no pasan por `_harden`.
+            self.options |= ssl.OP_NO_RENEGOTIATION
+            _guard_handshakes(self._ctx, _context_hold(self))
 
         @property  # type: ignore[misc]
         def __class__(self) -> type:
             # `truststore` devuelve aquí `truststore.SSLContext`: `ctx.__class__(...)`
-            # crearía un contexto sin dueño de hilo.
+            # crearía un contexto sin cerrojo.
             return type(self)
 
-        def _check_owner(self) -> None:
-            # Se guarda el objeto `Thread` (no `get_ident()`, que se reutiliza): mientras
-            # este contexto exista, ningún otro hilo puede tener esa misma identidad.
-            current = threading.current_thread()
-            with self._faro_owner_lock:
-                if self._faro_owner is None:
-                    self._faro_owner = current
-                    return
-                if self._faro_owner is current:
-                    return
-            log.error("net.tls_wrong_thread")
-            raise WrongThreadError("contexto TLS del motor usado desde otro hilo")
+        @contextlib.contextmanager
+        def _faro_hold(self) -> Iterator[None]:
+            """El cerrojo, salvo para el handshake que `wrap_socket` hace dentro.
+
+            Con `do_handshake_on_connect`, el `SSLSocket` hace el handshake dentro de
+            `wrap_socket`, en el mismo hilo y con el cerrojo ya tomado: volver a tomarlo
+            (no es reentrante) lo bloquearía para siempre.
+            """
+            if getattr(self._faro_local, "wrapping_socket", False):
+                yield
+                return
+            with self._faro_lock:
+                yield
 
         @override
         def wrap_socket(
@@ -191,15 +215,21 @@ def _thread_owned_class() -> type[truststore.SSLContext]:
             server_hostname: str | None = None,
             session: ssl.SSLSession | None = None,
         ) -> ssl.SSLSocket:
-            self._check_owner()
-            return super().wrap_socket(
-                sock,
-                server_side=server_side,
-                do_handshake_on_connect=do_handshake_on_connect,
-                suppress_ragged_eofs=suppress_ragged_eofs,
-                server_hostname=server_hostname,
-                session=session,
-            )
+            # Bloqueante: con `do_handshake_on_connect`, el cerrojo se retiene durante todo
+            # el handshake de red (hoy el motor no usa `wrap_socket`).
+            with self._faro_lock:
+                self._faro_local.wrapping_socket = True
+                try:
+                    return super().wrap_socket(
+                        sock,
+                        server_side=server_side,
+                        do_handshake_on_connect=do_handshake_on_connect,
+                        suppress_ragged_eofs=suppress_ragged_eofs,
+                        server_hostname=server_hostname,
+                        session=session,
+                    )
+                finally:
+                    self._faro_local.wrapping_socket = False
 
         @override
         def wrap_bio(
@@ -210,22 +240,22 @@ def _thread_owned_class() -> type[truststore.SSLContext]:
             server_hostname: str | None = None,
             session: ssl.SSLSession | None = None,
         ) -> ssl.SSLObject:
-            self._check_owner()
-            return super().wrap_bio(
-                incoming,
-                outgoing,
-                server_side=server_side,
-                server_hostname=server_hostname,
-                session=session,
-            )
+            with self._faro_lock:
+                return super().wrap_bio(
+                    incoming,
+                    outgoing,
+                    server_side=server_side,
+                    server_hostname=server_hostname,
+                    session=session,
+                )
 
-    return _ThreadOwnedContext
+    return _LockedContext
 
 
 def _system_context() -> tuple[ssl.SSLContext, str]:
     import truststore  # noqa: PLC0415 - un fallo aquí lleva al respaldo con certifi
 
-    return _thread_owned_class()(ssl.PROTOCOL_TLS_CLIENT), truststore.__version__
+    return _locked_class()(ssl.PROTOCOL_TLS_CLIENT), truststore.__version__
 
 
 def _certifi_context() -> ssl.SSLContext:
@@ -238,6 +268,9 @@ def _harden(context: ssl.SSLContext) -> ssl.SSLContext:
     context.verify_mode = ssl.CERT_REQUIRED
     context.check_hostname = True
     context.minimum_version = MINIMUM_TLS_VERSION
+    # Con TLS 1.2, una renegociación haría un handshake nuevo sin la verificación de
+    # `truststore` (con el `CERT_NONE` del objeto) y podría cambiar el certificado.
+    context.options |= ssl.OP_NO_RENEGOTIATION
     return context
 
 
@@ -276,28 +309,28 @@ def tls_store() -> TlsStore:
         return _shared()[1]
 
 
-def _inject_thread_owned_class() -> None:
+def _inject_locked_class() -> None:
     """`truststore.inject_into_ssl()` (0.10.4) con la subclase protegida.
 
     Los mismos puntos: `ssl.SSLContext`, `urllib3.util.ssl_.SSLContext` y, si existe, el
     contexto precargado de `requests.adapters`. `truststore.extract_from_ssl()` restaura
     los dos primeros.
     """
-    owned = _thread_owned_class()
-    ssl.SSLContext = owned  # type: ignore[misc]
+    locked = _locked_class()
+    ssl.SSLContext = locked  # type: ignore[misc]
     try:
         urllib3_ssl: Any = import_module("urllib3.util.ssl_")
     except ImportError:
         pass
     else:
-        urllib3_ssl.SSLContext = owned
+        urllib3_ssl.SSLContext = locked
     try:
         adapters: Any = import_module("requests.adapters")
     except ImportError:
         pass
     else:
         if getattr(adapters, "_preloaded_ssl_context", None) is not None:
-            adapters._preloaded_ssl_context = owned(ssl.PROTOCOL_TLS_CLIENT)
+            adapters._preloaded_ssl_context = locked(ssl.PROTOCOL_TLS_CLIENT)
 
 
 def install_system_trust_for_libraries() -> TlsStore:
@@ -305,13 +338,13 @@ def install_system_trust_for_libraries() -> TlsStore:
 
     Construye primero el contexto del motor (así el respaldo, si hace falta, se decide
     antes de sustituir `ssl.SSLContext`) y, solo con el almacén del sistema, sustituye
-    `ssl.SSLContext` por la subclase con dueño de hilo (como `truststore.inject_into_ssl()`,
+    `ssl.SSLContext` por la subclase con cerrojo (como `truststore.inject_into_ssl()`,
     pero protegida). Con el respaldo no inyecta: esas bibliotecas siguen con sus raíces
     (`certifi`), que es más restrictivo. Hay que llamarla antes de importar la biblioteca:
     un contexto creado antes no cambia. Idempotente.
     """
     store = tls_store()
     if store == "system":
-        _inject_thread_owned_class()
+        _inject_locked_class()
     log.info("net.tls_libraries_trust", store=store)
     return store

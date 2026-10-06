@@ -10,6 +10,10 @@
 - `fetch_through_engine`: GET con `SafeHttpClient` (validación de URL, guardia SSRF con
   resolución falsa hacia una IP pública, fijación de IP y mapeo de errores reales).
 
+- `tls_stream_exchange` y `MemoryNetwork`: lo mismo sin sockets. `TLSStream.wrap` de anyio
+  (el que usa httpx) sobre flujos en memoria, y una red de httpcore en memoria para
+  `httpx.AsyncHTTPTransport` y `SafeHttpClient`. Ningún interceptor puede meterse, así que
+  se ejecutan también en el equipo del usuario (revisión 3 de T2b).
 - `loopback_tls_intercepted`: algunos antivirus (Norton Web/Mail Shield en el equipo del
   usuario) interceptan TLS **también en loopback** y presentan su propio certificado. Ahí
   no se puede comprobar que un certificado válido se acepta; las pruebas que lo necesitan
@@ -22,16 +26,26 @@ acepte construyen un contexto aparte (`tls._build_tls_context()`) y lo inyectan 
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import functools
+import math
 import socket
 import ssl
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
+from typing import Any, override
 
+import anyio
+import httpcore
 import httpx
 import trustme
+from anyio.streams.stapled import StapledObjectStream
+from anyio.streams.tls import TLSStream
+from httpcore._backends.anyio import AnyIOStream
 
 from faro_engine.core.errors import FaroError
 from faro_engine.net import client as net_client
@@ -242,3 +256,144 @@ def memory_handshake(client: ssl.SSLContext, server: ssl.SSLContext, name: str) 
         if client_done and server_done:
             return None
     raise AssertionError("el handshake en memoria no terminó")
+
+
+# --- Red en memoria (sin sockets): anyio y httpcore reales, sin loopback -----------------
+
+_STREAM_ERRORS = (
+    ssl.SSLError,
+    anyio.EndOfStream,
+    anyio.BrokenResourceError,
+    anyio.ClosedResourceError,
+)
+_MEMORY_TIMEOUT_S = 20.0
+
+
+def memory_stream_pair() -> tuple[StapledObjectStream[bytes], StapledObjectStream[bytes]]:
+    """Dos extremos unidos en memoria (cliente, servidor) que `TLSStream.wrap` acepta."""
+    to_server_send, to_server_receive = anyio.create_memory_object_stream[bytes](math.inf)
+    to_client_send, to_client_receive = anyio.create_memory_object_stream[bytes](math.inf)
+    return (
+        StapledObjectStream(to_server_send, to_client_receive),
+        StapledObjectStream(to_client_send, to_server_receive),
+    )
+
+
+async def _echo_upper(stream: StapledObjectStream[bytes], server: ssl.SSLContext) -> None:
+    """Servidor TLS de eco (en mayúsculas) para `tls_stream_exchange`."""
+    with contextlib.suppress(*_STREAM_ERRORS):
+        tls = await TLSStream.wrap(
+            stream, server_side=True, ssl_context=server, standard_compatible=False
+        )
+        message = await tls.receive()
+        await tls.send(message.upper())
+        await tls.aclose()
+    await stream.aclose()
+
+
+async def tls_stream_exchange(
+    client: ssl.SSLContext, server: ssl.SSLContext, name: str
+) -> str | None:
+    """`TLSStream.wrap` de anyio (lo que usa httpx) en memoria, con un intercambio de datos.
+
+    Con un contexto que no es exactamente `ssl.SSLContext`, anyio llama a `wrap_bio` en un
+    hilo de trabajo y hace el handshake en el hilo del bucle. Devuelve `None` si el cliente
+    aceptó el certificado (y los datos llegaron) o el nombre de la excepción si lo rechazó.
+    """
+    client_side, server_side = memory_stream_pair()
+    result: str | None = None
+    with anyio.fail_after(_MEMORY_TIMEOUT_S):
+        async with anyio.create_task_group() as group:
+            group.start_soon(_echo_upper, server_side, server)
+            try:
+                tls = await TLSStream.wrap(
+                    client_side, hostname=name, ssl_context=client, standard_compatible=False
+                )
+                await tls.send(b"ping")
+                assert await tls.receive() == b"PING"
+                await tls.aclose()
+            except ssl.SSLError as exc:
+                result = type(exc).__name__
+                await client_side.aclose()
+    return result
+
+
+class MemoryNetwork(httpcore.AsyncNetworkBackend):
+    """Red de httpcore en memoria: cada conexión llega a un servidor HTTPS en el mismo bucle.
+
+    El cliente usa el `AnyIOStream` de httpcore y su `start_tls` real (`TLSStream.wrap`),
+    así que el camino TLS es el de producción; solo cambian los bytes de transporte, que no
+    pasan por ningún socket (ningún antivirus puede interceptarlos). Anota el destino
+    pedido (`hosts`) y, por conexión, el SNI y los bytes descifrados que recibe el servidor.
+    """
+
+    def __init__(self, cert: trustme.LeafCert) -> None:
+        self._context = server_context(cert)
+        self._context.sni_callback = self._on_sni
+        self.hosts: list[tuple[str, int]] = []
+        self.connections: list[Connection] = []
+        self._tasks: list[asyncio.Task[None]] = []
+
+    def _on_sni(self, _obj: ssl.SSLObject, name: str | None, _ctx: ssl.SSLContext) -> None:
+        self.connections[-1].sni = name
+
+    @override
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[Any] | None = None,
+    ) -> httpcore.AsyncNetworkStream:
+        self.hosts.append((host, port))
+        client_side, server_side = memory_stream_pair()
+        conn = Connection()
+        self.connections.append(conn)
+        self._tasks.append(asyncio.get_running_loop().create_task(self._serve(server_side, conn)))
+        stream: Any = client_side  # `AnyIOStream` solo usa `send`, `receive` y `aclose`
+        return AnyIOStream(stream)
+
+    async def _serve(self, stream: StapledObjectStream[bytes], conn: Connection) -> None:
+        with contextlib.suppress(*_STREAM_ERRORS):
+            tls = await TLSStream.wrap(
+                stream, server_side=True, ssl_context=self._context, standard_compatible=False
+            )
+            conn.handshake_ok = True
+            while b"\r\n\r\n" not in conn.data:
+                conn.data += await tls.receive()
+            await tls.send(_RESPONSE)
+            await tls.aclose()
+        await stream.aclose()
+
+    async def wait(self) -> list[Connection]:
+        """Espera a que el servidor termine todas las conexiones."""
+        await asyncio.wait_for(asyncio.gather(*self._tasks), _MEMORY_TIMEOUT_S)
+        return list(self.connections)
+
+
+def with_memory_network(
+    transport: httpx.AsyncBaseTransport, network: MemoryNetwork
+) -> httpx.AsyncBaseTransport:
+    """El mismo transporte (contexto TLS, SNI, `http2=False`) con la red en memoria."""
+    pool: Any = transport._pool  # type: ignore[attr-defined]
+    pool._network_backend = network
+    return transport
+
+
+async def fetch_in_memory(name: str, network: MemoryNetwork) -> int | str:
+    """Como `fetch_through_engine`, pero por la red en memoria y con `default_transport()`."""
+    settings = NetSettings(
+        policy=NetPolicy(),
+        user_agent="Faro/test",
+        resolver=FakeResolver({name: [PUBLIC_IP]}),
+        transport_factory=lambda: with_memory_network(net_client.default_transport(), network),
+        sleep=RecordingSleep(),
+        jitter=lambda: 1.0,
+    )
+    async with SafeHttpClient(settings, Deadline(30)) as http:
+        try:
+            response = await http.request("GET", f"https://{name}/", retries=0)
+        except FaroError as exc:
+            return exc.code
+        return response.status

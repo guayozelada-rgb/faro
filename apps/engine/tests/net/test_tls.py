@@ -1,7 +1,10 @@
 """HTTPS del motor con el almacén del sistema (ADR 0012, actualización 2026-10-06; F1b T2b).
 
-Pruebas 1 a 5 de la actualización del ADR, más el respaldo a `certifi`. Todo en loopback,
-con certificados de `trustme`; ninguna petición sale del equipo.
+Pruebas 1 a 5 de la actualización del ADR, más el respaldo a `certifi`. En loopback o en
+memoria, con certificados de `trustme`; ninguna petición sale del equipo. Las de memoria
+(`tls_stream_exchange`, `MemoryNetwork`) usan el camino real de anyio y httpcore sin
+sockets, así que también se ejecutan con un antivirus que intercepta loopback; las de
+loopback que necesitan aceptar un certificado se omiten ahí y son obligatorias en la CI.
 
 La CA de prueba nunca entra en el contexto de producción. Para comprobar que un certificado
 válido **sí** se acepta (y así que un rechazo se debe al nombre, la caducidad o la CA), el
@@ -29,6 +32,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
+import anyio
 import certifi
 import httpx
 import pytest
@@ -40,16 +44,21 @@ from faro_engine.core.errors import SITE_TLS_ERROR
 from faro_engine.net import client as net_client
 from faro_engine.net import tls
 from tests.conftest import ENGINE_DIR
+from tests.fakes.net import PUBLIC_IP
 from tests.net.tls_helpers import (
     OTHER_NAME,
     SITE_NAME,
     LoopbackTransport,
+    MemoryNetwork,
     TlsServer,
+    fetch_in_memory,
     fetch_through_engine,
     issue,
     loopback_tls_intercepted,
     memory_handshake,
     server_context,
+    tls_stream_exchange,
+    with_memory_network,
 )
 
 IS_LINUX = sys.platform.startswith("linux")
@@ -419,7 +428,12 @@ def test_en_memoria_el_comodin_cubre_un_solo_nivel(
     )
 
 
-# --- Un solo hilo por contexto (carrera de `truststore`, revisión de T2b) -------------------
+# --- Un cerrojo por contexto (carrera de `truststore`; revisiones de T2b) --------------------
+#
+# Revisión 3: anyio (`TLSStream.wrap`, que usa httpx) llama a `wrap_bio` en un hilo de
+# trabajo y hace el handshake en el bucle; con el "dueño de hilo" todo HTTPS real fallaba.
+# Ahora las llamadas de cualquier hilo se serializan con el cerrojo del contexto y todas
+# verifican. Todo en memoria: también se ejecuta con un antivirus que intercepta loopback.
 
 
 def _in_thread(action: Callable[[], object]) -> BaseException | None:
@@ -439,6 +453,15 @@ def _in_thread(action: Callable[[], object]) -> BaseException | None:
     return errors[0] if errors else None
 
 
+def _in_thread_result(action: Callable[[], object]) -> object:
+    """Como `_in_thread`, pero devuelve el resultado (y vuelve a lanzar la excepción)."""
+    results: list[object] = []
+    error = _in_thread(lambda: results.append(action()))
+    if error is not None:
+        raise error
+    return results[0]
+
+
 def _wrap_bio(context: ssl.SSLContext) -> ssl.SSLObject:
     return context.wrap_bio(ssl.MemoryBIO(), ssl.MemoryBIO(), server_hostname=SITE_NAME)
 
@@ -451,115 +474,269 @@ def _assert_intact(context: ssl.SSLContext) -> None:
     assert context.check_hostname is True
 
 
-def test_wrap_bio_desde_otro_hilo_falla_sin_tocar_el_contexto(
+@pytest.fixture
+def wrap_threads(monkeypatch: pytest.MonkeyPatch) -> list[threading.Thread]:
+    """Hilos en los que se llamó a `wrap_bio` de la subclase del motor (espía)."""
+    seen: list[threading.Thread] = []
+    locked = tls._locked_class()
+    real: Callable[..., ssl.SSLObject] = locked.wrap_bio
+
+    def spy(self: ssl.SSLContext, *args: Any, **kwargs: Any) -> ssl.SSLObject:
+        seen.append(threading.current_thread())
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(locked, "wrap_bio", spy)
+    return seen
+
+
+async def test_patron_anyio_wrap_bio_en_un_hilo_y_handshake_en_el_bucle(
     ca: trustme.CA, ca_context: ssl.SSLContext
 ) -> None:
-    valid = issue(ca, SITE_NAME)
-    assert memory_handshake(ca_context, server_context(valid), SITE_NAME) is None  # dueño
-    with capture_logs() as logs:
-        error = _in_thread(lambda: _wrap_bio(ca_context))
-    assert isinstance(error, ssl.SSLError)
-    assert isinstance(error, tls.WrongThreadError)
-    assert [e["event"] for e in logs] == ["net.tls_wrong_thread"]
+    """`wrap_bio` en `anyio.to_thread.run_sync` y `do_handshake` en el bucle, en memoria."""
+
+    async def anyio_pattern(server: ssl.SSLContext, name: str) -> str | None:
+        pair = await anyio.to_thread.run_sync(_MemoryPair, ca_context, server, name)
+        try:
+            pair.handshake()  # en el hilo del bucle
+        except ssl.SSLError as exc:
+            return type(exc).__name__
+        return None
+
+    assert await anyio_pattern(server_context(issue(ca, SITE_NAME)), SITE_NAME) is None
+    unknown = server_context(issue(trustme.CA(), SITE_NAME))
+    assert await anyio_pattern(unknown, SITE_NAME) == "SSLCertVerificationError"
+    other_name = server_context(issue(ca, OTHER_NAME))
+    assert await anyio_pattern(other_name, SITE_NAME) == "SSLCertVerificationError"
     _assert_intact(ca_context)
-    # El dueño sigue conectando y la verificación sigue activa.
-    assert memory_handshake(ca_context, server_context(valid), SITE_NAME) is None
-    other = issue(ca, OTHER_NAME)
+
+
+async def test_tls_stream_de_anyio_verifica_con_wrap_bio_en_un_hilo_de_trabajo(
+    ca: trustme.CA, ca_context: ssl.SSLContext, wrap_threads: list[threading.Thread]
+) -> None:
+    """Reproducción `rev3_httpx` sin red: `TLSStream.wrap` real sobre flujos en memoria."""
+    valid = server_context(issue(ca, SITE_NAME))
+    assert await tls_stream_exchange(ca_context, valid, SITE_NAME) is None
+    unknown = server_context(issue(trustme.CA(), SITE_NAME))
+    assert await tls_stream_exchange(ca_context, unknown, SITE_NAME) == "SSLCertVerificationError"
+    other_name = server_context(issue(ca, OTHER_NAME))
     assert (
-        memory_handshake(ca_context, server_context(other), SITE_NAME) == "SSLCertVerificationError"
+        await tls_stream_exchange(ca_context, other_name, SITE_NAME) == "SSLCertVerificationError"
     )
-
-
-def test_el_primer_hilo_que_conecta_es_el_dueno(ca: trustme.CA, ca_context: ssl.SSLContext) -> None:
-    """Construir el contexto no lo ata a un hilo; el primer `wrap_bio` sí."""
-    assert _in_thread(lambda: _wrap_bio(ca_context)) is None
-    with pytest.raises(tls.WrongThreadError):
-        _wrap_bio(ca_context)
+    # El camino que rompía el dueño de hilo: anyio envuelve fuera del hilo del bucle.
+    assert len(wrap_threads) == 3
+    assert all(thread is not threading.current_thread() for thread in wrap_threads)
     _assert_intact(ca_context)
 
 
-def test_wrap_socket_desde_otro_hilo_falla_sin_tocar_el_contexto() -> None:
+async def test_tls_stream_con_el_contexto_compartido_rechaza_la_ca_de_prueba(
+    ca: trustme.CA,
+) -> None:
+    valid_elsewhere = server_context(issue(ca, SITE_NAME))
+    assert (
+        await tls_stream_exchange(tls.tls_context(), valid_elsewhere, SITE_NAME)
+        == "SSLCertVerificationError"
+    )
+    _assert_intact(tls.tls_context())
+
+
+async def test_async_http_transport_real_completa_una_peticion(
+    ca: trustme.CA, ca_context: ssl.SSLContext, wrap_threads: list[threading.Thread]
+) -> None:
+    """`httpx.AsyncHTTPTransport(verify=<contexto del motor>)`, sin sockets."""
+    network = MemoryNetwork(issue(ca, SITE_NAME))
+    transport = with_memory_network(
+        httpx.AsyncHTTPTransport(verify=ca_context, trust_env=False, http2=False), network
+    )
+    async with httpx.AsyncClient(transport=transport, trust_env=False) as client:
+        response = await client.get(f"https://{SITE_NAME}/")
+    assert response.status_code == 200
+    assert response.text == "ok"
+    [conn] = await network.wait()
+    assert conn.sni == SITE_NAME
+    assert conn.data.startswith(b"GET / HTTP/1.1\r\n")
+    assert [thread is threading.current_thread() for thread in wrap_threads] == [False]
+    _assert_intact(ca_context)
+
+
+async def test_el_cliente_del_motor_completa_una_peticion_en_memoria(
+    ca: trustme.CA, injected_context: Callable[[], ssl.SSLContext]
+) -> None:
+    """`SafeHttpClient` con `default_transport()`: IP fijada, SNI del nombre y 200."""
+    network = MemoryNetwork(issue(ca, SITE_NAME))
+    assert await fetch_in_memory(SITE_NAME, network) == 200
+    [conn] = await network.wait()
+    assert network.hosts == [(PUBLIC_IP, 443)]
+    assert conn.sni == SITE_NAME
+    assert f"host: {SITE_NAME}".encode() in conn.data.lower()
+    _assert_intact(injected_context())
+
+
+@pytest.mark.parametrize(
+    ("issuer", "name", "expired"),
+    [("otra", SITE_NAME, False), ("misma", OTHER_NAME, False), ("misma", SITE_NAME, True)],
+)
+async def test_el_cliente_del_motor_rechaza_en_memoria_sin_enviar_la_peticion(
+    ca: trustme.CA,
+    injected_context: Callable[[], ssl.SSLContext],
+    issuer: str,
+    name: str,
+    expired: bool,
+) -> None:
+    """CA desconocida, otro nombre o caducado: `site.tls_error` y ningún byte de la petición."""
+    signer = ca if issuer == "misma" else trustme.CA()
+    network = MemoryNetwork(issue(signer, name, expired=expired))
+    with capture_logs() as logs:
+        assert await fetch_in_memory(SITE_NAME, network) == SITE_TLS_ERROR
+    assert all(conn.data == b"" for conn in await network.wait())
+    failed = [e for e in logs if e["event"] == "net.request_failed"]
+    assert [e["code"] for e in failed] == [SITE_TLS_ERROR]
+    _assert_intact(injected_context())
+
+
+async def test_el_contexto_de_produccion_rechaza_en_memoria_una_ca_que_no_esta_en_el_sistema(
+    ca: trustme.CA,
+) -> None:
+    network = MemoryNetwork(issue(ca, SITE_NAME))
+    assert await fetch_in_memory(SITE_NAME, network) == SITE_TLS_ERROR
+    assert all(conn.data == b"" for conn in await network.wait())
+    _assert_intact(tls.tls_context())
+
+
+def test_cualquier_hilo_conecta_y_verifica(ca: trustme.CA, ca_context: ssl.SSLContext) -> None:
+    """Reproducción `rev2_bypass` (2): no hay dueño; cada hilo verifica, aunque otro termine."""
+    valid = server_context(issue(ca, SITE_NAME))
+    unknown = server_context(issue(trustme.CA(), SITE_NAME))
+    assert _in_thread_result(lambda: memory_handshake(ca_context, valid, SITE_NAME)) is None
+    assert memory_handshake(ca_context, valid, SITE_NAME) is None
+    assert (
+        _in_thread_result(lambda: memory_handshake(ca_context, unknown, SITE_NAME))
+        == "SSLCertVerificationError"
+    )
+    assert memory_handshake(ca_context, unknown, SITE_NAME) == "SSLCertVerificationError"
+    _assert_intact(ca_context)
+
+
+def test_primer_wrap_bio_simultaneo_en_varios_hilos() -> None:
+    """Reproducción `rev2_bypass` (3): todos los hilos envuelven y el contexto sigue intacto."""
+    for _ in range(50):
+        context, _store = tls._build_tls_context()
+        barrier = threading.Barrier(8)
+        errors: list[BaseException] = []
+
+        def first(
+            ctx: ssl.SSLContext = context,
+            gate: threading.Barrier = barrier,
+            out: list[BaseException] = errors,
+        ) -> None:
+            gate.wait()
+            try:
+                _wrap_bio(ctx)
+            except BaseException as exc:  # noqa: BLE001 - se comprueba abajo
+                out.append(exc)
+
+        threads = [threading.Thread(target=first) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        assert not any(thread.is_alive() for thread in threads)
+        assert errors == []
+        _assert_intact(context)
+
+
+def test_carrera_de_hilos_serializada_y_verificada(
+    ca: trustme.CA, ca_context: ssl.SSLContext
+) -> None:
+    """Varios hilos con `wrap_bio` y `do_handshake` a la vez sobre el mismo contexto.
+
+    Sin el cerrojo, un `wrap_bio` de un hilo deja el contexto interno en `CERT_NONE`
+    mientras otro hace el handshake (que entonces acepta la CA desconocida), o una
+    restauración se cruza y el contexto queda para siempre sin verificar.
+    """
+    rounds, workers = 60, 8
+    valid = server_context(issue(ca, SITE_NAME))
+    unknown = server_context(issue(trustme.CA(), SITE_NAME))
+    results: list[tuple[str, str | None]] = []
+    failures: list[BaseException] = []
+    guard = threading.Lock()
+    barrier = threading.Barrier(workers)
+
+    def worker(index: int) -> None:
+        try:
+            barrier.wait()
+            for turn in range(rounds):
+                if index % 4 == 0:  # como anyio: solo envuelve (abre la ventana degradada)
+                    for _ in range(5):
+                        _wrap_bio(ca_context)
+                    continue
+                server, kind = (unknown, "unknown") if (index + turn) % 2 else (valid, "valid")
+                outcome = memory_handshake(ca_context, server, SITE_NAME)
+                with guard:
+                    results.append((kind, outcome))
+        except BaseException as exc:  # noqa: BLE001 - se comprueba abajo
+            with guard:
+                failures.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(workers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=120)
+    assert not any(thread.is_alive() for thread in threads)
+    assert failures == []
+    accepted_unknown = [r for r in results if r == ("unknown", None)]
+    assert accepted_unknown == []  # ninguna CA desconocida aceptada
+    assert {outcome for kind, outcome in results if kind == "unknown"} == {
+        "SSLCertVerificationError"
+    }
+    assert {outcome for kind, outcome in results if kind == "valid"} == {None}
+    assert len(results) == (workers - workers // 4) * rounds
+    _assert_intact(ca_context)
+
+
+async def test_dos_bucles_en_dos_hilos_verifican(
+    ca: trustme.CA, ca_context: ssl.SSLContext
+) -> None:
+    """Reproducción `rev2_bypass` (4), en memoria: un bucle por hilo y `run_in_executor`."""
+    valid = server_context(issue(ca, SITE_NAME))
+    unknown = server_context(issue(trustme.CA(), SITE_NAME))
+
+    def other_loop(server: ssl.SSLContext) -> object:
+        return asyncio.run(tls_stream_exchange(ca_context, server, SITE_NAME))
+
+    assert await asyncio.to_thread(other_loop, valid) is None
+    assert await asyncio.to_thread(other_loop, unknown) == "SSLCertVerificationError"
+    loop = asyncio.get_running_loop()
+    assert await loop.run_in_executor(None, _wrap_bio, ca_context) is not None
+    assert await tls_stream_exchange(ca_context, valid, SITE_NAME) is None
+    _assert_intact(ca_context)
+
+
+def test_wrap_socket_desde_otro_hilo_verifica() -> None:
+    """`wrap_socket` (bloqueante) desde otro hilo: se verifica y no se bloquea a sí mismo.
+
+    Con `do_handshake_on_connect`, el handshake ocurre dentro de `wrap_socket` con el
+    cerrojo ya tomado por ese hilo; si volviera a tomarlo, el hilo no terminaría nunca.
+    """
     context = tls.tls_context()
     unknown = issue(trustme.CA(), SITE_NAME)
     with TlsServer(unknown) as server:
-        raw = socket.create_connection(("127.0.0.1", server.port), timeout=10)
-        with raw, pytest.raises(ssl.SSLCertVerificationError):
-            context.wrap_socket(raw, server_hostname=SITE_NAME)  # este hilo es el dueño
+
+        def connect() -> None:
+            raw = socket.create_connection(("127.0.0.1", server.port), timeout=10)
+            with raw:
+                context.wrap_socket(raw, server_hostname=SITE_NAME)
+
+        error = _in_thread(connect)
         server.wait_for(1)
-    with socket.socket() as other:
-        error = _in_thread(lambda: context.wrap_socket(other, server_hostname=SITE_NAME))
-    assert isinstance(error, tls.WrongThreadError)
+    assert isinstance(error, ssl.SSLCertVerificationError)
     _assert_intact(context)
-
-
-def test_hilos_ajenos_en_paralelo_no_degradan_el_contexto(ca_context: ssl.SSLContext) -> None:
-    """Reproducción del revisor: antes, el contexto quedaba en `CERT_NONE` para siempre."""
-    rounds = 300
-    _wrap_bio(ca_context)  # este hilo es el dueño
-    failures: list[BaseException] = []
-    lock = threading.Lock()
-
-    def intruder() -> None:
-        for _ in range(rounds):
-            try:
-                _wrap_bio(ca_context)
-            except tls.WrongThreadError as exc:
-                with lock:
-                    failures.append(exc)
-
-    intruders = [threading.Thread(target=intruder) for _ in range(4)]
-    for thread in intruders:
-        thread.start()
-    for _ in range(rounds):
-        _wrap_bio(ca_context)
-    for thread in intruders:
-        thread.join(timeout=60)
-    assert len(failures) == 4 * rounds
-    _assert_intact(ca_context)
-
-
-async def test_en_el_bucle_un_hilo_de_trabajo_no_puede_usar_el_contexto(
-    ca: trustme.CA, ca_context: ssl.SSLContext
-) -> None:
-    """Como un cliente síncrono dentro de `run_in_threadpool` o `asyncio.to_thread`."""
-    valid = server_context(issue(ca, SITE_NAME))
-    assert memory_handshake(ca_context, valid, SITE_NAME) is None  # hilo del bucle
-    with pytest.raises(tls.WrongThreadError):
-        await asyncio.to_thread(_wrap_bio, ca_context)
-    assert memory_handshake(ca_context, server_context(issue(ca, SITE_NAME)), SITE_NAME) is None
-    _assert_intact(ca_context)
-
-
-async def test_el_cliente_traduce_el_hilo_ajeno_a_tls_error() -> None:
-    context = tls.tls_context()
-    assert _in_thread(lambda: _wrap_bio(context)) is None  # otro hilo pasa a ser el dueño
-    with capture_logs() as logs, TlsServer(issue(trustme.CA(), SITE_NAME)) as server:
-        assert await fetch_through_engine(SITE_NAME, server.port) == SITE_TLS_ERROR
-    # El cliente no llega a enviar el ClientHello: el servidor no recibe nada (con un
-    # interceptor en loopback puede que ni siquiera llegue la conexión).
-    assert all(conn.data == b"" and conn.sni is None for conn in server.connections)
-    failed = [e for e in logs if e["event"] == "net.request_failed"]
-    assert [e["code"] for e in failed] == [SITE_TLS_ERROR]
-    assert "net.tls_wrong_thread" in [e["event"] for e in logs]
-    _assert_intact(context)
-
-
-@pytest.mark.usefixtures("direct_loopback")
-async def test_el_bucle_sigue_conectando_tras_un_intento_desde_otro_hilo(
-    ca: trustme.CA, injected_context: Callable[[], ssl.SSLContext]
-) -> None:
-    with TlsServer(issue(ca, SITE_NAME)) as server:
-        assert await fetch_through_engine(SITE_NAME, server.port) == 200
-        assert isinstance(_in_thread(lambda: _wrap_bio(injected_context())), tls.WrongThreadError)
-        assert await fetch_through_engine(SITE_NAME, server.port) == 200
-        assert all(c.data.startswith(b"GET / HTTP/1.1\r\n") for c in server.wait_for(2))
-    _assert_intact(injected_context())
 
 
 def test_el_respaldo_con_certifi_no_cambia_al_conectar_desde_varios_hilos(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Por qué el respaldo no necesita dueño: `ssl.SSLContext` no muta en `wrap_bio`."""
+    """Por qué el respaldo no necesita cerrojo: `ssl.SSLContext` no muta en `wrap_bio`."""
     monkeypatch.setitem(sys.modules, "truststore", None)
     context = tls.tls_context()
     assert type(context) is ssl.SSLContext
@@ -594,7 +771,7 @@ def test_el_respaldo_con_certifi_no_cambia_al_conectar_desde_varios_hilos(
     assert after == before
 
 
-# --- El handshake también en el hilo dueño (revisión 2 de T2b) -----------------------------
+# --- El handshake también toma el cerrojo (revisiones 2 y 3 de T2b) -------------------------
 
 
 class _MemoryPair:
@@ -617,12 +794,12 @@ class _MemoryPair:
         self.client.do_handshake()
 
 
-def _owner_inside_wrap_socket(context: ssl.SSLContext, during: Callable[[], None]) -> None:
-    """Este hilo (el dueño) entra en `wrap_socket` y, mientras espera, se ejecuta `during`.
+def _inside_wrap_socket(context: ssl.SSLContext, during: Callable[[], None]) -> None:
+    """Este hilo entra en `wrap_socket` y, mientras espera, se ejecuta `during`.
 
-    Un servidor de loopback acepta la conexión y no contesta: el handshake del dueño espera
-    hasta su tiempo límite con el contexto interno en `CERT_NONE` (la ventana del revisor).
-    `during` corre en otro hilo y empieza cuando el dueño ya está dentro.
+    Un servidor de loopback acepta la conexión y no contesta: el handshake espera hasta su
+    tiempo límite (1,5 s) con el contexto interno en `CERT_NONE` (la ventana del revisor).
+    `during` corre en otro hilo y empieza cuando este ya está dentro.
     """
     release = threading.Event()
     with socket.create_server(("127.0.0.1", 0)) as listener:
@@ -653,34 +830,53 @@ def _owner_inside_wrap_socket(context: ssl.SSLContext, during: Callable[[], None
         assert not other.is_alive()
 
 
-def test_handshake_desde_otro_hilo_falla_cerrado() -> None:
-    """Reproducción `rev2_readside`: CA desconocida y nombre distinto, dueño en `wrap_socket`.
+def test_handshake_desde_otro_hilo_espera_y_verifica() -> None:
+    """Reproducción `rev2_readside`: CA desconocida y nombre distinto, otro hilo en `wrap_socket`.
 
-    Antes, el handshake del hilo ajeno leía `CERT_NONE` y aceptaba el certificado.
+    Con el dueño de hilo se rechazaba con `WrongThreadError`; sin protección, el handshake
+    leía `CERT_NONE` y aceptaba. Ahora espera a que `wrap_socket` suelte el cerrojo (el
+    contexto ya restaurado), verifica y rechaza.
     """
     context, _store = tls._build_tls_context()
     stranger = server_context(issue(trustme.CA(), OTHER_NAME))
-    pair = _MemoryPair(context, stranger, SITE_NAME)  # este hilo es el dueño
-    errors: list[BaseException | None] = []
-    with capture_logs() as logs:
-        _owner_inside_wrap_socket(context, lambda: errors.append(_in_thread(pair.handshake)))
-    [error] = errors
-    assert isinstance(error, tls.WrongThreadError)
-    assert "net.tls_wrong_thread" in [e["event"] for e in logs]
+    pair = _MemoryPair(context, stranger, SITE_NAME)
+    outcome: list[tuple[BaseException | None, float]] = []
+
+    def handshake_elsewhere() -> None:
+        start = time.monotonic()
+        error = _in_thread(pair.handshake)
+        outcome.append((error, time.monotonic() - start))
+
+    _inside_wrap_socket(context, handshake_elsewhere)
+    [(error, waited)] = outcome
+    assert isinstance(error, ssl.SSLCertVerificationError)
+    assert waited > 0.8  # esperó al cerrojo: `wrap_socket` lo tuvo hasta su tiempo límite
     _assert_intact(context)
-    # Control: el mismo intercambio, hecho por el dueño, llega a verificar y lo rechaza.
-    with pytest.raises(ssl.SSLCertVerificationError):
-        _MemoryPair(context, stranger, SITE_NAME).handshake()
 
 
-def test_sslsocket_do_handshake_desde_otro_hilo_falla_antes_de_tocar_el_socket() -> None:
+def test_wrap_y_handshake_esperan_al_cerrojo() -> None:
+    """`wrap_bio`, `wrap_socket` y `do_handshake` de `SSLObject`/`SSLSocket` toman el cerrojo."""
     context, _store = tls._build_tls_context()
-    _wrap_bio(context)  # este hilo es el dueño
     socket_class = _inner_context(context).sslsocket_class
     object_class = _inner_context(context).sslobject_class
-    fake: Any = object()  # si llegara a usarse, fallaría con otro error
-    assert isinstance(_in_thread(lambda: socket_class.do_handshake(fake)), tls.WrongThreadError)
-    assert isinstance(_in_thread(lambda: object_class.do_handshake(fake)), tls.WrongThreadError)
+    fake: Any = object()  # pasado el cerrojo, falla con otro error (no importa cuál)
+    unconnected = socket.socket()
+    actions: list[Callable[[], object]] = [
+        lambda: _wrap_bio(context),
+        lambda: context.wrap_socket(unconnected, server_hostname=SITE_NAME),
+        lambda: socket_class.do_handshake(fake),
+        lambda: object_class.do_handshake(fake),
+    ]
+    lock = context._faro_lock  # type: ignore[attr-defined]
+    with unconnected:
+        for action in actions:
+            with lock:
+                thread = threading.Thread(target=lambda act=action: _in_thread(act))
+                thread.start()
+                thread.join(timeout=0.3)
+                assert thread.is_alive()  # esperando al cerrojo
+            thread.join(timeout=30)
+            assert not thread.is_alive()  # pasó el cerrojo al soltarlo
     _assert_intact(context)
 
 
@@ -710,7 +906,7 @@ def _write_without_handshake(pair: _MemoryPair) -> str | None:
 def test_read_y_write_sin_handshake_previo_tambien_verifican(
     ca: trustme.CA, ca_context: ssl.SSLContext
 ) -> None:
-    """Sin `do_handshake()`, OpenSSL haría el handshake con `CERT_NONE` y sin `truststore`."""
+    """Reproducción `rev2_readnohs`: sin `do_handshake()`, OpenSSL lo haría con `CERT_NONE`."""
     valid = server_context(issue(ca, SITE_NAME))
     assert _write_without_handshake(_MemoryPair(ca_context, valid, SITE_NAME)) is None
     other_name = server_context(issue(ca, OTHER_NAME))
@@ -723,7 +919,45 @@ def test_read_y_write_sin_handshake_previo_tambien_verifican(
     assert _write_without_handshake(pair) == "SSLCertVerificationError"
     with pytest.raises(ssl.SSLError):
         pair.client.read(16)  # tampoco por `read()`
+    # Lo mismo con el objeto creado en otro hilo y usado en este.
+    stranger = server_context(issue(trustme.CA(), OTHER_NAME))
+    elsewhere = _in_thread_result(lambda: _MemoryPair(ca_context, stranger, SITE_NAME))
+    assert isinstance(elsewhere, _MemoryPair)
+    assert _write_without_handshake(elsewhere) == "SSLCertVerificationError"
     _assert_intact(ca_context)
+
+
+def _bypass_handshake(make: Callable[[ssl.MemoryBIO, ssl.MemoryBIO], ssl.SSLObject]) -> str | None:
+    c_in, c_out, s_in, s_out = (ssl.MemoryBIO() for _ in range(4))
+    client = make(c_in, c_out)
+    stranger = server_context(issue(trustme.CA(), SITE_NAME))
+    server = stranger.wrap_bio(s_in, s_out, server_side=True)
+    try:
+        for _ in range(20):
+            for obj in (client, server):
+                with contextlib.suppress(ssl.SSLWantReadError):
+                    obj.do_handshake()
+            s_in.write(c_out.read())
+            c_in.write(s_out.read())
+        client.do_handshake()
+    except ssl.SSLError as exc:
+        return type(exc).__name__
+    return None
+
+
+def test_las_vias_que_esquivan_la_subclase_fallan_cerradas() -> None:
+    """Reproducción `rev2_bypass` (1): el contexto externo y el interno no aceptan una CA ajena."""
+    context, _store = tls._build_tls_context()
+    stdlib_object: Any = ssl.SSLObject
+    routes: list[Callable[[ssl.MemoryBIO, ssl.MemoryBIO], ssl.SSLObject]] = [
+        lambda i, o: STDLIB_SSL_CONTEXT.wrap_bio(context, i, o, server_hostname=SITE_NAME),
+        lambda i, o: stdlib_object._create(
+            i, o, server_side=False, server_hostname=SITE_NAME, context=context
+        ),
+        lambda i, o: _inner_context(context).wrap_bio(i, o, server_hostname=SITE_NAME),
+    ]
+    assert [_bypass_handshake(route) for route in routes] == ["SSLCertVerificationError"] * 3
+    _assert_intact(context)
 
 
 def test_handshake_falla_cerrado_si_el_contexto_ya_no_existe() -> None:
@@ -732,8 +966,24 @@ def test_handshake_falla_cerrado_si_el_contexto_ya_no_existe() -> None:
     del context
     gc.collect()
     fake: Any = object()
-    with pytest.raises(tls.WrongThreadError):
+    with capture_logs() as logs, pytest.raises(ssl.SSLError, match="ya no existe"):
         object_class.do_handshake(fake)
+    assert [e["event"] for e in logs] == ["net.tls_context_gone"]
+
+
+def test_ningun_contexto_permite_renegociar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`OP_NO_RENEGOTIATION` en el contexto del motor, el respaldo y los inyectados."""
+    assert tls.tls_context().options & ssl.OP_NO_RENEGOTIATION
+    assert _inner_context(tls.tls_context()).options & ssl.OP_NO_RENEGOTIATION
+    injected = tls._locked_class()(ssl.PROTOCOL_TLS_CLIENT)  # como `ssl.SSLContext(...)`
+    assert injected.options & ssl.OP_NO_RENEGOTIATION
+    assert type(injected).__name__ == "_LockedContext"
+    # Lo copia cada objeto TLS al crearse.
+    assert _wrap_bio(tls.tls_context()).context.options & ssl.OP_NO_RENEGOTIATION
+    tls._shared.cache_clear()
+    monkeypatch.setitem(sys.modules, "truststore", None)
+    assert tls.tls_store() == "certifi"
+    assert tls.tls_context().options & ssl.OP_NO_RENEGOTIATION
 
 
 # --- Segunda barrera para bibliotecas (T6) ----------------------------------------------
@@ -761,8 +1011,8 @@ def test_install_system_trust_construye_el_contexto_y_luego_inyecta() -> None:
     with capture_logs() as logs:
         assert tls.install_system_trust_for_libraries() == "system"
         assert tls.install_system_trust_for_libraries() == "system"  # idempotente
-    # La subclase con dueño de hilo, no `truststore.SSLContext` (revisión 2 de T2b).
-    assert ssl.SSLContext is tls._thread_owned_class()
+    # La subclase con cerrojo, no `truststore.SSLContext` (revisiones 2 y 3 de T2b).
+    assert ssl.SSLContext is tls._locked_class()
     assert issubclass(ssl.SSLContext, truststore.SSLContext)
     assert stdlib_context is not ssl.SSLContext
     assert [(e["event"], e.get("store")) for e in logs] == [
@@ -785,10 +1035,10 @@ def test_la_inyeccion_sustituye_el_contexto_precargado_y_tolera_que_falte_urllib
     monkeypatch.setitem(sys.modules, "requests.adapters", adapters)
     monkeypatch.setitem(sys.modules, "urllib3.util.ssl_", None)  # → ImportError
     assert tls.install_system_trust_for_libraries() == "system"
-    assert type(adapters._preloaded_ssl_context) is tls._thread_owned_class()
+    assert type(adapters._preloaded_ssl_context) is tls._locked_class()
     monkeypatch.setitem(sys.modules, "requests.adapters", None)  # → ImportError
     assert tls.install_system_trust_for_libraries() == "system"
-    assert ssl.SSLContext is tls._thread_owned_class()
+    assert ssl.SSLContext is tls._locked_class()
 
 
 @pytest.mark.usefixtures("restore_ssl_injection")
@@ -799,8 +1049,8 @@ def test_install_system_trust_no_inyecta_con_el_respaldo(monkeypatch: pytest.Mon
     assert ssl.SSLContext is stdlib_context
 
 
-def test_la_inyeccion_tiene_dueno_de_hilo_en_un_proceso_aparte() -> None:
-    """Revisión 2 de T2b: los contextos compartidos creados tras inyectar no se degradan."""
+def test_la_inyeccion_lleva_el_cerrojo_en_un_proceso_aparte() -> None:
+    """Revisiones 2 y 3 de T2b: los contextos compartidos creados tras inyectar no se degradan."""
     env = {k: v for k, v in os.environ.items() if k not in {"SSL_CERT_FILE", "SSL_CERT_DIR"}}
     completed = subprocess.run(
         [sys.executable, "-m", "tests.net.injection_probe"],
@@ -826,11 +1076,12 @@ def test_la_inyeccion_tiene_dueno_de_hilo_en_un_proceso_aparte() -> None:
         "aiohttp_is_owned": True,
         "default_is_owned": True,
         "dunder_class_is_owned": True,
-        "second_thread": "WrongThreadError",
-        "parallel_failures": 800,
-        "handshake_other_thread": "WrongThreadError",
+        "no_renegotiation": True,
+        "second_thread": None,
+        "parallel": {"errors": 0, "accepted_unknown": 0, "rejected_unknown": 600, "valid": 600},
+        "handshake_other_thread": "SSLCertVerificationError",
         "state": [required, enabled, required, enabled],
-        "owner_unknown_ca": "SSLCertVerificationError",
+        "unknown_ca": "SSLCertVerificationError",
         "state_after": [required, enabled, required, enabled],
         "extract_ssl": True,
         "extract_urllib3": True,
@@ -930,7 +1181,7 @@ _FORBIDDEN_NAMES = frozenset(
         "set_default_verify_paths",
         "inject_into_ssl",
         "_build_tls_context",
-        "_thread_owned_class",
+        "_locked_class",
         "CERT_NONE",
         "CERT_OPTIONAL",
         "urlopen",
@@ -1181,7 +1432,7 @@ def tls_violations(source: str) -> list[str]:
         "import ssl\nmode = ssl.CERT_NONE",
         "import truststore\ntruststore.inject_into_ssl()",
         "from faro_engine.net import tls\ntls._build_tls_context()",
-        "from faro_engine.net import tls\ntls._thread_owned_class()",
+        "from faro_engine.net import tls\ntls._locked_class()",
         # `verify=` con otro valor.
         "import httpx\nhttpx.AsyncHTTPTransport(verify=True)",
         "import httpx\nhttpx.AsyncClient(transport=t, verify=False)",
