@@ -169,3 +169,80 @@ En este equipo (Windows 11 con Norton):
 - `uv run pytest`: 1063 pruebas superadas y 3 omitidas, con un 100 % de cobertura. Se omiten tres pruebas por el interceptor en loopback; en la CI fallarían en vez de omitirse.
 - `ruff format --check`, `ruff check` y `mypy faro_engine tests scripts` pasan.
 - `scripts/bundle_smoke.py` sin empaquetar, comprobación `tls`: `ok` (`engine_store=system`, `truststore._windows`, LiteLLM en `truststore._api.SSLContext`).
+
+## 7. Segunda revisión de seguridad (APROBADO CON CAMBIOS) y correcciones
+
+Reproducciones del revisor: `rev2_bypass.py`, `rev2_readside.py` y `rev2_static.py` (fuera del repositorio). Con las correcciones, `rev2_readside` da `WrongThreadError` y `rev2_static` detecta todas las formas pedidas.
+
+### 7.1 Clase inyectada sin protección (medio)
+
+`install_system_trust_for_libraries()` llamaba a `truststore.inject_into_ssl()`, que sustituye `ssl.SSLContext` por `truststore.SSLContext` **sin** dueño de hilo. Cualquier contexto compartido creado después (`ssl.create_default_context()`, `aiohttp.connector._SSL_CONTEXT_VERIFIED`, `_ssl_context_cache` de LiteLLM) volvía a tener la carrera de §6.1.
+
+Corrección en `faro_engine/net/tls.py`:
+
+- `_inject_thread_owned_class()` hace lo mismo que `inject_into_ssl()` de `truststore` 0.10.4, en los mismos puntos (`ssl.SSLContext`, `urllib3.util.ssl_.SSLContext` y, si la versión de `requests` lo tiene, `requests.adapters._preloaded_ssl_context`; `requests` 2.34 ya no lo tiene), pero con `_ThreadOwnedContext`. `truststore.extract_from_ssl()` la sigue deshaciendo.
+- `_ThreadOwnedContext.__init__` acepta `protocol=None`, como `ssl.SSLContext()`.
+- `__class__` de la subclase devuelve la propia subclase. El de `truststore` devolvía `truststore.SSLContext`, así que `ctx.__class__(...)` daba un contexto sin protección.
+- `scripts/bundle_smoke.py` (comprobación `tls`) exige ahora que el contexto de LiteLLM sea `_ThreadOwnedContext`. Sin empaquetar: `litellm_ssl_context = faro_engine.net.tls._ThreadOwnedContext`.
+
+Pruebas:
+
+- `test_la_inyeccion_tiene_dueno_de_hilo_en_un_proceso_aparte` ejecuta `tests/net/injection_probe.py` en otro proceso para no contaminar el resto. Comprueba lo siguiente:
+  - tras la inyección, `ssl.SSLContext`, el de urllib3, el contexto compartido de aiohttp y `ssl.create_default_context()` son la subclase protegida;
+  - sobre un `ssl.create_default_context()` compartido, el segundo hilo recibe `WrongThreadError`, y con cuatro hilos en paralelo contra el dueño fallan 800 de 800;
+  - el contexto sigue en `CERT_REQUIRED` con `check_hostname`, tanto el externo como el interno;
+  - el handshake desde otro hilo falla y el dueño sigue rechazando una CA desconocida;
+  - `extract_from_ssl()` restaura `ssl.SSLContext` y el de urllib3.
+- `test_la_inyeccion_sustituye_el_contexto_precargado_y_tolera_que_falte_urllib3` usa un `requests.adapters` simulado con contexto precargado y simula que faltan urllib3 o requests.
+- `test_install_system_trust_construye_el_contexto_y_luego_inyecta` comprueba ahora que `ssl.SSLContext` es la subclase protegida.
+
+### 7.2 Handshake desde otro hilo (bajo)
+
+La protección solo cubría `wrap_bio` y `wrap_socket`. `truststore` verifica la cadena en `do_handshake` del `SSLObject` (`_verify_peercerts_impl`) y lee ahí `verify_mode` y `check_hostname` del contexto interno. Si otro hilo hacía el handshake mientras el dueño estaba dentro de un `wrap_socket` (contexto en `CERT_NONE`), se aceptaba una CA desconocida con otro nombre.
+
+Corrección: al construir el contexto, `_guard_handshakes()` sustituye `sslobject_class` y `sslsocket_class` del contexto interno por subclases cuyo `do_handshake` llama antes a `_check_owner()`. Guardan una referencia débil al contexto: si ya no existe, también fallan. Como la clase inyectada es la misma subclase, la protección también vale para ella.
+
+Pruebas:
+
+- `test_handshake_desde_otro_hilo_falla_cerrado` reproduce `rev2_readside`: un servidor de loopback que no contesta mantiene al dueño dentro de `wrap_socket` mientras otro hilo intenta el handshake de un `SSLObject` del dueño. Resultado: `WrongThreadError`, `net.tls_wrong_thread` y contexto intacto. Como control, el mismo intercambio hecho por el dueño llega a verificar y se rechaza con `SSLCertVerificationError`.
+- `test_sslsocket_do_handshake_desde_otro_hilo_falla_antes_de_tocar_el_socket`.
+- `test_handshake_falla_cerrado_si_el_contexto_ya_no_existe`.
+
+### 7.3 Comprobación estática (bajo)
+
+`tls_violations` detecta ahora además:
+
+- `_create_stdlib_context`, `get_server_certificate`, `set_ciphers` y `set_ecdh_curve`; y, de la lista del revisor, también `set_alpn_protocols`, `set_npn_protocols`, `load_cert_chain`, `SSLObject` y `SSLSocket`;
+- `cert_reqs=` con cualquier valor;
+- `requests`, `urllib3` y `aiohttp` dentro de `faro_engine`, también con `import_module` o `__import__` (igual que `truststore` y `_ssl`);
+- transportes, pools y proxies de `httpx`/`httpcore` sin `verify=` o `ssl_context=` (que además tiene que ser `tls_context()`), incluidos `httpx.AsyncHTTPTransport()`, `httpx.AsyncClient(transport=httpx.AsyncHTTPTransport())` y `AsyncHTTPTransport()` importado por nombre. `httpx.MockTransport` queda fuera;
+- `start_tls` sin `sslcontext=tls_context()`, que cubre el contexto por posición en `loop.start_tls` y `StreamWriter.start_tls`; y más de 2 posicionales en `open_connection` o más de 3 en `create_connection` (salvo `socket.create_connection`);
+- `trust_env` distinto de `False` en llamadas a `httpx`/`httpcore`.
+
+`test_la_comprobacion_estatica_detecta_cada_forma` pasa de 71 a 105 casos, con los ejemplos de `rev2_static`. `test_la_comprobacion_estatica_admite_el_contexto_compartido` pasa de 12 a 23 casos sin aviso: `start_tls(..., sslcontext=tls_context())`, `open_connection(host, 443, ssl=tls_context())`, `socket.create_connection` con tres argumentos, `httpcore.AsyncConnectionPool(ssl_context=tls_context())`, `httpx.MockTransport(handler)`, `self.requests = []`… El recorrido de `faro_engine/` sigue sin violaciones. Lo que sigue sin detectarse son los usos que dependen de valores en tiempo de ejecución: `type(ctx)(...)` y `ctx.__class__(...)` dan ahora la subclase protegida, y el acceso a `_ctx` no se prohíbe porque `sites/service.py` usa ese nombre para otra cosa.
+
+### 7.4 Documentación
+
+- **ADR 0012:**
+  - condición 12: el handshake también ocurre en el hilo dueño;
+  - condición 13: se inyecta la subclase protegida;
+  - condición 14: las formas nuevas de la comprobación estática;
+  - Consecuencias, F2: prueba obligatoria de que, con una URL AIA que no responde, `/health` sigue respondiendo durante el handshake.
+- **Skill `capa-llm`:** la inyección pone la subclase con dueño de hilo, los contextos compartidos de LiteLLM y aiohttp fallan cerrados en otro hilo, y `faro_engine` no puede usar `requests`, `urllib3` ni `aiohttp` directamente.
+
+### 7.5 Hallazgo propio: `read`/`write` sin handshake previo (corregido)
+
+Al revisar 7.2 apareció otro camino. `truststore` solo verifica la cadena en `do_handshake`. Un `SSLObject` en el que se llama a `write()` o `read()` sin `do_handshake()` antes hace el handshake dentro de OpenSSL con el `CERT_NONE` copiado al crearse, y no verifica nada. Reproducido: `write()` aceptado con una CA desconocida y otro nombre. asyncio y anyio siempre llaman a `do_handshake()`, pero nada lo garantizaba.
+
+Corrección: `read` y `write` del `SSLObject` protegido pasan antes por el `do_handshake` protegido (dueño de hilo y verificación de `truststore`) si el objeto aún no lo completó. El objeto queda marcado cuando el handshake verificado termina.
+
+Prueba: `test_read_y_write_sin_handshake_previo_tambien_verifican`. Con un certificado válido, el intercambio funciona en los dos sentidos. Con otro nombre o con una CA desconocida, `write()` falla con `SSLCertVerificationError` y `read()` también falla.
+
+Queda fuera, como observación para el revisor: la renegociación TLS 1.2 iniciada por el servidor después del handshake no vuelve a pasar por `truststore`. El contexto no fija `OP_NO_RENEGOTIATION`.
+
+### 7.6 Resultado
+
+En este equipo (Windows 11 con Norton):
+
+- `uv run pytest`: 1114 pruebas superadas y 3 omitidas (las de loopback por el interceptor, como en §6.7), con un 100 % de cobertura (`net/tls.py` al 100 %).
+- `ruff format --check`, `ruff check` y `mypy faro_engine tests scripts` pasan.
