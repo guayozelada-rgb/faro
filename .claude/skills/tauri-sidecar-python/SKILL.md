@@ -58,6 +58,7 @@ description: Cómo se empaqueta el motor Python de Faro con PyInstaller, cómo e
 ## Apagado
 - Al cerrar la app (no al minimizar a la bandeja), Rust envía `{"event":"shutdown"}` por stdin; el motor termina la tarea en curso o la guarda como reanudable (checkpoint) y sale en máximo 10 s. Después Rust lo mata.
 - El motor debe tolerar cierres bruscos: la cola y los agentes se recuperan desde SQLite al volver a arrancar.
+- **Bucle de eventos: siempre `asyncio.SelectorEventLoop`, también en Windows** (`serve_loop_factory()` en `__main__.py`). El `ProactorEventLoop` (IOCP), que es el de Windows por defecto, tiene dos fallos en CPython 3.12. Si un cliente corta con RST mientras el motor responde, `Server.wait_closed()` no vuelve nunca y el apagado cae al `os._exit` de los 10 s. Si el corte llega antes de terminar el `accept`, asyncio cierra el socket de escucha. No lo reviertas sin volver a ejecutar `test_shutdown_is_orderly_after_clients_drop_mid_response` y `test_engine_keeps_accepting_after_clients_reset_before_accept` en Windows. Límites aceptados: el motor no puede usar subprocesos de asyncio y `select` admite hasta 512 sockets.
 
 ## Desarrollo local
 Dos modos, ambos solo en builds de depuración (ADR 0004):
