@@ -180,19 +180,6 @@ def test_execution_failure(conn: Connection) -> None:
     assert not approvals.mark_approval_executed(conn, "ap-1", now=T2)
 
 
-def test_cancel_pending_approvals_of_a_run(conn: Connection) -> None:
-    add_run(conn)
-    approvals.insert_approval(conn, _approval("ap-1"))
-    approvals.insert_approval(conn, _approval("ap-2"))
-    approvals.decide_approval(conn, "ap-2", decision="approve", now=T1)
-    assert approvals.cancel_pending_approvals(conn, "run-1", now=T2) == 1
-    first = approvals.get_approval(conn, "ap-1")
-    second = approvals.get_approval(conn, "ap-2")
-    assert first is not None
-    assert second is not None
-    assert (first.status, second.status) == ("cancelled", "approved")
-
-
 def test_expire_due_marks_approvals_and_cancels_waiting_runs(conn: Connection) -> None:
     _waiting_run(conn, "run-1")
     _waiting_run(conn, "run-2", agent_kind="otro")

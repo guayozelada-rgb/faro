@@ -116,7 +116,7 @@ Que una regla de nivel 2 o 3 apruebe sola (`decided_by = 'rule'`) solo vale para
 - en código, `RULE_DECIDABLE_SIDE_EFFECTS = {"internal"}` (`core/store/approvals.py`), en `insert_approval` y `decide_approval`;
 - en la base, `CHECK (decided_by IS NOT 'rule' OR side_effect = 'internal')` en `approvals` (`0002_agents.sql`).
 
-Las aprobaciones decididas por el usuario (`decided_by = 'user'`, incluida la sugerencia de nivel 0 aceptada a mano) valen para cualquier clase. Para que una regla decida `publish` (F4) o `spend` (F5) hacen falta, las tres: la decisión del usuario en la spec de esa fase, ampliar `RULE_DECIDABLE_SIDE_EFFECTS` y una **migración nueva** que cambie el `CHECK` de `approvals` (la 0002 ya está publicada y no se edita). Mientras tanto, `autonomy_rules.limits` solo admite `{}` (`LIMITS_CONFIGURABLE = False`); cada fase define el esquema de `limits` de sus acciones y lo valida con Pydantic antes de exponer el nivel 2.
+Las aprobaciones decididas por el usuario (`decided_by = 'user'`, incluida la sugerencia de nivel 0 aceptada a mano) valen para cualquier clase. Para que una regla decida `publish` (F4) o `spend` (F5) hacen falta, las tres: la decisión del usuario en la spec de esa fase, ampliar `RULE_DECIDABLE_SIDE_EFFECTS` y una **migración nueva** que cambie el `CHECK` de `approvals` (una vez publicada en `main`, la 0002 no se edita). Mientras tanto, `autonomy_rules.limits` solo admite `{}` (`LIMITS_CONFIGURABLE = False`); cada fase define el esquema de `limits` de sus acciones y lo valida con Pydantic antes de exponer el nivel 2.
 
 Pendiente para F5: decidir si una aprobación `approved` que lleva tiempo sin ejecutarse (por ejemplo, con los agentes en pausa) caduca y con qué plazo. Hoy solo caducan las `pending`.
 

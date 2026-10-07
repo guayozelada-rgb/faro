@@ -4,8 +4,8 @@ Cada función hace todas sus lecturas y escrituras en **una** transacción (`ato
 decidir una propuesta y cancelar su tarea no se pueden intercalar a medias: nunca queda
 una aprobación `approved` sin ejecutar colgada de una tarea `cancelled`, ni una tarea en
 `waiting_approval` con su propuesta ya decidida. Las rutas y el trabajador de T7/T8 usan
-estas funciones en lugar de encadenar `decide_approval` + `transition_run` o
-`transition_run` + `cancel_pending_approvals`.
+estas funciones en lugar de encadenar `decide_approval` + `transition_run` o de
+cancelar la tarea y sus propuestas por separado.
 
 - `decide_and_requeue`: `pending` → `approved` | `rejected` y la tarea `waiting_approval`
   → `queued` (prioridad de reanudada). Rechazar también re-encola: el grafo se reanuda con

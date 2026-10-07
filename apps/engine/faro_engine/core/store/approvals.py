@@ -299,16 +299,6 @@ def mark_approval_failed(conn: Connection, approval_id: str, *, error_code: str,
     return int(cursor.rowcount) == 1
 
 
-def cancel_pending_approvals(conn: Connection, run_id: str, *, now: str) -> int:
-    """Al cancelar la tarea: sus propuestas `pending` → `cancelled`."""
-    cursor = conn.execute(
-        "UPDATE approvals SET status = 'cancelled', updated_at = ? "
-        "WHERE run_id = ? AND status = 'pending'",
-        (now, run_id),
-    )
-    return int(cursor.rowcount)
-
-
 def cancel_open_approvals(conn: Connection, run_id: str, *, now: str) -> int:
     """Al cancelar la tarea (`run_control.cancel_run`): sus propuestas `pending` y las
     `approved` sin ejecutar → `cancelled`, para que el ejecutor nunca aplique la acción de
