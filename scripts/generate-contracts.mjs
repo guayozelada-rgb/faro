@@ -4,11 +4,19 @@
 //   2. packages/shared/engine.d.ts           <- openapi-typescript
 //   3. packages/shared/engine-operations.json <- lista permitida
 //        [{operationId, method, path, timeout_seconds, secrets: [{ref, access}]}]
+//   4. packages/shared/agent-grants.json      <- export del registro de agentes del motor
+//        [{kind, max_grant_seconds, requires_site, secrets: [{ref, access: ["get"]}]}]
 //
 // `timeout_seconds` y `secrets` salen de las extensiones `x-faro-timeout-seconds` y
 // `x-faro-secrets` que cada ruta del motor declara con `faro_operation(...)` (ADR 0010 §3,
 // spec F1a §4.5). El núcleo incrusta engine-operations.json al compilar: cualquier cambio
 // en `secrets` requiere revisión de revisor-seguridad.
+//
+// agent-grants.json es la tabla de concesiones por ejecución de los agentes (ADR 0014 §1,
+// spec F1b §4.7): sale de `python -m faro_engine.export_agents` y aquí se vuelve a validar
+// con las reglas de `apps/engine/faro_engine/agents/grants.py` (solo `get`, solo
+// `llm/<proveedor>/default` y `wp/{site_id}/token`, `max_grant_seconds` 60–900). El núcleo
+// la incrusta al compilar: cualquier cambio requiere revisión de revisor-seguridad.
 //
 // Uso: npm run contracts
 // El resultado es determinista: dos ejecuciones seguidas producen archivos idénticos.
@@ -27,6 +35,7 @@ const SHARED_DIR = join(ROOT, "packages", "shared");
 const OUT_OPENAPI = join(SHARED_DIR, "openapi.json");
 const OUT_TYPES = join(SHARED_DIR, "engine.d.ts");
 const OUT_OPERATIONS = join(SHARED_DIR, "engine-operations.json");
+const OUT_AGENT_GRANTS = join(SHARED_DIR, "agent-grants.json");
 
 const HTTP_METHODS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"];
 const OPERATION_ID_RE = /^[a-z][A-Za-z0-9]*$/;
@@ -74,23 +83,41 @@ export const ACCESS_BY_KIND = [
 const PLACEHOLDER_RE = new RegExp(PLACEHOLDER, "g");
 const PATH_PARAM_RE = /\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}/g;
 
+// Tabla de concesiones por ejecución de los agentes (ADR 0014 §1). Mismas reglas y mismo
+// orden de comprobación que apps/engine/faro_engine/agents/grants.py; los vectores de
+// packages/shared/fixtures/agent-grants-cases.json comprueban la paridad.
+export const MIN_GRANT_SECONDS = 60;
+export const MAX_GRANT_SECONDS = 900;
+export const AGENT_KIND_RE = /^[a-z][a-z0-9_]{1,47}$/;
+export const LLM_PROVIDERS = ["anthropic", "openai", "gemini"];
+export const WP_SITE_REF_TEMPLATE = "wp/{site_id}/token";
+/** Plantillas que un agente puede declarar, en orden canónico (el de `ref`). */
+export const AGENT_SECRET_TEMPLATES = [
+  ...LLM_PROVIDERS.map((provider) => `llm/${provider}/default`),
+  WP_SITE_REF_TEMPLATE,
+].sort(compareStrings);
+/** Único acceso posible en una concesión de ejecución. */
+export const AGENT_SECRET_ACCESS = ["get"];
+const AGENT_ENTRY_KEYS = ["kind", "max_grant_seconds", "requires_site", "secrets"];
+const AGENT_SECRET_KEYS = ["access", "ref"];
+
 export class ContractsError extends Error {}
+
+/** Error de agent-grants.json; `rule` es el mismo identificador que usa el motor. */
+export class AgentGrantsError extends ContractsError {
+  constructor(rule, message) {
+    super(`agent-grants.json: ${message}`);
+    this.rule = rule;
+  }
+}
 
 function fail(message) {
   throw new ContractsError(message);
 }
 
-/** Ejecuta el export del motor con uv y devuelve el texto JSON de stdout. */
-function exportOpenApi() {
-  const args = [
-    "run",
-    "--locked",
-    "--directory",
-    ENGINE_DIR,
-    "python",
-    "-m",
-    "faro_engine.export_openapi",
-  ];
+/** Ejecuta un módulo de export del motor con uv y devuelve el texto JSON de stdout. */
+function runEngineExport(module, what) {
+  const args = ["run", "--locked", "--directory", ENGINE_DIR, "python", "-m", module];
   const result = spawnSync("uv", args, {
     cwd: ROOT,
     encoding: "utf8",
@@ -114,7 +141,7 @@ function exportOpenApi() {
       ? "\nSi el error es de certificados, prueba con la variable de entorno UV_SYSTEM_CERTS=1."
       : "";
     fail(
-      `El export del OpenAPI del motor falló (código de salida ${result.status ?? "desconocido"}).\n` +
+      `El export ${what} del motor falló (código de salida ${result.status ?? "desconocido"}).\n` +
         `Comando: uv ${args.join(" ")}\n` +
         (stderr ? `Salida de error:\n${stderr}` : "(sin salida de error)") +
         certHint,
@@ -123,7 +150,7 @@ function exportOpenApi() {
 
   const stdout = (result.stdout ?? "").replace(/^﻿/, "");
   if (!stdout.trim()) {
-    fail("El export del OpenAPI del motor no escribió nada en stdout.");
+    fail(`El export ${what} del motor no escribió nada en stdout.`);
   }
   return stdout;
 }
@@ -338,6 +365,139 @@ export function buildOperations(schema) {
   return operations;
 }
 
+function agentFail(rule, message) {
+  throw new AgentGrantsError(rule, message);
+}
+
+function upperFirst(text) {
+  return text.slice(0, 1).toUpperCase() + text.slice(1);
+}
+
+function checkAgentKeys(value, expected, where) {
+  const keys = Object.keys(value);
+  const unknown = keys.filter((key) => !expected.includes(key)).sort(compareStrings);
+  if (unknown.length > 0) {
+    agentFail(
+      "unknown_field",
+      `${upperFirst(where)} tiene campos desconocidos: ${unknown.join(", ")}.`,
+    );
+  }
+  const missing = expected.filter((key) => !Object.hasOwn(value, key));
+  if (missing.length > 0) {
+    agentFail("missing_field", `Faltan campos en ${where}: ${missing.join(", ")}.`);
+  }
+}
+
+/** Valida un secreto de un agente y devuelve su `ref`. */
+function checkAgentSecret(secret, where) {
+  if (!isPlainObject(secret)) {
+    agentFail("shape", `Cada secreto de ${where} debe ser un objeto {ref, access}.`);
+  }
+  checkAgentKeys(secret, AGENT_SECRET_KEYS, `un secreto de ${where}`);
+  const { ref, access } = secret;
+  if (typeof ref !== "string") {
+    agentFail("template", `En ${where}, \`ref\` debe ser texto.`);
+  }
+  if (ref.startsWith("db/")) {
+    agentFail("db", `En ${where}, "${ref}" es la llave de la base: \`db/*\` nunca se concede.`);
+  }
+  if (ref.startsWith("oauth/")) {
+    agentFail("oauth", `En ${where}, "${ref}": \`oauth/*\` no se concede a agentes (ADR 0014 §1).`);
+  }
+  if (!AGENT_SECRET_TEMPLATES.includes(ref)) {
+    agentFail(
+      "template",
+      `En ${where}, ${JSON.stringify(ref)} no es una plantilla admitida para agentes ` +
+        `(${AGENT_SECRET_TEMPLATES.join(", ")}).`,
+    );
+  }
+  if (!Array.isArray(access) || access.length !== 1 || access[0] !== "get") {
+    agentFail(
+      "access",
+      `En ${where}, "${ref}" debe declarar exactamente ["get"]: un agente nunca crea, ` +
+        "reemplaza ni borra secretos.",
+    );
+  }
+  return ref;
+}
+
+/** Valida una entrada (un tipo de agente) y devuelve su forma canónica. */
+function checkAgentEntry(entry, index) {
+  if (!isPlainObject(entry)) {
+    agentFail("shape", `La entrada ${index} de la tabla debe ser un objeto.`);
+  }
+  const { kind } = entry;
+  const where = typeof kind === "string" ? `el agente "${kind}"` : `la entrada ${index}`;
+  checkAgentKeys(entry, AGENT_ENTRY_KEYS, where);
+  if (typeof kind !== "string" || !AGENT_KIND_RE.test(kind)) {
+    agentFail("kind", `El tipo de ${where} debe cumplir ${AGENT_KIND_RE.source}.`);
+  }
+  const { requires_site: requiresSite, max_grant_seconds: seconds, secrets } = entry;
+  if (typeof requiresSite !== "boolean") {
+    agentFail("requires_site", `\`requires_site\` de ${where} debe ser booleano.`);
+  }
+  if (!Number.isInteger(seconds) || seconds < MIN_GRANT_SECONDS || seconds > MAX_GRANT_SECONDS) {
+    agentFail(
+      "max_grant_seconds",
+      `\`max_grant_seconds\` de ${where} debe ser un entero entre ${MIN_GRANT_SECONDS} y ` +
+        `${MAX_GRANT_SECONDS}; llegó ${JSON.stringify(seconds)}.`,
+    );
+  }
+  if (!Array.isArray(secrets)) {
+    agentFail("shape", `\`secrets\` de ${where} debe ser una lista.`);
+  }
+  const refs = [];
+  for (const secret of secrets) {
+    const ref = checkAgentSecret(secret, where);
+    if (refs.includes(ref)) {
+      agentFail("duplicate_ref", `En ${where}, "${ref}" aparece más de una vez.`);
+    }
+    refs.push(ref);
+  }
+  if (refs.includes(WP_SITE_REF_TEMPLATE) && !requiresSite) {
+    agentFail(
+      "site_token_without_site",
+      `${upperFirst(where)} declara ${WP_SITE_REF_TEMPLATE} pero no \`requires_site\`.`,
+    );
+  }
+  return {
+    kind,
+    max_grant_seconds: seconds,
+    requires_site: requiresSite,
+    secrets: refs.sort(compareStrings).map((ref) => ({ ref, access: [...AGENT_SECRET_ACCESS] })),
+  };
+}
+
+/**
+ * Valida la tabla de concesiones de los agentes y devuelve su forma canónica (ordenada por
+ * `kind`, `secrets` por `ref`). Misma función que `canonical_agent_grants` del motor.
+ */
+export function buildAgentGrants(data) {
+  if (!Array.isArray(data)) {
+    agentFail("shape", "La tabla de concesiones de agentes debe ser una lista.");
+  }
+  const entries = data.map((entry, index) => checkAgentEntry(entry, index));
+  const kinds = new Set();
+  for (const { kind } of entries) {
+    if (kinds.has(kind)) {
+      agentFail("duplicate_kind", `El agente "${kind}" aparece más de una vez.`);
+    }
+    kinds.add(kind);
+  }
+  return entries.sort((a, b) => compareStrings(a.kind, b.kind));
+}
+
+/** Interpreta la salida de `python -m faro_engine.export_agents`. */
+export function parseAgentGrants(text) {
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (error) {
+    fail(`El export de los agentes del motor no es JSON válido: ${error.message}`);
+  }
+  return buildAgentGrants(data);
+}
+
 async function generateTypes(schema) {
   let openapiTS;
   let astToString;
@@ -371,16 +531,24 @@ function write(file, content) {
 
 async function main() {
   console.log("Generando contratos del motor...");
-  const schema = sortKeysDeep(parseOpenApi(exportOpenApi()));
+  const schema = sortKeysDeep(
+    parseOpenApi(runEngineExport("faro_engine.export_openapi", "del OpenAPI")),
+  );
   const operations = buildOperations(schema);
+  const agentGrants = parseAgentGrants(
+    runEngineExport("faro_engine.export_agents", "del registro de agentes"),
+  );
   const types = await generateTypes(schema);
 
   write(OUT_OPENAPI, stableJson(schema));
   write(OUT_TYPES, types);
   write(OUT_OPERATIONS, stableJson(operations));
+  write(OUT_AGENT_GRANTS, stableJson(sortKeysDeep(agentGrants)));
   console.log(
     `Listo: ${operations.length} operación(es): ${operations.map((o) => o.operationId).join(", ")}.`,
   );
+  const kinds = agentGrants.map((a) => a.kind).join(", ");
+  console.log(`Agentes con concesiones: ${agentGrants.length}${kinds ? ` (${kinds})` : ""}.`);
 }
 
 // Solo se ejecuta al invocarse como script (las pruebas importan las funciones).

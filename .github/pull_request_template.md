@@ -11,7 +11,7 @@
 - [ ] `npm run typecheck`
 - [ ] `npm run test`
 - [ ] `npm run coverage:core` si cambia el núcleo Rust (80 % global y 95 % en `vault/`, `secrets/`, `profile/` y `engine/protocol.rs`)
-- [ ] `npm run contracts` ejecutado si cambian endpoints del motor (y los cambios de `packages/shared` incluidos en este PR)
+- [ ] `npm run contracts` ejecutado si cambian endpoints o el registro de agentes del motor (y los cambios de `packages/shared` incluidos en este PR)
 
 ## Capas que toca
 
@@ -29,6 +29,7 @@
 Marca lo que aplique. Cualquier casilla marcada requiere la revisión de `revisor-seguridad` antes de integrar.
 
 - [ ] **¿Cambia `secrets` en `packages/shared/engine-operations.json`?** → requiere revisión de `revisor-seguridad` (obligatoria, spec F1a §4.5).
+- [ ] **¿Cambia `packages/shared/agent-grants.json`?** (concesiones de los agentes, registro de agentes o sus reglas) → requiere revisión de `revisor-seguridad` (obligatoria, ADR 0014 §1, spec F1b §4.7).
 - [ ] Secretos, llavero del sistema, llave de la base cifrada o logs que podrían contener valores sensibles → `revisor-seguridad`.
 - [ ] Plugin de WordPress (vinculación, firma, rutas REST, permisos) → `revisor-seguridad`.
 - [ ] Sidecar o protocolo núcleo ↔ motor (argumentos de arranque, stdin/stdout, `--allow-local-sites`) → `revisor-seguridad`.

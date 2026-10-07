@@ -1,21 +1,36 @@
 // Pruebas del generador de contratos (spec F1a §8, T4b): `timeout_seconds` y `secrets`
-// por operación en engine-operations.json. Uso: npm run test:contracts
+// por operación en engine-operations.json; reglas de agent-grants.json (spec F1b T3,
+// ADR 0014 §1). Uso: npm run test:contracts
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
+  ACCESS_BY_KIND,
+  AGENT_KIND_RE,
+  AGENT_SECRET_ACCESS,
+  AGENT_SECRET_TEMPLATES,
+  AgentGrantsError,
   ContractsError,
+  MAX_GRANT_SECONDS,
+  MIN_GRANT_SECONDS,
   SECRETS_KEY,
+  SECRET_REF_TEMPLATE_RE,
   TIMEOUT_KEY,
+  buildAgentGrants,
   buildOperations,
+  parseAgentGrants,
   parseOpenApi,
   sortKeysDeep,
   stableJson,
 } from "./generate-contracts.mjs";
 
 const SHARED = new URL("../packages/shared/", import.meta.url);
+/** Vectores compartidos con apps/engine/tests/agents/test_grants.py (paridad de reglas). */
+const AGENT_CASES = JSON.parse(
+  readFileSync(new URL("fixtures/agent-grants-cases.json", SHARED), "utf8"),
+);
 
 /** Documento OpenAPI mínimo con las operaciones dadas: {"GET /ruta": operación}. */
 function schemaWith(operations) {
@@ -271,5 +286,182 @@ describe("contratos versionados", () => {
     const openapi = parseOpenApi(readFileSync(new URL("openapi.json", SHARED), "utf8"));
     const versioned = readFileSync(new URL("engine-operations.json", SHARED), "utf8");
     assert.equal(stableJson(buildOperations(openapi)), versioned.replace(/\r\n/g, "\n"));
+  });
+});
+
+/** Agente válido de ejemplo (la forma de `site_summary` de la spec F1b §4.4). */
+function agent(overrides = {}) {
+  return {
+    kind: "site_summary",
+    requires_site: true,
+    max_grant_seconds: 900,
+    secrets: [
+      { ref: "llm/anthropic/default", access: ["get"] },
+      { ref: "wp/{site_id}/token", access: ["get"] },
+    ],
+    ...overrides,
+  };
+}
+
+/** Espera un AgentGrantsError con la regla `rule` (y, si se da, un mensaje que cumpla `pattern`). */
+function assertAgentFails(data, rule, pattern = /./) {
+  assert.throws(
+    () => buildAgentGrants(data),
+    (error) =>
+      error instanceof AgentGrantsError &&
+      error instanceof ContractsError &&
+      error.rule === rule &&
+      pattern.test(error.message),
+  );
+}
+
+describe("buildAgentGrants: vectores compartidos con el motor", () => {
+  it("las constantes coinciden con las reglas de los vectores (y con grants.py)", () => {
+    const { rules } = AGENT_CASES;
+    assert.equal(AGENT_CASES.version, 1);
+    assert.equal(MIN_GRANT_SECONDS, rules.min_grant_seconds);
+    assert.equal(MAX_GRANT_SECONDS, rules.max_grant_seconds);
+    assert.equal(AGENT_KIND_RE.source, rules.kind_pattern);
+    assert.deepEqual(AGENT_SECRET_TEMPLATES, rules.templates);
+    assert.deepEqual(AGENT_SECRET_ACCESS, rules.access);
+  });
+
+  it("hay casos de cada regla", () => {
+    const rules = new Set(AGENT_CASES.invalid.map((c) => c.rule));
+    for (const rule of [
+      "shape",
+      "unknown_field",
+      "missing_field",
+      "kind",
+      "duplicate_kind",
+      "requires_site",
+      "max_grant_seconds",
+      "access",
+      "db",
+      "oauth",
+      "template",
+      "duplicate_ref",
+      "site_token_without_site",
+    ]) {
+      assert.ok(rules.has(rule), `falta un caso de ${rule}`);
+    }
+  });
+
+  for (const { name, input, expected } of AGENT_CASES.valid) {
+    it(`válido: ${name}`, () => {
+      assert.deepEqual(buildAgentGrants(input), expected);
+    });
+  }
+
+  for (const { name, input, rule } of AGENT_CASES.invalid) {
+    it(`falla (${rule}): ${name}`, () => {
+      assertAgentFails(input, rule);
+    });
+  }
+});
+
+describe("buildAgentGrants: criterios de la spec F1b T3", () => {
+  for (const op of ["set", "create", "delete"]) {
+    it(`una entrada con ${op} hace fallar el generador`, () => {
+      for (const ref of ["llm/openai/default", "wp/{site_id}/token"]) {
+        assertAgentFails(
+          [agent({ secrets: [{ ref, access: [op] }] })],
+          "access",
+          /exactamente \["get"\]: un agente nunca crea, reemplaza ni borra secretos/,
+        );
+        assertAgentFails([agent({ secrets: [{ ref, access: ["get", op] }] })], "access");
+      }
+    });
+  }
+
+  it("una entrada con db/* hace fallar el generador", () => {
+    assertAgentFails(
+      [agent({ secrets: [{ ref: "db/{site_id}/key", access: ["get"] }] })],
+      "db",
+      /`db\/\*` nunca se concede/,
+    );
+  });
+
+  it("una entrada con oauth/* hace fallar el generador", () => {
+    assertAgentFails(
+      [agent({ secrets: [{ ref: "oauth/google/{account}", access: ["get"] }] })],
+      "oauth",
+      /`oauth\/\*` no se concede a agentes/,
+    );
+  });
+
+  for (const seconds of [MIN_GRANT_SECONDS - 1, MAX_GRANT_SECONDS + 1, 3600]) {
+    it(`max_grant_seconds=${seconds} (fuera de rango) hace fallar el generador`, () => {
+      assertAgentFails(
+        [agent({ max_grant_seconds: seconds })],
+        "max_grant_seconds",
+        /entero entre 60 y 900/,
+      );
+    });
+  }
+
+  it("solo admite llm/<proveedor>/default y wp/{site_id}/token", () => {
+    assert.deepEqual(AGENT_SECRET_TEMPLATES, [
+      "llm/anthropic/default",
+      "llm/gemini/default",
+      "llm/openai/default",
+      "wp/{site_id}/token",
+    ]);
+    assertAgentFails(
+      [agent({ secrets: [{ ref: "wp/{new}/token", access: ["get"] }] })],
+      "template",
+      /no es una plantilla admitida para agentes/,
+    );
+  });
+
+  it("cada plantilla de agente es también válida con get para engine-operations.json", () => {
+    for (const ref of AGENT_SECRET_TEMPLATES) {
+      assert.match(ref, SECRET_REF_TEMPLATE_RE);
+      const kind = ACCESS_BY_KIND.find(({ pattern }) => pattern.test(ref));
+      assert.ok(kind?.allowed.includes("get"), ref);
+    }
+  });
+
+  it("el resultado es determinista aunque cambie el orden de entrada", () => {
+    const secrets = agent().secrets;
+    const a = [agent({ kind: "zeta" }), agent({ kind: "alfa", secrets: [...secrets].reverse() })];
+    const b = [agent({ kind: "alfa" }), agent({ kind: "zeta", secrets: [...secrets].reverse() })];
+    assert.equal(
+      stableJson(sortKeysDeep(buildAgentGrants(a))),
+      stableJson(sortKeysDeep(buildAgentGrants(b))),
+    );
+    assert.deepEqual(
+      buildAgentGrants(a).map((entry) => entry.kind),
+      ["alfa", "zeta"],
+    );
+  });
+
+  it("no modifica la entrada", () => {
+    const input = [agent({ secrets: [...agent().secrets].reverse() })];
+    const copy = structuredClone(input);
+    buildAgentGrants(input);
+    assert.deepEqual(input, copy);
+  });
+
+  it("parseAgentGrants rechaza JSON inválido y valida el contenido", () => {
+    assert.throws(
+      () => parseAgentGrants("no es json"),
+      (error) => error instanceof ContractsError && /no es JSON válido/.test(error.message),
+    );
+    assert.deepEqual(parseAgentGrants("[]\n"), []);
+    assert.throws(
+      () => parseAgentGrants(JSON.stringify([agent({ max_grant_seconds: 901 })])),
+      (error) => error instanceof AgentGrantsError && error.rule === "max_grant_seconds",
+    );
+  });
+});
+
+describe("agent-grants.json versionado", () => {
+  it("cumple las reglas y está en forma canónica", () => {
+    const versioned = readFileSync(new URL("agent-grants.json", SHARED), "utf8").replace(
+      /\r\n/g,
+      "\n",
+    );
+    assert.equal(stableJson(sortKeysDeep(parseAgentGrants(versioned))), versioned);
   });
 });

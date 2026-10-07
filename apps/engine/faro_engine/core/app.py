@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from faro_engine.agents.registry import agent_grants_table
 from faro_engine.core.audit import AuditLog
 from faro_engine.core.config import Settings
 from faro_engine.core.db.database import Database
@@ -62,6 +63,8 @@ def create_app(
     app.include_router(sites.router)
     # Toda operación declara timeout y secretos (ADR 0010 §3); si no, el motor no arranca.
     validate_app_operations(app)
+    # La tabla de concesiones de los agentes cumple ADR 0014 §1; si no, tampoco arranca.
+    agent_grants_table()
     # add_middleware apila hacia fuera: el último añadido es el más externo. Orden de
     # entrada: logs → Host y Bearer → `X-Faro-Run-Id` → rutas.
     app.add_middleware(RunIdMiddleware)

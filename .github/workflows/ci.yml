@@ -223,13 +223,18 @@ jobs:
       - name: uv sync del motor
         run: uv sync --directory apps/engine --locked
 
-      # Validación de timeout_seconds y secrets por operación (ADR 0010 §3, spec F1a T4b).
+      # Validación de timeout_seconds y secrets por operación (ADR 0010 §3, spec F1a T4b)
+      # y de las reglas de agent-grants.json con los vectores compartidos con el motor
+      # (ADR 0014 §1, spec F1b T3).
       - name: Pruebas del generador de contratos
         run: npm run test:contracts
 
       - name: Regenerar contratos
         run: npm run contracts
 
+      # Incluye agent-grants.json: si el registro de agentes del motor cambia y el archivo no
+      # se regenera (o se edita a mano), el diff lo detecta; si falta en el repositorio, la
+      # comprobación de archivos sin versionar también.
       - name: Sin diferencias en packages/shared
         run: |
           if ! git diff --exit-code packages/shared; then

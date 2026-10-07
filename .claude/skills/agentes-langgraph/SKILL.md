@@ -65,12 +65,23 @@ SPEC = AgentSpec(
 ```
 
 - `registry.py` registra cada `SPEC` al arrancar y valida: tipo único, plantillas permitidas, `max_grant_seconds` en rango, acciones existentes en el catálogo de `actions.py`.
-- `faro_engine/export_agents.py` exporta el registro y `npm run contracts` genera `packages/shared/agent-grants.json` (ordenado, determinista), que el núcleo incrusta al compilar (ADR 0014 §1). Reglas que comprueban el motor, el generador y el núcleo:
-  - solo acceso `get`;
-  - solo `llm/<anthropic|openai|gemini>/default` (literal) y `wp/{site_id}/token`; `db/*` y `oauth/*` rechazadas;
-  - `max_grant_seconds` entre 60 y 900.
+- **Ya construido en T3** (código real): las reglas de la tabla viven en `faro_engine/agents/grants.py` (`AgentGrantSpec(kind, requires_site, max_grant_seconds, secrets)`, `build_agent_grants`, `canonical_agent_grants`, `AgentGrantError` con un `rule` estable). `agents/registry.py` tiene `AGENT_GRANTS: tuple[AgentGrantSpec, ...] = ()` (vacío) y `agent_grants_table()`, que `create_app` llama al arrancar: una tabla inválida impide arrancar el motor. En T8, `AgentSpec` aporta su `AgentGrantSpec` y el registro pasa a construirse desde las `SPEC`; no dupliques las reglas, llama a `build_agent_grants`.
+- `faro_engine/export_agents.py` exporta la tabla y `npm run contracts` la vuelve a validar y genera `packages/shared/agent-grants.json` (ordenado por `kind`, `secrets` por `ref`, determinista), que el núcleo incrusta al compilar (ADR 0014 §1; la prueba del núcleo llega en T5):
+  ```json
+  [{ "kind": "site_summary", "max_grant_seconds": 900, "requires_site": true,
+     "secrets": [{ "ref": "llm/anthropic/default", "access": ["get"] }, …,
+                 { "ref": "wp/{site_id}/token", "access": ["get"] }] }]
+  ```
+  Reglas que comprueban el motor, el generador y el núcleo:
+  - solo acceso `get` (`access` exactamente `["get"]`; `set`, `create` o `delete` hacen fallar);
+  - solo `llm/<anthropic|openai|gemini>/default` (literal) y `wp/{site_id}/token`; `db/*`, `oauth/*` y cualquier otra rechazadas;
+  - `wp/{site_id}/token` exige `requires_site=True`;
+  - `max_grant_seconds` entero entre 60 y 900;
+  - `kind` con forma `^[a-z][a-z0-9_]{1,47}$` y único; sin campos de más ni referencias repetidas.
+- Paridad: `grants.py` y `scripts/generate-contracts.mjs` aplican las mismas reglas en el mismo orden. Los vectores de `packages/shared/fixtures/agent-grants-cases.json` (casos válidos con su salida canónica e inválidos con su `rule`) los ejecutan `tests/agents/test_grants.py` y `npm run test:contracts`. Si cambias una regla, cámbiala en los dos y añade su caso.
+- Nunca registres un agente de prueba en `AGENT_GRANTS`: entraría en la tabla que incrusta el núcleo. Los agentes de prueba (T7, T8) se registran solo dentro de las pruebas.
 - Pide lo mínimo: si tu agente no lee el sitio, no declares `wp/{site_id}/token`.
-- **Cualquier cambio en `agent-grants.json` requiere revisión de `revisor-seguridad`** (casilla en la plantilla de PR). Commitea el archivo generado con el cambio; la CI falla si no está al día.
+- **Cualquier cambio en `agent-grants.json` requiere revisión de `revisor-seguridad`** (casilla en la plantilla de PR). Commitea el archivo generado con el cambio; la CI falla si no está al día. `tests/test_contracts.py` fija la tabla exacta: actualízala en el mismo PR.
 
 ## 2. Estado y `RunContext`
 

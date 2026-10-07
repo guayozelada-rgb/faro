@@ -1,0 +1,1175 @@
+{
+  "description": "Vectores compartidos de agent-grants.json (ADR 0014 §1): los usan scripts/generate-contracts.test.mjs y apps/engine/tests/agents/test_grants.py. Si cambias una regla, cámbiala en los dos y actualiza estos casos.",
+  "version": 1,
+  "rules": {
+    "access": ["get"],
+    "kind_pattern": "^[a-z][a-z0-9_]{1,47}$",
+    "max_grant_seconds": 900,
+    "min_grant_seconds": 60,
+    "templates": [
+      "llm/anthropic/default",
+      "llm/gemini/default",
+      "llm/openai/default",
+      "wp/{site_id}/token"
+    ]
+  },
+  "valid": [
+    {
+      "name": "registro vacío",
+      "input": [],
+      "expected": []
+    },
+    {
+      "name": "site_summary con sus cuatro referencias (secrets se ordenan por ref)",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            },
+            {
+              "ref": "llm/openai/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "llm/gemini/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "llm/gemini/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "llm/openai/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "varios agentes se ordenan por kind; límites 60 y 900",
+      "input": [
+        {
+          "kind": "zeta",
+          "requires_site": false,
+          "max_grant_seconds": 60,
+          "secrets": [
+            {
+              "ref": "llm/openai/default",
+              "access": ["get"]
+            }
+          ]
+        },
+        {
+          "kind": "alfa",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": []
+        }
+      ],
+      "expected": [
+        {
+          "kind": "alfa",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": []
+        },
+        {
+          "kind": "zeta",
+          "requires_site": false,
+          "max_grant_seconds": 60,
+          "secrets": [
+            {
+              "ref": "llm/openai/default",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind de 2 y de 48 caracteres; sitio requerido sin token del sitio",
+      "input": [
+        {
+          "kind": "abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/gemini/default",
+              "access": ["get"]
+            }
+          ]
+        },
+        {
+          "kind": "ab",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": []
+        }
+      ],
+      "expected": [
+        {
+          "kind": "ab",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": []
+        },
+        {
+          "kind": "abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/gemini/default",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "invalid": [
+    {
+      "name": "la tabla no es una lista",
+      "rule": "shape",
+      "input": {}
+    },
+    {
+      "name": "una entrada no es un objeto",
+      "rule": "shape",
+      "input": ["site_summary"]
+    },
+    {
+      "name": "access [\"set\"]",
+      "rule": "access",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["set"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "access [\"create\"]",
+      "rule": "access",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["create"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "access [\"delete\"]",
+      "rule": "access",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["delete"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "access [\"get\",\"set\"]",
+      "rule": "access",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get", "set"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "access [\"get\",\"delete\"]",
+      "rule": "access",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get", "delete"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "access []",
+      "rule": "access",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/{site_id}/token",
+              "access": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "access [\"get\",\"get\"]",
+      "rule": "access",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get", "get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "access [\"read\"]",
+      "rule": "access",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["read"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "access \"get\"",
+      "rule": "access",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/{site_id}/token",
+              "access": "get"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "access null",
+      "rule": "access",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/{site_id}/token",
+              "access": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "llm con set",
+      "rule": "access",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["set"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ref db/{site_id}/key",
+      "rule": "db",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "db/{site_id}/key",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ref db/0192a6e2-6b9c-7c2e-9f1a-0a1b2c3d4e5f/key",
+      "rule": "db",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "db/0192a6e2-6b9c-7c2e-9f1a-0a1b2c3d4e5f/key",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ref oauth/google/{account}",
+      "rule": "oauth",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "oauth/google/{account}",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ref oauth/google/1234567890",
+      "rule": "oauth",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "oauth/google/1234567890",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ref \"llm/anthropic/trabajo\"",
+      "rule": "template",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/trabajo",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ref \"llm/mistral/default\"",
+      "rule": "template",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/mistral/default",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ref \"llm/{provider}/default\"",
+      "rule": "template",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/{provider}/default",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ref \"wp/{new}/token\"",
+      "rule": "template",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/{new}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ref \"wp/{id}/token\"",
+      "rule": "template",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/{id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ref \"wp/0192a6e2-6b9c-7c2e-9f1a-0a1b2c3d4e5f/token\"",
+      "rule": "template",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/0192a6e2-6b9c-7c2e-9f1a-0a1b2c3d4e5f/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ref \"wp/{site_id}/hmac\"",
+      "rule": "template",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/{site_id}/hmac",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ref \"llm/anthropic/default\\n\"",
+      "rule": "template",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default\n",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ref \"\"",
+      "rule": "template",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ref 7",
+      "rule": "template",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": 7,
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "max_grant_seconds 59",
+      "rule": "max_grant_seconds",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 59,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "max_grant_seconds 901",
+      "rule": "max_grant_seconds",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 901,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "max_grant_seconds 0",
+      "rule": "max_grant_seconds",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 0,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "max_grant_seconds -1",
+      "rule": "max_grant_seconds",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": -1,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "max_grant_seconds 900.5",
+      "rule": "max_grant_seconds",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900.5,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "max_grant_seconds \"900\"",
+      "rule": "max_grant_seconds",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": "900",
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "max_grant_seconds true",
+      "rule": "max_grant_seconds",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": true,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "max_grant_seconds null",
+      "rule": "max_grant_seconds",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": null,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind \"Site\"",
+      "rule": "kind",
+      "input": [
+        {
+          "kind": "Site",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind \"a\"",
+      "rule": "kind",
+      "input": [
+        {
+          "kind": "a",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind \"1abc\"",
+      "rule": "kind",
+      "input": [
+        {
+          "kind": "1abc",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind \"abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"",
+      "rule": "kind",
+      "input": [
+        {
+          "kind": "abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind \"site-summary\"",
+      "rule": "kind",
+      "input": [
+        {
+          "kind": "site-summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind \"site_summary\\n\"",
+      "rule": "kind",
+      "input": [
+        {
+          "kind": "site_summary\n",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind \"\"",
+      "rule": "kind",
+      "input": [
+        {
+          "kind": "",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind 7",
+      "rule": "kind",
+      "input": [
+        {
+          "kind": 7,
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind null",
+      "rule": "kind",
+      "input": [
+        {
+          "kind": null,
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "requires_site \"true\"",
+      "rule": "requires_site",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": "true",
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "requires_site 1",
+      "rule": "requires_site",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": 1,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "requires_site null",
+      "rule": "requires_site",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": null,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "campo desconocido en el agente",
+      "rule": "unknown_field",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ],
+          "version": 1
+        }
+      ]
+    },
+    {
+      "name": "campo desconocido en un secreto",
+      "rule": "unknown_field",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"],
+              "ttl": 5
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "falta secrets",
+      "rule": "missing_field",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900
+        }
+      ]
+    },
+    {
+      "name": "falta access",
+      "rule": "missing_field",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "wp/{site_id}/token"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "secrets no es una lista",
+      "rule": "shape",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": {}
+        }
+      ]
+    },
+    {
+      "name": "un secreto no es un objeto",
+      "rule": "shape",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": ["wp/{site_id}/token"]
+        }
+      ]
+    },
+    {
+      "name": "ref repetida",
+      "rule": "duplicate_ref",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/openai/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "llm/openai/default",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kind repetido",
+      "rule": "duplicate_kind",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        },
+        {
+          "kind": "site_summary",
+          "requires_site": true,
+          "max_grant_seconds": 900,
+          "secrets": []
+        }
+      ]
+    },
+    {
+      "name": "token del sitio sin requires_site",
+      "rule": "site_token_without_site",
+      "input": [
+        {
+          "kind": "site_summary",
+          "requires_site": false,
+          "max_grant_seconds": 900,
+          "secrets": [
+            {
+              "ref": "llm/anthropic/default",
+              "access": ["get"]
+            },
+            {
+              "ref": "wp/{site_id}/token",
+              "access": ["get"]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

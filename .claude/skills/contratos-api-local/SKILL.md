@@ -52,7 +52,8 @@ React → api.call("listSiteContent", { path: { site_id }, query: { kind } })
 3. **Regenerar contratos**: `npm run contracts` en la raíz. Hace:
    - exportar `openapi.json` del motor,
    - `openapi-typescript` → `packages/shared/engine.d.ts`,
-   - generar `packages/shared/engine-operations.json` (lista permitida: `operationId`, método, ruta, `timeout_seconds` y `secrets`), validando los metadatos de cada operación.
+   - generar `packages/shared/engine-operations.json` (lista permitida: `operationId`, método, ruta, `timeout_seconds` y `secrets`), validando los metadatos de cada operación,
+   - exportar el registro de agentes (`python -m faro_engine.export_agents`) y generar `packages/shared/agent-grants.json` (ver "Concesiones de los agentes" abajo).
 4. **Commit** de los archivos generados junto con el cambio. CI falla si están desactualizados.
 5. **Consumir** en React con el cliente tipado:
    ```ts
@@ -124,6 +125,33 @@ Reglas (las comprueban `create_app` al arrancar el motor, `scripts/generate-cont
 Se guarda en el orden canónico `get`, `create`, `set`, `delete`; `secrets` se ordena por `ref`. Una `ref` no puede aparecer dos veces. La tabla vive en `ACCESS_BY_KIND` de `core/operations.py` y de `scripts/generate-contracts.mjs`: cámbiala en los dos a la vez.
 - Pide el mínimo: una operación con `secrets=[]` no obtiene ningún secreto aunque el motor lo pida. **Cualquier cambio en `secrets` requiere revisión de `revisor-seguridad`** (la plantilla de PR lo recuerda desde T10).
 - `wp/{site_id}/token` solo se concede si el sitio está en el índice de sitios del perfil activo del núcleo; `{new}` añade el sitio a ese índice al crear su secreto (skill `llavero-y-cifrado`).
+
+## Concesiones de los agentes (`agent-grants.json`, ADR 0014 §1)
+
+Las tareas de agentes no piden secretos por `engine_call`: el motor pide una **concesión por ejecución** (`run_grant_request`) y el núcleo decide con `packages/shared/agent-grants.json`, generado por `npm run contracts` e incrustado al compilar (la prueba del núcleo llega en F1b T5).
+
+```json
+[
+  {
+    "kind": "site_summary",
+    "max_grant_seconds": 900,
+    "requires_site": true,
+    "secrets": [
+      { "access": ["get"], "ref": "llm/anthropic/default" },
+      { "access": ["get"], "ref": "llm/gemini/default" },
+      { "access": ["get"], "ref": "llm/openai/default" },
+      { "access": ["get"], "ref": "wp/{site_id}/token" }
+    ]
+  }
+]
+```
+
+(Forma prevista para T9. En T3 el registro está vacío y el archivo es `[]`.)
+
+- Origen: `faro_engine/agents/registry.py` → `faro_engine/export_agents.py` → `scripts/generate-contracts.mjs` (`buildAgentGrants`), que vuelve a validar y escribe el archivo ordenado por `kind`, `secrets` por `ref`, claves ordenadas, determinista.
+- Reglas (`faro_engine/agents/grants.py` al arrancar el motor, el generador y el núcleo): `access` exactamente `["get"]`; `ref` solo `llm/anthropic/default`, `llm/openai/default`, `llm/gemini/default` o `wp/{site_id}/token` (`db/*`, `oauth/*`, `wp/{new}/token`, alias distintos de `default` y cualquier otra, rechazadas); `wp/{site_id}/token` exige `requires_site: true`; `max_grant_seconds` entero entre 60 y 900; `kind` `^[a-z][a-z0-9_]{1,47}$` y único; forma cerrada (sin campos de más) y sin `ref` repetidas.
+- Paridad: los vectores de `packages/shared/fixtures/agent-grants-cases.json` los ejecutan `npm run test:contracts` y `apps/engine/tests/agents/test_grants.py`; cada caso inválido declara la regla (`rule`) con la que deben fallar los dos. Cambia una regla en los dos lados a la vez y añade su caso.
+- **Cualquier cambio de `agent-grants.json` requiere revisión de `revisor-seguridad`** (casilla en la plantilla de PR). La CI (trabajo `contracts`) falla si no está al día.
 
 ## Reglas
 - Nunca devuelvas secretos en una respuesta; para claves usa `KeySummary` (`provider`, `alias`, `last4`, `status`, `last_used_at`).
