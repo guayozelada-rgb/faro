@@ -17,7 +17,14 @@ from faro_engine.core.db.database import Database, get_db, open_profile_database
 from faro_engine.core.db.migrations import Migration, load_migrations
 from faro_engine.core.db.profile import backups_dir, profile_db_path
 from faro_engine.core.operations import faro_operation
-from tests.db.helpers import OTHER_KEY_HEX, TEST_PROFILE_ID, key, open_db, tables
+from tests.db.helpers import (
+    OTHER_KEY_HEX,
+    TEST_PROFILE_ID,
+    key,
+    load_fixture,
+    open_db,
+    tables,
+)
 
 NOW = datetime(2026, 9, 30, 12, 0, 0, tzinfo=UTC)
 
@@ -79,15 +86,46 @@ def test_pending_migration_makes_encrypted_backup_first(tmp_path: Path) -> None:
     finally:
         db.close()
 
+    latest = len(load_migrations())
     copies = backups.list_backups(backups_dir(tmp_path), TEST_PROFILE_ID)
-    assert [path.name for path in copies] == [f"{TEST_PROFILE_ID}-v0001-20260930T120000Z.db"]
+    assert [path.name for path in copies] == [
+        f"{TEST_PROFILE_ID}-v{latest:04d}-20260930T120000Z.db"
+    ]
     assert not copies[0].read_bytes().startswith(b"SQLite format 3\x00")
-    old = open_db(copies[0])  # la copia se abre con la misma llave y está en la versión 1
+    old = open_db(copies[0])  # la copia se abre con la misma llave y está en la versión previa
     try:
         assert "futura" not in tables(old)
-        assert old.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == 1
+        assert old.execute("SELECT max(version) FROM schema_migrations").fetchone()[0] == latest
     finally:
         old.close()
+
+
+def test_f1a_database_upgrades_to_0002_and_f1a_app_still_opens_it(tmp_path: Path) -> None:
+    f1a_known = load_migrations()[:1]
+    _open(tmp_path, f1a_known).close()  # base creada por una app de F1a
+    conn = open_db(profile_db_path(tmp_path, TEST_PROFILE_ID))
+    load_fixture(conn, "v0001.sql")
+    conn.close()
+
+    db = _open(tmp_path)  # la app de F1b migra (copia previa en la versión 1)
+    try:
+        assert db.status == database.DatabaseStatus("ready")
+        assert {"agent_runs", "approvals", "settings"} <= db.run_sync(tables)
+    finally:
+        db.close()
+    copies = backups.list_backups(backups_dir(tmp_path), TEST_PROFILE_ID)
+    assert [path.name for path in copies] == [f"{TEST_PROFILE_ID}-v0001-20260930T120000Z.db"]
+
+    old_app = _open(tmp_path, f1a_known)  # volver a F1a: abre sin migrar ni copiar
+    try:
+        assert old_app.status == database.DatabaseStatus("ready", newer_schema=True)
+        count = old_app.run_sync(
+            lambda c: int(c.execute("SELECT count(*) FROM site_connections").fetchone()[0])
+        )
+        assert count == 1
+    finally:
+        old_app.close()
+    assert len(backups.list_backups(backups_dir(tmp_path), TEST_PROFILE_ID)) == 1
 
 
 def test_backup_failure_is_migration_failed_and_keeps_version(

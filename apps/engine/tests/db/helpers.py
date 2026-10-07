@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from faro_engine.core.db.connection import Connection, open_encrypted
+from faro_engine.core.db.migrations import split_statements
 
 TEST_PROFILE_ID = "01920000-0000-7000-8000-000000000001"
 TEST_KEY_HEX = "00" * 32
@@ -47,3 +48,20 @@ DB_KEY_ERROR_LINE = (
     ).encode("ascii")
     + b"\n"
 )
+
+
+FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "db"
+
+
+def load_fixture(conn: Connection, name: str) -> None:
+    """Carga `tests/fixtures/db/<name>` sentencia a sentencia (sin `executescript`)."""
+    for statement in split_statements((FIXTURES_DIR / name).read_text(encoding="utf-8")):
+        conn.execute(statement)
+
+
+def insert_row(conn: Connection, table: str, values: dict[str, object]) -> None:
+    """INSERT de prueba con nombres de columna fijos del propio test."""
+    columns = ", ".join(values)
+    marks = ", ".join("?" for _ in values)
+    sql = f"INSERT INTO {table} ({columns}) VALUES ({marks})"  # noqa: S608 - nombres del test
+    conn.execute(sql, tuple(values.values()))

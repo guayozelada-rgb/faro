@@ -15,6 +15,10 @@ from fastapi import Request
 
 from faro_engine.core.app import create_app
 from faro_engine.core.audit import (
+    ACTION_DETAIL_KEYS,
+    CORE_ACTIONS,
+    DETAIL_KEYS,
+    ENGINE_ACTIONS,
     AuditEvent,
     AuditLog,
     InvalidAuditEventError,
@@ -240,3 +244,132 @@ def test_app_exposes_audit_log(settings: Settings) -> None:
     request = cast(Request, SimpleNamespace(app=app))
     assert get_audit(request) is app.state.audit
     assert isinstance(get_audit(request), AuditLog)
+
+
+# --- F1b (spec §5.1 y §6) ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("action", "details"),
+    [
+        ("autonomy.changed", {"agent_kind": "site_summary", "site_id": SITE_ID, "level": "2"}),
+        ("approval.decided", {"approval_id": RUN_ID, "decision": "approve"}),
+        ("approval.executed", {"approval_id": RUN_ID, "agent_kind": "site_summary"}),
+        ("llm.limit_changed", {"provider": "anthropic"}),
+        ("llm.preference_changed", {"provider": "openai"}),
+    ],
+)
+async def test_engine_records_f1b_actions(
+    db: Database, action: str, details: dict[str, str]
+) -> None:
+    assert await AuditLog(db).record(action=action, result="ok", details=details)
+    [row] = _rows(db)
+    assert row[3] == action
+    assert json.loads(row[7]) == details
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "agents.paused",
+        "agents.resumed",
+        "agent.grant_issued",
+        "agent.grant_denied",
+        "agent.grant_released",
+    ],
+)
+def test_core_sends_agent_actions(db: Database, action: str) -> None:
+    event = core_event(
+        action=action,
+        secret_ref=None,
+        actor="user" if action.startswith("agents.") else "system",
+        details={"operation": "agent:site_summary", "agent_kind": "site_summary"},
+    )
+    assert AuditLog(db).record_core_event(event)
+    [row] = _rows(db)
+    assert row[3] == action
+
+
+def test_f1b_actions_keep_their_origin() -> None:
+    # Las acciones del motor no llegan por stdin y las del núcleo no las registra el motor.
+    with pytest.raises(InvalidAuditEventError) as excinfo:
+        parse_core_event(core_event(action="approval.decided"))
+    assert excinfo.value.field == "action"
+
+
+async def test_engine_rejects_core_agent_actions(db: Database) -> None:
+    with pytest.raises(InvalidAuditEventError):
+        await AuditLog(db).record(action="agent.grant_issued", result="ok")
+
+
+@pytest.mark.parametrize("value", ["", "a" * 65, "con espacio", "T" * 43])
+def test_f1b_detail_values_are_validated(value: str) -> None:
+    with pytest.raises(InvalidAuditEventError):
+        parse_core_event(core_event(details={"agent_kind": value}))
+
+
+# --- Claves de `details` por acción (revisión de T4) ---------------------------------
+
+
+def test_action_detail_keys_belong_to_engine_actions_only() -> None:
+    assert set(ACTION_DETAIL_KEYS) <= ENGINE_ACTIONS
+    assert not set(ACTION_DETAIL_KEYS) & CORE_ACTIONS
+    engine_only = set().union(*ACTION_DETAIL_KEYS.values())
+    assert engine_only == {"approval_id", "decision", "level"}
+    assert not engine_only & DETAIL_KEYS
+
+
+@pytest.mark.parametrize(
+    "details",
+    [{"approval_id": RUN_ID}, {"decision": "approve"}, {"level": "2"}],
+)
+@pytest.mark.parametrize("action", ["secret.used", "agents.paused", "agent.grant_issued"])
+def test_core_events_cannot_carry_engine_only_keys(action: str, details: dict[str, str]) -> None:
+    with pytest.raises(InvalidAuditEventError) as excinfo:
+        parse_core_event(core_event(action=action, details=details))
+    assert excinfo.value.field == "details"
+
+
+@pytest.mark.parametrize(
+    ("action", "details"),
+    [
+        # Cada clave solo en su acción.
+        ("site.connected", {"approval_id": RUN_ID}),
+        ("llm.limit_changed", {"level": "1"}),
+        ("autonomy.changed", {"decision": "approve"}),
+        ("autonomy.changed", {"approval_id": RUN_ID}),
+        ("approval.executed", {"decision": "approve"}),
+        ("approval.decided", {"level": "1"}),
+        # Valores fuera de su forma.
+        ("approval.decided", {"decision": "approved"}),
+        ("approval.decided", {"decision": "APPROVE"}),
+        ("autonomy.changed", {"level": "4"}),
+        ("autonomy.changed", {"level": "-1"}),
+        ("autonomy.changed", {"level": "01"}),
+        ("approval.decided", {"approval_id": "ap-1"}),
+        ("approval.executed", {"approval_id": RUN_ID.upper()}),
+    ],
+)
+async def test_engine_only_keys_are_checked_per_action(
+    db: Database, action: str, details: dict[str, str]
+) -> None:
+    with pytest.raises(InvalidAuditEventError) as excinfo:
+        await AuditLog(db).record(action=action, result="ok", details=details)
+    assert excinfo.value.field == "details"
+    assert _rows(db) == []
+
+
+@pytest.mark.parametrize(
+    ("action", "details"),
+    [
+        ("approval.decided", {"approval_id": RUN_ID, "decision": "reject"}),
+        ("autonomy.changed", {"level": "0"}),
+        ("autonomy.changed", {"level": "3"}),
+    ],
+)
+async def test_engine_only_keys_accept_their_values(
+    db: Database, action: str, details: dict[str, str]
+) -> None:
+    assert await AuditLog(db).record(action=action, result="ok", details=details)
+    [row] = _rows(db)
+    assert json.loads(row[7]) == details
