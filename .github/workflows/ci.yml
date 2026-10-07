@@ -156,7 +156,7 @@ jobs:
 
       # Cobertura de Rust (spec F1a §4.6, T10). Versión fijada; el binario lo descarga
       # install-action y comprueba su checksum.
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-llvm-cov@0.9.1
 
@@ -499,7 +499,7 @@ jobs:
       - name: npm audit (dependencias de producción, nivel alto o crítico)
         run: npm audit --omit=dev --audit-level=high
 
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-audit@0.22.2
 
