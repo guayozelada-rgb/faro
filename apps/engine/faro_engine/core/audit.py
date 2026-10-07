@@ -20,9 +20,13 @@ Dos orígenes, una tabla:
 Validación común: `actor` ∈ `user`, `agent`, `system`; `result` ∈ `ok`, `denied`,
 `error`; `secret_ref` con la gramática del llavero; `run_id` UUID; `details` solo con
 las claves `site_id`, `operation`, `provider`, `op`, `reason`, `error_code` (F1a) y
-`agent_kind`, `approval_id`, `level`, `decision` (F1b), con valores de
-texto de 1 a 64 caracteres `[A-Za-z0-9._:/-]` que no tengan forma de secreto (filtro de
-ADR 0013). Nunca se guarda un valor de un secreto ni `last4`.
+`agent_kind` (F1b) en cualquier acción, más las de `ACTION_DETAIL_KEYS` solo en su acción
+del motor (`level` en `autonomy.changed`; `approval_id` en `approval.*`; `decision` en
+`approval.decided`), nunca en un evento del núcleo. Valores de texto de 1 a 64
+caracteres `[A-Za-z0-9._:/-]` que no tengan forma de secreto (filtro de ADR 0013) y, para
+esas claves, su forma exacta (`DETAIL_VALUE_PATTERNS`: `decision` ∈ `approve`, `reject`;
+`level` de `0` a `3`; `approval_id` UUID). Nunca se guarda un valor de un secreto ni
+`last4`.
 
 La fila guarda `occurred_at` normalizado a UTC con milisegundos (`…T12:00:00.123Z`),
 `id` = UUID v7 nuevo y `details` como JSON compacto con las claves ordenadas.
@@ -44,7 +48,7 @@ from faro_engine.core.db.connection import Connection, DatabaseError, DbUnavaila
 from faro_engine.core.db.database import Database
 from faro_engine.core.ids import new_id
 from faro_engine.core.redact import redact_values
-from faro_engine.core.run_id import current_run_id, is_valid_run_id
+from faro_engine.core.run_id import RUN_ID_PATTERN, current_run_id, is_valid_run_id
 from faro_engine.core.secrets import is_valid_secret_ref
 
 log = structlog.get_logger(__name__)
@@ -86,6 +90,7 @@ ENGINE_ACTIONS: Final = frozenset(
         "llm.preference_changed",
     },
 )
+# Claves de `details` que admite cualquier acción (núcleo y motor).
 DETAIL_KEYS: Final = frozenset(
     {
         "site_id",
@@ -96,12 +101,21 @@ DETAIL_KEYS: Final = frozenset(
         "error_code",
         # F1b §6.
         "agent_kind",
-        "approval_id",
-        "level",
-        "decision",
     },
 )
+# Claves que solo admite una acción concreta del motor (F1b §6); nunca llegan del núcleo.
+ACTION_DETAIL_KEYS: Final[Mapping[str, frozenset[str]]] = {
+    "autonomy.changed": frozenset({"level"}),
+    "approval.decided": frozenset({"approval_id", "decision"}),
+    "approval.executed": frozenset({"approval_id"}),
+}
 DETAIL_VALUE_PATTERN: Final = re.compile(r"[A-Za-z0-9._:/-]{1,64}")
+# Forma exacta del valor de las claves que la tienen.
+DETAIL_VALUE_PATTERNS: Final[Mapping[str, re.Pattern[str]]] = {
+    "decision": re.compile(r"approve|reject"),
+    "level": re.compile(r"[0-3]"),
+    "approval_id": RUN_ID_PATTERN,
+}
 # RFC 3339 en UTC con `Z` y de 0 a 9 decimales.
 OCCURRED_AT_PATTERN: Final = re.compile(
     r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z",
@@ -142,18 +156,22 @@ def parse_occurred_at(value: object) -> str:
     return format_timestamp(moment)
 
 
-def validate_details(details: object) -> dict[str, str]:
+def validate_details(details: object, action: str) -> dict[str, str]:
+    """Claves comunes más las propias de `action` (`ACTION_DETAIL_KEYS`)."""
     if details is None:
         return {}
     if not isinstance(details, Mapping):
         raise InvalidAuditEventError("details")
+    allowed = DETAIL_KEYS | ACTION_DETAIL_KEYS.get(action, frozenset())
     clean: dict[str, str] = {}
     for key, value in details.items():
-        if key not in DETAIL_KEYS:
+        if key not in allowed:
             raise InvalidAuditEventError("details")
+        exact = DETAIL_VALUE_PATTERNS.get(key)
         if (
             not isinstance(value, str)
             or DETAIL_VALUE_PATTERN.fullmatch(value) is None
+            or (exact is not None and exact.fullmatch(value) is None)
             # Segunda defensa: nada con forma de secreto (p. ej. 43 base64url).
             or redact_values(value) != value
         ):
@@ -206,7 +224,7 @@ class AuditEvent:
             result=result,
             secret_ref=secret_ref if isinstance(secret_ref, str) else None,
             run_id=run_id if isinstance(run_id, str) else None,
-            details=validate_details(details),
+            details=validate_details(details, action),
         )
 
     def row(self, row_id: str) -> tuple[str, str, str, str, str | None, str | None, str, str]:
