@@ -173,6 +173,7 @@ def loopback_tls_intercepted() -> bool:
     leaf = issue(ca, SITE_NAME)
     with TlsServer(leaf) as server:
         probe = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        probe.minimum_version = ssl.TLSVersion.TLSv1_2
         probe.check_hostname = False
         probe.verify_mode = ssl.CERT_NONE  # solo para leer el certificado presentado
         with (
