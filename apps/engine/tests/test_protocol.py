@@ -9,6 +9,7 @@ import queue
 import secrets
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -225,6 +226,104 @@ def test_stdin_eof_stops_engine(spawn: Any) -> None:
     assert engine.remaining_stdout() == []
     assert "stdin_closed" in engine.stderr()  # sin --dev el EOF sigue apagando
     assert "engine.dev_stdin_eof_ignored" not in engine.stderr()
+
+
+# Un apagado ordenado tarda milisegundos; el forzado llega a los 10 s del protocolo.
+ORDERLY_SHUTDOWN_MAX = 5.0
+CLIENTS_THAT_DROP = 30
+
+
+def _wait_for_log_count(engine: Engine, event: str, count: int) -> None:
+    deadline = time.monotonic() + EXIT_TIMEOUT
+    while engine.stderr().count(event) < count:
+        assert time.monotonic() < deadline, f"menos de {count} {event} en stderr"
+        assert engine.proc.poll() is None, "el motor terminó antes de tiempo"
+        time.sleep(0.05)
+
+
+def _reset_on_close(sock: socket.socket) -> None:
+    """`close()` enviará RST en lugar de FIN (SO_LINGER activo con 0 s)."""
+    # `struct linger`: dos `u_short` en Windows, dos `int` en POSIX.
+    layout = "HH" if sys.platform == "win32" else "ii"
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack(layout, 1, 0))
+
+
+def _health_request(port: int, token: str) -> bytes:
+    return (
+        f"GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\n\r\n"
+    ).encode("ascii")
+
+
+def _shutdown_and_time(engine: Engine) -> float:
+    """Envía `shutdown` y devuelve cuánto tardó el proceso en salir (código 0)."""
+    engine.send(b'{"event":"shutdown"}\n')
+    started = time.monotonic()
+    # Más margen que el plazo forzado (10 s): si se agota, el fallo dice cuánto tardó.
+    assert engine.proc.wait(timeout=EXIT_TIMEOUT + 5) == 0
+    return time.monotonic() - started
+
+
+def _assert_orderly(engine: Engine, elapsed: float) -> None:
+    logs = engine.stderr()
+    assert "engine.shutdown_forced" not in logs, f"apagado forzado tras {elapsed:.2f} s"
+    assert elapsed < ORDERLY_SHUTDOWN_MAX, f"el apagado tardó {elapsed:.2f} s"
+    assert "engine.stopped" in logs  # salió por el camino ordenado (base cerrada)
+
+
+def test_shutdown_is_orderly_after_clients_drop_mid_response(spawn: Any, tmp_path: Path) -> None:
+    """Clientes que cierran mientras el motor responde no bloquean el apagado.
+
+    Con el bucle IOCP de Windows (Python 3.12), responder a un cliente que ya cerró hace
+    que `sock.shutdown()` lance WinError 10054 antes de `server._detach()`:
+    `Server.wait_closed()` no volvía nunca y el apagado acababa forzado a los 10 s
+    (fallo intermitente de `engine_real` en la CI de Windows).
+    """
+    token = secrets.token_urlsafe(32)
+    data_dir = tmp_path / "data"
+    engine = spawn("--data-dir", str(data_dir))
+    engine.send(token.encode("ascii") + b"\n" + db_key_line())
+    port = engine.ready()["port"]
+    engine.send(_audit_line())
+
+    for _ in range(CLIENTS_THAT_DROP):
+        with socket.create_connection(("127.0.0.1", port), timeout=5.0) as client:
+            client.sendall(_health_request(port, token))
+        # Cierra sin leer: el motor escribe la respuesta sobre una conexión ya cerrada.
+    _wait_for_log_count(engine, '"http.request"', CLIENTS_THAT_DROP)
+    with _http(port) as http:
+        assert http.get("/health", headers={"Authorization": f"Bearer {token}"}).is_success
+
+    elapsed = _shutdown_and_time(engine)
+    _assert_orderly(engine, elapsed)
+    # Garantías del apagado ordenado: la auditoría quedó escrita en la base.
+    conn = open_db(profile_db_path(data_dir, TEST_PROFILE_ID))
+    try:
+        assert conn.execute("SELECT count(*) FROM audit_log").fetchone() == (1,)
+    finally:
+        conn.close()
+
+
+def test_engine_keeps_accepting_after_clients_reset_before_accept(spawn: Any) -> None:
+    """Una conexión cortada con RST nada más abrirse no deja al motor sin escuchar.
+
+    Con el bucle IOCP de Windows (Python 3.12), WinError 64 en el `accept` cerraba el
+    socket de escucha y el motor dejaba de aceptar conexiones.
+    """
+    token = secrets.token_urlsafe(32)
+    engine = spawn()
+    engine.send(token.encode("ascii") + b"\n" + DB_KEY_ERROR_LINE)
+    port = engine.ready()["port"]
+
+    for _ in range(CLIENTS_THAT_DROP):
+        client = socket.create_connection(("127.0.0.1", port), timeout=5.0)
+        _reset_on_close(client)
+        client.close()
+    for _ in range(3):  # conexiones nuevas, después de los RST
+        with _http(port) as http:
+            assert http.get("/health", headers={"Authorization": f"Bearer {token}"}).is_success
+
+    elapsed = _shutdown_and_time(engine)
+    _assert_orderly(engine, elapsed)
 
 
 def _dev_command(env_file: Path) -> list[str]:

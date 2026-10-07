@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -231,6 +232,15 @@ def test_open_socket_listens_on_loopback() -> None:
         assert port > 0
     finally:
         sock.close()
+
+
+def test_serve_loop_factory_uses_selectors_on_every_platform() -> None:
+    # En Windows, el bucle IOCP bloqueaba el apagado ordenado (ver `test_protocol.py`).
+    loop = entry.serve_loop_factory()
+    try:
+        assert isinstance(loop, asyncio.SelectorEventLoop)
+    finally:
+        loop.close()
 
 
 def _server() -> uvicorn.Server:

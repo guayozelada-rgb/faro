@@ -12,7 +12,8 @@ Protocolo (spec F0 §4.4, skill `tauri-sidecar-python`, ADR 0004):
 4. Abre la base del perfil y aplica migraciones (ADR 0009 §4). Si falla, sigue con la base
    no disponible (lo informa `/health`); nunca sale por eso. La llave se sobrescribe.
 5. Abre el socket, escribe una sola línea `ready` en stdout y hace flush.
-6. Sirve con uvicorn sobre ese socket (sin access log). Mientras sirve, el hilo de stdin
+6. Sirve con uvicorn sobre ese socket (sin access log), siempre en un bucle de selectores
+   (`serve_loop_factory`, también en Windows). Mientras sirve, el hilo de stdin
    reparte `secret_response` (al cliente del canal de secretos) y `audit` (a `audit_log`),
    y las rutas escriben `secret_request` en stdout por el mismo `ProtocolWriter` que
    `ready` (ADR 0010). En `--dev` no hay canal: `engine.secrets_unavailable`.
@@ -254,6 +255,28 @@ def handle_stop_signals(controller: ShutdownController) -> Iterator[None]:
             signal.signal(sig, handler)
 
 
+def serve_loop_factory() -> asyncio.AbstractEventLoop:
+    """Bucle de eventos del servidor: de selectores en todos los sistemas.
+
+    En Linux y macOS ya es el de por defecto. En Windows el de por defecto es el de IOCP
+    (`ProactorEventLoop`), que en Python 3.12 tiene dos fallos con clientes que cortan la
+    conexión:
+
+    - Si el cliente cierra mientras el motor aún responde (p. ej. el núcleo deja de
+      esperar un `/health` o suelta un 401 sin leer el cuerpo), `sock.shutdown()` lanza
+      `ConnectionResetError` (WinError 10054) en `_call_connection_lost` antes de
+      `server._detach()`. El servidor de asyncio cree que esa conexión sigue abierta,
+      `Server.wait_closed()` no vuelve nunca, uvicorn no termina y el apagado ordenado
+      acaba forzado a los `SHUTDOWN_GRACE_SECONDS` (10 s, código 0).
+    - Si un cliente cancela la conexión antes de que termine el `accept`, WinError 64 hace
+      que asyncio cierre el socket de escucha: el motor deja de aceptar conexiones.
+
+    El bucle de selectores no tiene ninguno de los dos. Sus límites en Windows (sin
+    subprocesos de asyncio y hasta 512 sockets por `select`) no afectan a una API local.
+    """
+    return asyncio.SelectorEventLoop()
+
+
 def open_database(data_dir: Path | None, line: protocol.DbKeyLine) -> Database:
     """Base del perfil según la línea `db_key` (o su equivalente de `--dev`).
 
@@ -412,7 +435,7 @@ def run(
 
     try:
         with handle_stop_signals(controller):
-            asyncio.run(server.serve(sockets=[sock]))
+            asyncio.run(server.serve(sockets=[sock]), loop_factory=serve_loop_factory)
     finally:
         controller.cancel()
         sock.close()
