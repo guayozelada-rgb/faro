@@ -1,7 +1,8 @@
 """Tabla `approvals` (ADR 0016 §5, spec F1b §4.2 y §6).
 
 Estados: `pending` → `approved` | `rejected` | `expired` | `cancelled`; `approved` →
-`executed` | `failed`. Cada transición es un `UPDATE … WHERE status = ?`: decidir dos
+`executed` | `failed` | `cancelled` (la tarea se canceló antes de ejecutarla; ver
+`core/store/run_control.py`). Cada transición es un `UPDATE … WHERE status = ?`: decidir dos
 veces devuelve `False` y quien llama responde `approval.already_decided` (o
 `approval.expired` si ya venció). El ejecutor de acciones relee la fila con
 `get_approval_for_execution`, nunca confía en el estado del grafo.
@@ -32,6 +33,10 @@ APPROVAL_STATUSES: Final = frozenset(
 )
 SIDE_EFFECTS: Final = frozenset({"internal", "publish", "spend"})
 DECIDED_BY: Final = frozenset({"user", "rule"})
+# Clases de efecto que una regla de nivel 2 o 3 puede decidir sola en esta fase (ADR 0016
+# §2: en F1b solo `internal`). F4 (`publish`) y F5 (`spend`) la amplían con su propia
+# decisión del usuario y una migración que cambie el `CHECK` de `approvals`.
+RULE_DECIDABLE_SIDE_EFFECTS: Final = frozenset({"internal"})
 # Código con el que se cancela la tarea de una propuesta caducada (catálogo §5.5).
 APPROVAL_EXPIRED: Final = "approval.expired"
 
@@ -128,6 +133,12 @@ def _record(row: Sequence[Any] | None) -> ApprovalRecord | None:
     return None if row is None else ApprovalRecord(*row)
 
 
+def check_rule_decision(side_effect: str, decided_by: str | None) -> None:
+    """Una regla (`decided_by = rule`) solo decide las clases de efecto de esta fase."""
+    if decided_by == "rule" and side_effect not in RULE_DECIDABLE_SIDE_EFFECTS:
+        raise ValueError("una regla no puede decidir esta clase de efecto en esta fase")
+
+
 def insert_approval(
     conn: Connection,
     approval: NewApproval,
@@ -136,12 +147,14 @@ def insert_approval(
     decided_by: str | None = None,
 ) -> bool:
     """Crea la propuesta. `approved` solo para la sugerencia aceptada a mano (nivel 0) o una
-    regla de nivel 2 o 3, con `decided_by`. `False` si la `idempotency_key` ya existía."""
+    regla de nivel 2 o 3 (solo `RULE_DECIDABLE_SIDE_EFFECTS`), con `decided_by`. `False` si
+    la `idempotency_key` ya existía."""
     if approval.side_effect not in SIDE_EFFECTS:
         raise ValueError("clase de efecto desconocida")
     if status == "approved":
         if decided_by not in DECIDED_BY:
             raise ValueError("una aprobación ya decidida necesita decided_by")
+        check_rule_decision(approval.side_effect, decided_by)
     elif status != "pending" or decided_by is not None:
         raise ValueError("una propuesta nueva es pending sin decided_by")
     check_utc(approval.created_at, "created_at")
@@ -244,10 +257,17 @@ def decide_approval(
     decided_by: str = "user",
 ) -> bool:
     """`pending` (y sin vencer) → `approved` | `rejected`. `False` si ya se decidió, venció o
-    no existe; quien llama relee la fila para elegir el error."""
+    no existe; quien llama relee la fila para elegir el error. Una regla solo decide las
+    clases de efecto de `RULE_DECIDABLE_SIDE_EFFECTS` (`ValueError` si no)."""
     if decided_by not in DECIDED_BY:
         raise ValueError("decided_by desconocido")
     check_utc(now, "now")
+    if decided_by == "rule":
+        row = conn.execute(
+            "SELECT side_effect FROM approvals WHERE id = ?", (approval_id,)
+        ).fetchone()
+        if row is not None:
+            check_rule_decision(str(row[0]), decided_by)
     cursor = conn.execute(
         "UPDATE approvals SET status = ?, decided_by = ?, decided_at = ?, updated_at = ? "
         "WHERE id = ? AND status = 'pending' AND expires_at > ?",
@@ -284,6 +304,19 @@ def cancel_pending_approvals(conn: Connection, run_id: str, *, now: str) -> int:
     cursor = conn.execute(
         "UPDATE approvals SET status = 'cancelled', updated_at = ? "
         "WHERE run_id = ? AND status = 'pending'",
+        (now, run_id),
+    )
+    return int(cursor.rowcount)
+
+
+def cancel_open_approvals(conn: Connection, run_id: str, *, now: str) -> int:
+    """Al cancelar la tarea (`run_control.cancel_run`): sus propuestas `pending` y las
+    `approved` sin ejecutar → `cancelled`, para que el ejecutor nunca aplique la acción de
+    una tarea cancelada."""
+    cursor = conn.execute(
+        "UPDATE approvals SET status = 'cancelled', updated_at = ? "
+        "WHERE run_id = ? AND (status = 'pending' OR "
+        "(status = 'approved' AND executed_at IS NULL))",
         (now, run_id),
     )
     return int(cursor.rowcount)

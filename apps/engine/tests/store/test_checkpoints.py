@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from faro_engine.core.db.connection import Connection
 from faro_engine.core.store import checkpoints
 from faro_engine.core.store.checkpoints import CheckpointRow, WriteRow
@@ -91,3 +93,16 @@ def test_prune_keeps_latest_per_namespace(conn: Connection) -> None:
     assert checkpoints.list_writes(conn, "run-1", "sub", "cp-a") == []
     assert len(checkpoints.list_checkpoints(conn, "run-2")) == 1  # otro hilo intacto
     assert checkpoints.prune_checkpoints(conn, "run-1") == 0
+
+
+@pytest.mark.parametrize("kind", ["pickle", "msgpack", "bytes", "null", "JSON"])
+def test_only_json_is_stored(conn: Connection, kind: str) -> None:
+    add_run(conn)
+    with pytest.raises(ValueError, match="JSON"):
+        checkpoints.put_checkpoint(conn, _cp("cp-1", type=kind))
+    with pytest.raises(ValueError, match="JSON"):
+        checkpoints.put_writes(
+            conn, [_w("cp-1", "t", 0), WriteRow("run-1", "", "cp-1", "t", "", 1, "c", kind, b"")]
+        )
+    assert checkpoints.get_checkpoint(conn, "run-1") is None
+    assert checkpoints.list_writes(conn, "run-1", "", "cp-1") == []

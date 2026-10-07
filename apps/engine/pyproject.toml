@@ -140,6 +140,7 @@ strict_modules = [
     "faro_engine/core/store/settings.py",
     "faro_engine/core/store/site_summaries.py",
     "faro_engine/core/store/checkpoints.py",
+    "faro_engine/core/store/run_control.py",
 ]
 strict_fail_under = 95
 

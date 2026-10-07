@@ -249,3 +249,80 @@ def test_list_approvals_pages(conn: Connection) -> None:
     assert [a.id for a in approvals.list_approvals(conn, status="rejected").items] == ["ap-0"]
     with pytest.raises(ValueError, match="limit"):
         approvals.list_approvals(conn, limit=51)
+
+
+# --- Solo `internal` la decide una regla en F1b (ADR 0016 §2) -------------------------
+
+
+@pytest.mark.parametrize("side_effect", ["publish", "spend"])
+def test_rule_cannot_insert_approved_publish_or_spend(conn: Connection, side_effect: str) -> None:
+    add_run(conn)
+    assert frozenset({"internal"}) == approvals.RULE_DECIDABLE_SIDE_EFFECTS
+    with pytest.raises(ValueError, match="regla"):
+        approvals.insert_approval(
+            conn,
+            _approval(side_effect=side_effect, autonomy_level=3),
+            status="approved",
+            decided_by="rule",
+        )
+    assert approvals.get_approval(conn, "ap-1") is None
+    # El usuario sí puede (sugerencia aceptada a mano) y una propuesta pendiente también.
+    assert approvals.insert_approval(
+        conn,
+        _approval(side_effect=side_effect, autonomy_level=0),
+        status="approved",
+        decided_by="user",
+    )
+    assert approvals.insert_approval(conn, _approval("ap-2", side_effect=side_effect))
+
+
+def test_rule_can_insert_approved_internal(conn: Connection) -> None:
+    add_run(conn)
+    assert approvals.insert_approval(
+        conn, _approval(autonomy_level=3), status="approved", decided_by="rule"
+    )
+    record = approvals.get_approval_for_execution(conn, "ap-1")
+    assert record is not None
+    assert record.decided_by == "rule"
+
+
+@pytest.mark.parametrize("side_effect", ["publish", "spend"])
+def test_rule_cannot_decide_pending_publish_or_spend(conn: Connection, side_effect: str) -> None:
+    add_run(conn)
+    approvals.insert_approval(conn, _approval(side_effect=side_effect))
+    with pytest.raises(ValueError, match="regla"):
+        approvals.decide_approval(conn, "ap-1", decision="approve", now=T1, decided_by="rule")
+    record = approvals.get_approval(conn, "ap-1")
+    assert record is not None
+    assert (record.status, record.decided_by) == ("pending", None)
+    # Una regla que "rechaza" tampoco: no decide por el usuario en estas clases.
+    with pytest.raises(ValueError, match="regla"):
+        approvals.decide_approval(conn, "ap-1", decision="reject", now=T1, decided_by="rule")
+    assert approvals.decide_approval(conn, "ap-1", decision="approve", now=T1)
+    # Una regla sobre una propuesta que no existe: `False`, como cualquier otra decisión.
+    assert not approvals.decide_approval(
+        conn, "no-existe", decision="approve", now=T1, decided_by="rule"
+    )
+
+
+def test_cancel_open_approvals_includes_approved_not_executed(conn: Connection) -> None:
+    add_run(conn)
+    for approval_id in ("ap-1", "ap-2", "ap-3", "ap-4"):
+        approvals.insert_approval(conn, _approval(approval_id))
+    approvals.decide_approval(conn, "ap-2", decision="approve", now=T1)
+    approvals.decide_approval(conn, "ap-3", decision="approve", now=T1)
+    approvals.mark_approval_executed(conn, "ap-3", now=T1)
+    approvals.decide_approval(conn, "ap-4", decision="reject", now=T1)
+    assert approvals.cancel_open_approvals(conn, "run-1", now=T2) == 2
+    statuses = {}
+    for approval_id in ("ap-1", "ap-2", "ap-3", "ap-4"):
+        record = approvals.get_approval(conn, approval_id)
+        assert record is not None
+        statuses[approval_id] = record.status
+    assert statuses == {
+        "ap-1": "cancelled",
+        "ap-2": "cancelled",
+        "ap-3": "executed",
+        "ap-4": "rejected",
+    }
+    assert approvals.get_approval_for_execution(conn, "ap-2") is None

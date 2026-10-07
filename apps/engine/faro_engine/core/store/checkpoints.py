@@ -15,6 +15,11 @@ from typing import Any, Final
 from faro_engine.core.db.connection import Connection
 from faro_engine.core.store.common import atomic
 
+# Único `type` que se guarda (ADR 0015 §2: serializador solo JSON, nunca `pickle` ni
+# `msgpack`). La migración 0002 lo exige con un `CHECK`; al leer, el checkpointer de T8
+# rechaza cualquier otro valor con `agent.state_unreadable`.
+CHECKPOINT_TYPE: Final = "json"
+
 _CHECKPOINT_COLUMNS: Final = (
     "thread_id",
     "checkpoint_ns",
@@ -71,8 +76,14 @@ def _checkpoint(row: Sequence[Any]) -> CheckpointRow:
     )
 
 
+def _check_type(kind: str) -> None:
+    if kind != CHECKPOINT_TYPE:
+        raise ValueError("solo se guardan checkpoints serializados en JSON")
+
+
 def put_checkpoint(conn: Connection, row: CheckpointRow) -> None:
     """Guarda (o reemplaza, como LangGraph) un checkpoint."""
+    _check_type(row.type)
     marks = ", ".join("?" for _ in _CHECKPOINT_COLUMNS)
     conn.execute(
         f"INSERT OR REPLACE INTO agent_checkpoints ({', '.join(_CHECKPOINT_COLUMNS)}) "  # noqa: S608
@@ -128,6 +139,8 @@ def put_writes(conn: Connection, rows: Sequence[WriteRow], *, replace: bool = Tr
     verb = "INSERT OR REPLACE" if replace else "INSERT OR IGNORE"
     marks = ", ".join("?" for _ in _WRITE_COLUMNS)
     sql = f"{verb} INTO agent_checkpoint_writes ({', '.join(_WRITE_COLUMNS)}) VALUES ({marks})"
+    for row in rows:
+        _check_type(row.type)
     with atomic(conn):
         for row in rows:
             conn.execute(sql, tuple(getattr(row, column) for column in _WRITE_COLUMNS))

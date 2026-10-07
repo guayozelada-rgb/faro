@@ -32,10 +32,10 @@ def test_site_rule_overrides_general_rule(conn: Connection) -> None:
         site_id=SITE,
         level=0,
         now=T0,
-        limits={"per_day": 3},
+        limits={},
     )
     assert site.previous_level == 2
-    assert site.rule.limits == '{"per_day":3}'
+    assert site.rule.limits == "{}"
     assert rules.effective_level(conn, "site_summary", SITE) == 0
     assert rules.effective_level(conn, "site_summary", OTHER_SITE) == 2
     assert rules.effective_level(conn, "otro", SITE) == 1
@@ -74,3 +74,32 @@ def test_delete_only_site_rules(conn: Connection) -> None:
     assert rules.delete_site_rule(conn, "r-site") == "deleted"
     assert rules.delete_site_rule(conn, "r-site") == "not_found"
     assert rules.effective_level(conn, "site_summary", SITE) == 2
+
+
+@pytest.mark.parametrize("limits", [{"per_day": 3}, {"": None}])
+def test_limits_are_not_configurable_in_f1b(conn: Connection, limits: dict[str, object]) -> None:
+    assert rules.LIMITS_CONFIGURABLE is False
+    with pytest.raises(ValueError, match="límites"):
+        rules.set_rule(
+            conn,
+            rule_id="r",
+            agent_kind="site_summary",
+            site_id=None,
+            level=2,
+            now=T0,
+            limits=limits,
+        )
+    assert rules.list_rules(conn) == []
+    # `None` y vacío siguen valiendo: se guarda `{}`.
+    empty: list[dict[str, object] | None] = [None, {}]
+    for value in empty:
+        change = rules.set_rule(
+            conn,
+            rule_id="r",
+            agent_kind="site_summary",
+            site_id=None,
+            level=2,
+            now=T0,
+            limits=value,
+        )
+        assert change.rule.limits == "{}"

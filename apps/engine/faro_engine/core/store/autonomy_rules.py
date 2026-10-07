@@ -16,6 +16,9 @@ from faro_engine.core.db.connection import Connection
 from faro_engine.core.store.common import atomic, to_json
 
 DEFAULT_AUTONOMY_LEVEL: Final = 1
+# ADR 0016 (Consecuencias): en F1b ninguna acción tiene límites configurables del nivel 2.
+# Hasta que F4/F5 definan el esquema de `limits` por acción, solo se acepta vacío.
+LIMITS_CONFIGURABLE: Final = False
 MIN_LEVEL: Final = 0
 MAX_LEVEL: Final = 3
 
@@ -92,8 +95,13 @@ def set_rule(
     now: str,
     limits: Mapping[str, Any] | None = None,
 ) -> RuleChange:
-    """Crea o cambia la regla de (agente, sitio). `rule_id` solo se usa si es nueva."""
+    """Crea o cambia la regla de (agente, sitio). `rule_id` solo se usa si es nueva.
+
+    `limits` debe ser `None` o vacío mientras ninguna fase defina su esquema
+    (`LIMITS_CONFIGURABLE`)."""
     check_level(level)
+    if limits and not LIMITS_CONFIGURABLE:
+        raise ValueError("los límites de autonomía aún no son configurables")
     limits_json = to_json(limits or {})
     with atomic(conn):
         previous_level = effective_level(conn, agent_kind, site_id)
