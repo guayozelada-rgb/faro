@@ -29,3 +29,4 @@ apps/engine/.venv/
 packages/shared/openapi.json
 packages/shared/engine.d.ts
 packages/shared/engine-operations.json
+packages/shared/agent-grants.json
