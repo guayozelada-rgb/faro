@@ -110,3 +110,20 @@ Sustituye a la última frase del punto `{new}` de §3:
 ### E. Qué protegen las concesiones (y qué no)
 
 Las concesiones **no** protegen contra malware que ya corre con el usuario: en Windows, cualquier proceso del usuario puede leer las credenciales genéricas del Administrador de credenciales. Protegen contra **errores de lógica** del motor y contra el **abuso del motor** (por ejemplo, inyección de prompts en las tareas de agentes de F2, que intente leer o borrar el secreto de otro sitio u otra operación). Es una defensa en profundidad dentro de la app, no un límite frente al sistema operativo.
+
+## Actualización (2026-10-07, F1b T4): claves de auditoría por acción
+
+Amplía la validación de `details` de §4 para las acciones de F1b (spec F1b §6, ADR 0014 y 0016). Implementado en `apps/engine/faro_engine/core/audit.py`; el formato de la línea `audit` no cambia.
+
+- **Claves comunes** (`DETAIL_KEYS`), válidas en cualquier acción del núcleo o del motor: las de §4 (`site_id`, `operation`, `provider`, `op`, `reason`, `error_code`) más `agent_kind` (F1b).
+- **Claves propias de una acción** (`ACTION_DETAIL_KEYS`), válidas **solo** en esa acción y solo en eventos del motor:
+
+  | Acción (motor) | Claves propias |
+  | --- | --- |
+  | `autonomy.changed` | `level` |
+  | `approval.decided` | `approval_id`, `decision` |
+  | `approval.executed` | `approval_id` |
+
+  Las acciones del núcleo (`secret.*`, `agents.*`, `agent.grant_*`) no tienen claves propias: un evento del núcleo con `approval_id`, `decision` o `level` se descarta como inválido. Así un núcleo con un error, o un evento mal construido, no puede falsear una decisión de aprobación en el registro.
+- **Forma exacta** (`DETAIL_VALUE_PATTERNS`), además del patrón general (1 a 64 caracteres `[A-Za-z0-9._:/-]`) y del filtro de valores con forma de secreto (ADR 0013): `decision` ∈ `approve`, `reject`; `level` de `0` a `3`; `approval_id` UUID (mismo patrón que `run_id`).
+- Una clave nueva de `details` se añade aquí y en `core/audit.py` a la vez, con su lista de acciones y, si tiene un conjunto cerrado de valores, su forma exacta. Para el núcleo: `DetailKey` de Rust (`secrets/audit.rs`) puede añadir `agent_kind` para `agent.grant_*` y `agents.*`, pero nunca una clave de `ACTION_DETAIL_KEYS`.
