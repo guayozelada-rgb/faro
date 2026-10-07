@@ -292,7 +292,8 @@ core/jobs/  control.py    estado de agents_control (pausado hasta recibirlo) y p
 ```
 
 - **Arranque**: el trabajador, el programador y la recuperación arrancan con la app (hoy `uvicorn` usa `lifespan="off"`: se pasa a un `lifespan` de FastAPI o a tareas lanzadas en `run()`; T7 elige y lo documenta). Nada se ejecuta hasta recibir el primer `agents_control` con `paused = false`.
-- **Estados** (`agent_runs.status`): `queued` → `running` → `waiting_approval` | `paused` | `succeeded` | `failed` | `cancelled`; `waiting_approval` → `queued` (decisión) | `cancelled` (caducada); `paused` → `queued` (reanudar). Cada transición es un `UPDATE … WHERE status = ?` y emite `run_status`.
+- **Estados** (`agent_runs.status`): `queued` → `running` → `waiting_approval` | `paused` | `succeeded` | `failed` | `cancelled`; `waiting_approval` → `queued` (decisión: aprobar **o rechazar**) | `cancelled` (caducada o cancelada); `paused` → `queued` (reanudar). Cada transición es un `UPDATE … WHERE status = ?` y emite `run_status`.
+- **Decidir** (`decideApproval`, actualizado 2026-10-07): aprobar y rechazar hacen lo mismo con la tarea: la propuesta pasa a `approved` o `rejected` y la tarea a `queued` con prioridad de reanudada, en una transacción (`core/store/run_control.py::decide_and_requeue`). Al rechazar, el grafo se reanuda por su rama de rechazo (sin llamar al LLM ni ejecutar acciones) y la tarea termina `succeeded` con la propuesta `rejected` (ADR 0016, actualización B). Si la propuesta existe pero la tarea aún está `running` (entre el nodo que propone y el `interrupt`), no se cambia nada y T7 responde con un error que la interfaz puede reintentar.
 - **Encolar**: `startAgentRun` y el programador llaman al orquestador; como mucho **una** tarea `queued`/`running`/`paused` por (agente, sitio) (`agent.already_queued`). Prioridad: usuario (0) > reanudada (1) > programada o `catch_up` (2); dentro, por `created_at`.
 - **Trabajador** (uno):
   1. espera a que haya tarea y no haya pausa;
@@ -303,7 +304,7 @@ core/jobs/  control.py    estado de agents_control (pausado hasta recibirlo) y p
   6. `run_grant_release` siempre (en un `finally`) y evento `run_status`.
 - **Concesión caducada** a mitad de tarea: el `secret_request` falla con `vault.secret_not_allowed`; el trabajador pide una concesión nueva **una vez** y repite el paso; si vuelve a fallar, `failed` con `agent.grant_denied`.
 - **Pausa** (`agents_control` con `paused = true`): no se toma ninguna tarea; la que corre se detiene en el siguiente límite entre pasos (`StepRecorder`) y queda `paused` (`status_reason = 'agents_paused'`). **Reanudar**: las `paused` por `agents_paused` vuelven a `queued`.
-- **Cancelar** (`cancelAgentRun`): `queued`/`paused`/`waiting_approval` → `cancelled` al momento (la aprobación pendiente pasa a `cancelled`); `running` → se marca y se detiene en el siguiente límite.
+- **Cancelar** (`cancelAgentRun`, actualizado 2026-10-07): `queued`/`paused`/`waiting_approval` → `cancelled` al momento; `running` → se marca y el trabajador la detiene en el siguiente límite entre pasos. En los dos casos, `core/store/run_control.py::cancel_run` pasa a `cancelled`, en la misma transacción que la tarea, sus propuestas `pending` **y** las `approved` que aún no se ejecutaron (`approved → cancelled`, ADR 0016, actualización A): nunca queda una aprobación ejecutable colgada de una tarea cancelada.
 - **Apagado** (`shutdown`): se pide parar en el siguiente límite; lo que no termine en el plazo de gracia (10 s) se queda `running` y la recuperación del siguiente arranque lo pasa a `paused` (`interrupted`) y lo re-encola, salvo pausa global.
 - **Programador**: `schedules` es la fuente de verdad (cadencia `daily`/`weekly`, `time_local`, `weekday` con 0 = lunes, `timezone` IANA del sistema al crearla). Se reconstruye al arrancar y en cada alta, cambio o baja. Al dispararse: orquestador con `trigger = schedule`; se actualizan `last_run_at`, `last_run_id`, `next_run_at`. Con pausa global, el disparo crea la tarea igual (queda en cola hasta reanudar).
 - **Recuperación al abrir** (`catch_up`): 60 s después del primer `agents_control` sin pausa, cada programación activa con `next_run_at` < ahora encola **una** tarea `catch_up` (aunque se hayan perdido varias) y recalcula `next_run_at`. La tarea lleva `notice_ack_at = NULL` hasta que el usuario pulsa **Entendido**.
@@ -515,198 +516,38 @@ interface SiteSummaryOut { site_id: string; summary: SiteSummaryV1 | null; run_i
 
 ## 6. Datos
 
-Migración `0002_agents.sql`. Solo **agrega** tablas: el piso de compatibilidad sigue en **1** (`COMPATIBILITY_FLOORS = {1: 1, 2: 1}`), así una versión de F1a abre la base sin migrar (`newer_schema`). Fixture `tests/fixtures/db/v0002.sql` para la migración 3. Excepción consciente a "clave primaria `id`": las dos tablas de checkpoints usan la clave compuesta que espera LangGraph.
+Migración [`0002_agents.sql`](../../apps/engine/faro_engine/core/db/migrations/0002_agents.sql). Solo **agrega** tablas: el piso de compatibilidad sigue en **1** (`COMPATIBILITY_FLOORS = {1: 1, 2: 1}`), así una versión de F1a abre la base sin migrar (`newer_schema`). Fixture `tests/fixtures/db/v0002.sql` para la migración 3. Excepción consciente a "clave primaria `id`": las dos tablas de checkpoints usan la clave compuesta que espera LangGraph.
 
-```sql
-CREATE TABLE IF NOT EXISTS schedules (
-  id TEXT PRIMARY KEY,
-  agent_kind TEXT NOT NULL,
-  site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
-  cadence TEXT NOT NULL CHECK (cadence IN ('daily', 'weekly')),
-  weekday INTEGER CHECK (weekday BETWEEN 0 AND 6),           -- 0 = lunes
-  time_local TEXT NOT NULL,                                   -- 'HH:MM'
-  timezone TEXT NOT NULL,                                     -- IANA
-  enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
-  next_run_at TEXT NOT NULL,
-  last_run_at TEXT,
-  last_run_id TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  CHECK ((cadence = 'weekly') = (weekday IS NOT NULL))
-) STRICT;
-CREATE UNIQUE INDEX IF NOT EXISTS schedules_agent_site_uq ON schedules(agent_kind, site_id);
+**La fuente de verdad del esquema es el archivo de la migración**, no esta spec (actualizado 2026-10-07: la copia del SQL que había aquí se quitó porque se desfasó con la revisión de seguridad de T4). La 0002 ya no se edita: cualquier cambio va en una migración nueva.
 
-CREATE TABLE IF NOT EXISTS agent_runs (
-  id TEXT PRIMARY KEY,                    -- también thread_id de LangGraph y run_id de la concesión
-  parent_run_id TEXT REFERENCES agent_runs(id) ON DELETE CASCADE,
-  agent_kind TEXT NOT NULL,
-  agent_version INTEGER NOT NULL,
-  objective TEXT NOT NULL,
-  site_id TEXT REFERENCES sites(id) ON DELETE SET NULL,
-  trigger TEXT NOT NULL CHECK (trigger IN ('user', 'schedule', 'catch_up')),
-  schedule_id TEXT REFERENCES schedules(id) ON DELETE SET NULL,
-  status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'waiting_approval', 'paused',
-                                         'succeeded', 'failed', 'cancelled')),
-  status_reason TEXT,                     -- agents_paused, interrupted, daily_limit, user_cancelled…
-  error_code TEXT,
-  priority INTEGER NOT NULL DEFAULT 2,
-  provider TEXT CHECK (provider IN ('anthropic', 'openai', 'gemini')),
-  current_step TEXT,
-  token_budget INTEGER NOT NULL CHECK (token_budget > 0),
-  tokens_in INTEGER NOT NULL DEFAULT 0,
-  tokens_out INTEGER NOT NULL DEFAULT 0,
-  cost_micros INTEGER NOT NULL DEFAULT 0,
-  estimated_cost_micros INTEGER,
-  max_cost_micros INTEGER NOT NULL,
-  currency TEXT NOT NULL DEFAULT 'USD' CHECK (currency = 'USD'),
-  result TEXT,                            -- JSON del esquema del agente; nunca secretos
-  activity_seq INTEGER NOT NULL DEFAULT 0,
-  notice_ack_at TEXT,
-  created_at TEXT NOT NULL,
-  started_at TEXT,
-  finished_at TEXT,
-  updated_at TEXT NOT NULL
-) STRICT;
-CREATE INDEX IF NOT EXISTS agent_runs_queue_idx ON agent_runs(status, priority, created_at);
-CREATE INDEX IF NOT EXISTS agent_runs_created_idx ON agent_runs(created_at);
+**Tablas**
 
-CREATE TABLE IF NOT EXISTS agent_steps (
-  id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
-  seq INTEGER NOT NULL,
-  node TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('llm_call', 'tool_call', 'approval', 'control')),
-  status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'skipped', 'cancelled')),
-  idempotency_key TEXT NOT NULL,
-  autonomy_decision TEXT CHECK (autonomy_decision IN ('suggest', 'propose', 'execute')),
-  provider TEXT CHECK (provider IN ('anthropic', 'openai', 'gemini')),
-  model TEXT,
-  tier TEXT CHECK (tier IN ('economy', 'premium')),
-  secret_ref TEXT,                        -- llm/<proveedor>/default; nunca el valor
-  prompt_id TEXT,
-  prompt_version INTEGER,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  tokens_in INTEGER NOT NULL DEFAULT 0,
-  tokens_out INTEGER NOT NULL DEFAULT 0,
-  cost_micros INTEGER NOT NULL DEFAULT 0,
-  cost_estimated INTEGER NOT NULL DEFAULT 0 CHECK (cost_estimated IN (0, 1)),
-  currency TEXT NOT NULL DEFAULT 'USD' CHECK (currency = 'USD'),
-  error_code TEXT,
-  started_at TEXT NOT NULL,
-  finished_at TEXT
-) STRICT;
-CREATE UNIQUE INDEX IF NOT EXISTS agent_steps_run_seq_uq ON agent_steps(run_id, seq);
-CREATE UNIQUE INDEX IF NOT EXISTS agent_steps_idempotency_uq ON agent_steps(idempotency_key);
+| Tabla | Para qué |
+| --- | --- |
+| `schedules` | Programaciones diarias o semanales por (agente, sitio) |
+| `agent_runs` | Tareas: estado, motivo, prioridad, presupuesto, tokens y costo, resultado |
+| `agent_steps` | Pasos de cada tarea: nodo, tipo, decisión de autonomía, modelo, tokens y costo |
+| `approvals` | Propuestas y su estado (ADR 0016 §5) |
+| `autonomy_rules` | Nivel por agente, general o por sitio, y `limits` |
+| `credential_usage` | Uso por clave de IA y día |
+| `credential_limits` | Tope diario por clave de IA |
+| `settings` | Ajustes con lista cerrada de claves (`llm.preferred_provider`, `approvals.expiry_days`) |
+| `site_summaries` | Resúmenes del sitio guardados por `site_summary` |
+| `agent_checkpoints`, `agent_checkpoint_writes` | Estado del grafo de LangGraph (ADR 0015 §2) |
 
-CREATE TABLE IF NOT EXISTS approvals (
-  id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
-  step_id TEXT REFERENCES agent_steps(id) ON DELETE SET NULL,
-  site_id TEXT REFERENCES sites(id) ON DELETE SET NULL,
-  agent_kind TEXT NOT NULL,
-  action_kind TEXT NOT NULL,
-  side_effect TEXT NOT NULL CHECK (side_effect IN ('internal', 'publish', 'spend')),
-  autonomy_level INTEGER NOT NULL CHECK (autonomy_level BETWEEN 0 AND 3),
-  status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected', 'expired',
-                                         'cancelled', 'executed', 'failed')),
-  decided_by TEXT CHECK (decided_by IN ('user', 'rule')),
-  payload TEXT NOT NULL,                  -- JSON validado por el esquema de action_kind
-  evidence TEXT NOT NULL DEFAULT '{}',
-  estimated_cost_micros INTEGER,
-  currency TEXT NOT NULL DEFAULT 'USD' CHECK (currency = 'USD'),
-  idempotency_key TEXT NOT NULL,
-  previous_value TEXT,                    -- para deshacer (F4)
-  error_code TEXT,
-  created_at TEXT NOT NULL,
-  expires_at TEXT NOT NULL,
-  decided_at TEXT,
-  executed_at TEXT,
-  updated_at TEXT NOT NULL
-) STRICT;
-CREATE UNIQUE INDEX IF NOT EXISTS approvals_idempotency_uq ON approvals(idempotency_key);
-CREATE INDEX IF NOT EXISTS approvals_status_idx ON approvals(status, created_at);
+**Restricciones que importan para la seguridad y la coherencia** (todas `STRICT`):
 
-CREATE TABLE IF NOT EXISTS autonomy_rules (
-  id TEXT PRIMARY KEY,
-  agent_kind TEXT NOT NULL,
-  site_id TEXT REFERENCES sites(id) ON DELETE CASCADE,   -- NULL = todos los sitios
-  level INTEGER NOT NULL CHECK (level BETWEEN 0 AND 3),
-  limits TEXT NOT NULL DEFAULT '{}',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-) STRICT;
-CREATE UNIQUE INDEX IF NOT EXISTS autonomy_rules_default_uq ON autonomy_rules(agent_kind) WHERE site_id IS NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS autonomy_rules_site_uq ON autonomy_rules(agent_kind, site_id) WHERE site_id IS NOT NULL;
-
-CREATE TABLE IF NOT EXISTS credential_usage (
-  id TEXT PRIMARY KEY,
-  secret_ref TEXT NOT NULL,               -- llm/<proveedor>/default
-  provider TEXT NOT NULL CHECK (provider IN ('anthropic', 'openai', 'gemini')),
-  usage_date TEXT NOT NULL,               -- día local 'AAAA-MM-DD'
-  requests INTEGER NOT NULL DEFAULT 0,
-  tokens_in INTEGER NOT NULL DEFAULT 0,
-  tokens_out INTEGER NOT NULL DEFAULT 0,
-  cost_micros INTEGER NOT NULL DEFAULT 0,
-  currency TEXT NOT NULL DEFAULT 'USD' CHECK (currency = 'USD'),
-  updated_at TEXT NOT NULL
-) STRICT;
-CREATE UNIQUE INDEX IF NOT EXISTS credential_usage_ref_date_uq ON credential_usage(secret_ref, usage_date);
-
-CREATE TABLE IF NOT EXISTS credential_limits (
-  id TEXT PRIMARY KEY,
-  secret_ref TEXT NOT NULL,
-  daily_limit_micros INTEGER NOT NULL CHECK (daily_limit_micros BETWEEN 500000 AND 500000000),
-  currency TEXT NOT NULL DEFAULT 'USD' CHECK (currency = 'USD'),
-  updated_at TEXT NOT NULL
-) STRICT;
-CREATE UNIQUE INDEX IF NOT EXISTS credential_limits_ref_uq ON credential_limits(secret_ref);
-
-CREATE TABLE IF NOT EXISTS settings (
-  key TEXT PRIMARY KEY,                   -- lista cerrada en código (llm.preferred_provider)
-  value TEXT NOT NULL,                    -- JSON
-  updated_at TEXT NOT NULL
-) STRICT;
-
-CREATE TABLE IF NOT EXISTS site_summaries (
-  id TEXT PRIMARY KEY,
-  site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
-  run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
-  approval_id TEXT REFERENCES approvals(id) ON DELETE SET NULL,
-  content TEXT NOT NULL,                  -- JSON SiteSummaryV1
-  ai_generated INTEGER NOT NULL DEFAULT 1 CHECK (ai_generated IN (0, 1)),
-  created_at TEXT NOT NULL
-) STRICT;
-CREATE INDEX IF NOT EXISTS site_summaries_site_idx ON site_summaries(site_id, created_at);
-
-CREATE TABLE IF NOT EXISTS agent_checkpoints (
-  thread_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
-  checkpoint_ns TEXT NOT NULL DEFAULT '',
-  checkpoint_id TEXT NOT NULL,
-  parent_checkpoint_id TEXT,
-  type TEXT NOT NULL,
-  checkpoint BLOB NOT NULL,
-  metadata BLOB NOT NULL,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
-) STRICT;
-
-CREATE TABLE IF NOT EXISTS agent_checkpoint_writes (
-  thread_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
-  checkpoint_ns TEXT NOT NULL DEFAULT '',
-  checkpoint_id TEXT NOT NULL,
-  task_id TEXT NOT NULL,
-  task_path TEXT NOT NULL DEFAULT '',
-  idx INTEGER NOT NULL,
-  channel TEXT NOT NULL,
-  type TEXT NOT NULL,
-  value BLOB NOT NULL,
-  PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
-) STRICT;
-```
+- Enumeraciones cerradas con `CHECK`: `status` de `agent_runs`, `agent_steps` y `approvals`; `trigger`; `kind`; `autonomy_decision`; `provider` (`anthropic`, `openai`, `gemini`); `tier`; `side_effect` (`internal`, `publish`, `spend`, nunca "borrar"); `decided_by` (`user`, `rule`); `cadence`; `currency = 'USD'`.
+- Rangos: `autonomy_level` y `level` de 0 a 3; `weekday` de 0 a 6 y obligatorio solo si `cadence = 'weekly'`; `token_budget > 0`; `max_cost_micros > 0`; `daily_limit_micros` entre 500 000 y 500 000 000 (US$0,50 a US$500).
+- **Una regla solo decide efectos internos:** `CHECK (decided_by IS NOT 'rule' OR side_effect = 'internal')` en `approvals` (ADR 0016, actualización C). Ampliarlo en F4 o F5 exige una migración nueva.
+- **Solo referencias de claves de IA:** `secret_ref GLOB 'llm/*'` en `agent_steps` (admite `NULL`), `credential_usage` y `credential_limits`. Se usa `GLOB` y no `LIKE` porque `LIKE` no distingue mayúsculas. Nunca se guarda el valor de una clave.
+- **Checkpoints solo en JSON:** `type = 'json'` en `agent_checkpoints` y `agent_checkpoint_writes` (ADR 0015 §2); el checkpointer rechaza además al leer cualquier otro `type` (condiciones de T4, punto 1).
+- Unicidad: `idempotency_key` de `agent_steps` y de `approvals`; (`run_id`, `seq`) de pasos; (`agent_kind`, `site_id`) de programaciones; una regla general y una por sitio por agente; (`secret_ref`, `usage_date`) de uso; `secret_ref` de topes.
+- Borrados: quitar un sitio borra sus programaciones, reglas y resúmenes, y deja sus tareas y aprobaciones con `site_id = NULL`; borrar una tarea borra sus pasos, aprobaciones y checkpoints.
 
 - Sin fila en `autonomy_rules` = nivel 1. Sin fila en `credential_limits` = US$5/día.
 - Ninguna tabla guarda prompts completos ni respuestas crudas del proveedor: solo `prompt_id`/`prompt_version`, el resultado validado (`agent_runs.result`, `approvals.payload`, `site_summaries.content`) y el estado del grafo en los checkpoints (que pueden incluir títulos del sitio y salidas del modelo; están en la base cifrada).
-- **Auditoría**: acciones del motor nuevas `autonomy.changed`, `approval.decided`, `approval.executed`, `llm.limit_changed`, `llm.preference_changed`; del núcleo, las de §5.1. Claves de `details` nuevas: `agent_kind`, `approval_id`, `level`, `decision`. Misma validación de valores (ADR 0010 §4).
+- **Auditoría**: acciones del motor nuevas `autonomy.changed`, `approval.decided`, `approval.executed`, `llm.limit_changed`, `llm.preference_changed`; del núcleo, las de §5.1. Claves de `details` nuevas: `agent_kind` (en cualquier acción) y, solo en su acción del motor y con forma exacta, `level` (`autonomy.changed`, de 0 a 3), `approval_id` (`approval.*`, UUID) y `decision` (`approval.decided`, `approve` o `reject`); un evento del núcleo con alguna de estas tres se descarta. Detalle en ADR 0010, actualización 2026-10-07 (`ACTION_DETAIL_KEYS` y `DETAIL_VALUE_PATTERNS` de `core/audit.py`).
 - Quitar un sitio (`removeSite`) no borra sus tareas (`site_id` pasa a `NULL`); una tarea `waiting_approval` de ese sitio se cancela al reanudarse con `agent.site_removed`.
 - Sin retención en F1b (§2.3).
 

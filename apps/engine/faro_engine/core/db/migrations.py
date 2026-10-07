@@ -37,7 +37,7 @@ log = structlog.get_logger(__name__)
 MIGRATION_FILE_PATTERN: Final = re.compile(r"(\d{4})_([a-z0-9_]+)\.sql")
 # Piso de compatibilidad que deja cada versión (se aplica el mayor de las versiones ≤ v).
 # Subirlo rompe la compatibilidad hacia atrás y requiere ADR (ADR 0009 §5).
-COMPATIBILITY_FLOORS: Final[Mapping[int, int]] = {1: 1}
+COMPATIBILITY_FLOORS: Final[Mapping[int, int]] = {1: 1, 2: 1}
 
 SCHEMA_MIGRATIONS_DDL: Final = """CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.resources
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 
 from faro_engine.core.db.connection import Connection, DatabaseError, DbUnavailableError
 from faro_engine.core.db.migrations import (
+    COMPATIBILITY_FLOORS,
     Migration,
     MigrationDefinitionError,
     apply,
@@ -20,10 +22,23 @@ from faro_engine.core.db.migrations import (
     split_statements,
     validate_sequence,
 )
-from tests.db.helpers import open_db, schema_dump, tables
+from tests.db.helpers import load_fixture, open_db, schema_dump, tables
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "db"
 F1A_TABLES = {"sites", "site_connections", "audit_log", "schema_migrations"}
+F1B_TABLES = {
+    "schedules",
+    "agent_runs",
+    "agent_steps",
+    "approvals",
+    "autonomy_rules",
+    "credential_usage",
+    "credential_limits",
+    "settings",
+    "site_summaries",
+    "agent_checkpoints",
+    "agent_checkpoint_writes",
+}
 
 
 @pytest.fixture
@@ -131,7 +146,7 @@ def test_floor_for_uses_latest_floor_up_to_version() -> None:
 def test_all_migrations_on_empty_database(conn: Connection) -> None:
     applied = _migrate(conn)
     assert applied == [m.version for m in load_migrations()]
-    assert tables(conn) >= F1A_TABLES
+    assert tables(conn) == F1A_TABLES | F1B_TABLES
     assert _user_version(conn) == 1
     rows = conn.execute("SELECT version, name, checksum, applied_at FROM schema_migrations")
     first = rows.fetchall()[0]
@@ -249,3 +264,73 @@ def test_floor_is_raised_only_by_the_migration_that_declares_it(conn: Connection
     assert _user_version(conn) == 2
     apply(conn, [_m(3, "CREATE TABLE tres (x TEXT) STRICT;")], floors={1: 1})
     assert _user_version(conn) == 2  # nunca baja
+
+
+# --- 0002: tablas de agentes (spec F1b §6) ---------------------------------------------
+
+
+def _counts(conn: Connection, names: set[str]) -> dict[str, int]:
+    return {
+        name: int(conn.execute(f"SELECT count(*) FROM {name}").fetchone()[0])  # noqa: S608
+        for name in sorted(names)
+    }
+
+
+def test_0002_is_additive_and_keeps_the_floor_at_one() -> None:
+    known = load_migrations()
+    assert [m.name for m in known[:2]] == ["initial", "agents"]
+    assert COMPATIBILITY_FLOORS == {1: 1, 2: 1}
+    assert floor_for(2) == 1
+    # Solo agrega: ningún ALTER, DROP ni cambio de tablas de F1a.
+    for statement in known[1].statements:
+        code = re.sub(r"--[^\n]*", "", statement).strip()
+        assert code.upper().startswith(
+            (
+                "CREATE TABLE IF NOT EXISTS",
+                "CREATE INDEX IF NOT EXISTS",
+                "CREATE UNIQUE INDEX IF NOT EXISTS",
+            )
+        )
+
+
+def test_0002_on_database_with_v0001_data(conn: Connection) -> None:
+    known = load_migrations()
+    assert _migrate(conn, known[:1]) == [1]
+    load_fixture(conn, "v0001.sql")
+    f1a_before = (
+        conn.execute("SELECT * FROM sites").fetchall(),
+        conn.execute("SELECT * FROM site_connections").fetchall(),
+        conn.execute("SELECT * FROM audit_log ORDER BY id").fetchall(),
+    )
+    assert _user_version(conn) == 1
+
+    assert _migrate(conn) == [2]
+
+    assert tables(conn) == F1A_TABLES | F1B_TABLES
+    assert _user_version(conn) == 1
+    f1a_after = (
+        conn.execute("SELECT * FROM sites").fetchall(),
+        conn.execute("SELECT * FROM site_connections").fetchall(),
+        conn.execute("SELECT * FROM audit_log ORDER BY id").fetchall(),
+    )
+    assert f1a_after == f1a_before
+    assert set(_counts(conn, F1B_TABLES).values()) == {0}
+
+    load_fixture(conn, "v0002.sql")
+    counts = _counts(conn, F1B_TABLES)
+    assert counts["agent_runs"] == 3
+    assert counts["approvals"] == 2
+    assert min(counts.values()) >= 1
+    assert _migrate(conn) == []  # con datos, nada pendiente
+
+
+def test_f1a_app_opens_migrated_database_as_newer_schema(conn: Connection) -> None:
+    _migrate(conn)
+    f1a_known = load_migrations()[:1]
+
+    result = plan(conn, f1a_known)
+
+    assert result.newer_schema is True
+    assert result.pending == ()
+    assert result.current_version == 2
+    assert result.user_version == 1  # el piso no subió: nada de `db.too_new`

@@ -130,6 +130,18 @@ strict_modules = [
     "faro_engine/wordpress/signing.py",
     # Tabla de concesiones por ejecución de los agentes (spec F1b T3, ADR 0014 §1).
     "faro_engine/agents/grants.py",
+    # Repositorios de la migración 0002: transiciones condicionales, topes y caducidad
+    # (spec F1b T4, ADR 0016 §5).
+    "faro_engine/core/store/common.py",
+    "faro_engine/core/store/runs.py",
+    "faro_engine/core/store/approvals.py",
+    "faro_engine/core/store/autonomy_rules.py",
+    "faro_engine/core/store/schedules.py",
+    "faro_engine/core/store/credentials.py",
+    "faro_engine/core/store/settings.py",
+    "faro_engine/core/store/site_summaries.py",
+    "faro_engine/core/store/checkpoints.py",
+    "faro_engine/core/store/run_control.py",
 ]
 strict_fail_under = 95
 
