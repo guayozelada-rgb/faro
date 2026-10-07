@@ -9,14 +9,18 @@ Dos orígenes, una tabla:
        "action":"secret.used","secret_ref":"wp/<uuid>/token","run_id":"<uuid>",
        "result":"ok","details":{"operation":"checkSiteConnection","op":"get"}}
 
-  Solo acciones `secret.*`. `secret_ref`, `run_id` y `details` pueden ser `null` u
+  Acciones `secret.*` y, desde F1b (spec §5.1), `agents.paused`, `agents.resumed` y
+  `agent.grant_*`. `secret_ref`, `run_id` y `details` pueden ser `null` u
   omitirse. Un evento inválido se descarta con un aviso en el log que dice qué campo
   falló, nunca su contenido.
-- **Motor** (`AuditLog.record`): acciones `site.*` de los casos de uso (T9 en adelante).
+- **Motor** (`AuditLog.record`): acciones `site.*` de los casos de uso (F1a T9) y, desde
+  F1b (spec §6), `autonomy.changed`, `approval.decided`, `approval.executed`,
+  `llm.limit_changed` y `llm.preference_changed`.
 
 Validación común: `actor` ∈ `user`, `agent`, `system`; `result` ∈ `ok`, `denied`,
 `error`; `secret_ref` con la gramática del llavero; `run_id` UUID; `details` solo con
-las claves `site_id`, `operation`, `provider`, `op`, `reason`, `error_code` y valores de
+las claves `site_id`, `operation`, `provider`, `op`, `reason`, `error_code` (F1a) y
+`agent_kind`, `approval_id`, `level`, `decision` (F1b), con valores de
 texto de 1 a 64 caracteres `[A-Za-z0-9._:/-]` que no tengan forma de secreto (filtro de
 ADR 0013). Nunca se guarda un valor de un secreto ni `last4`.
 
@@ -59,13 +63,44 @@ CORE_ACTIONS: Final = frozenset(
         "secret.used",
         "secret.denied",
         "secret.deleted",
+        # Pausa global y concesiones por ejecución (spec F1b §5.1, ADR 0014).
+        "agents.paused",
+        "agents.resumed",
+        "agent.grant_issued",
+        "agent.grant_denied",
+        "agent.grant_released",
     },
 )
-# Acciones que registra el propio motor (casos de uso de sitios).
+# Acciones que registra el propio motor (casos de uso de sitios y, desde F1b §6,
+# autonomía, aprobaciones y ajustes de la capa de IA).
 ENGINE_ACTIONS: Final = frozenset(
-    {"site.connected", "site.reconnected", "site.revoked_detected", "site.removed"},
+    {
+        "site.connected",
+        "site.reconnected",
+        "site.revoked_detected",
+        "site.removed",
+        "autonomy.changed",
+        "approval.decided",
+        "approval.executed",
+        "llm.limit_changed",
+        "llm.preference_changed",
+    },
 )
-DETAIL_KEYS: Final = frozenset({"site_id", "operation", "provider", "op", "reason", "error_code"})
+DETAIL_KEYS: Final = frozenset(
+    {
+        "site_id",
+        "operation",
+        "provider",
+        "op",
+        "reason",
+        "error_code",
+        # F1b §6.
+        "agent_kind",
+        "approval_id",
+        "level",
+        "decision",
+    },
+)
 DETAIL_VALUE_PATTERN: Final = re.compile(r"[A-Za-z0-9._:/-]{1,64}")
 # RFC 3339 en UTC con `Z` y de 0 a 9 decimales.
 OCCURRED_AT_PATTERN: Final = re.compile(
@@ -240,7 +275,7 @@ class AuditLog:
         details: Mapping[str, str] | None = None,
         occurred_at: datetime | None = None,
     ) -> bool:
-        """Evento del motor (`site.*`). El `run_id` es el de la operación en curso.
+        """Evento del motor (`ENGINE_ACTIONS`). El `run_id` es el de la operación en curso.
 
         Un evento mal formado es un error de programación: lanza `InvalidAuditEventError`.
         """

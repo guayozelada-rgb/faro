@@ -240,3 +240,65 @@ def test_app_exposes_audit_log(settings: Settings) -> None:
     request = cast(Request, SimpleNamespace(app=app))
     assert get_audit(request) is app.state.audit
     assert isinstance(get_audit(request), AuditLog)
+
+
+# --- F1b (spec §5.1 y §6) ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("action", "details"),
+    [
+        ("autonomy.changed", {"agent_kind": "site_summary", "site_id": SITE_ID, "level": "2"}),
+        ("approval.decided", {"approval_id": RUN_ID, "decision": "approve"}),
+        ("approval.executed", {"approval_id": RUN_ID, "agent_kind": "site_summary"}),
+        ("llm.limit_changed", {"provider": "anthropic"}),
+        ("llm.preference_changed", {"provider": "openai"}),
+    ],
+)
+async def test_engine_records_f1b_actions(
+    db: Database, action: str, details: dict[str, str]
+) -> None:
+    assert await AuditLog(db).record(action=action, result="ok", details=details)
+    [row] = _rows(db)
+    assert row[3] == action
+    assert json.loads(row[7]) == details
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "agents.paused",
+        "agents.resumed",
+        "agent.grant_issued",
+        "agent.grant_denied",
+        "agent.grant_released",
+    ],
+)
+def test_core_sends_agent_actions(db: Database, action: str) -> None:
+    event = core_event(
+        action=action,
+        secret_ref=None,
+        actor="user" if action.startswith("agents.") else "system",
+        details={"operation": "agent:site_summary", "agent_kind": "site_summary"},
+    )
+    assert AuditLog(db).record_core_event(event)
+    [row] = _rows(db)
+    assert row[3] == action
+
+
+def test_f1b_actions_keep_their_origin() -> None:
+    # Las acciones del motor no llegan por stdin y las del núcleo no las registra el motor.
+    with pytest.raises(InvalidAuditEventError) as excinfo:
+        parse_core_event(core_event(action="approval.decided"))
+    assert excinfo.value.field == "action"
+
+
+async def test_engine_rejects_core_agent_actions(db: Database) -> None:
+    with pytest.raises(InvalidAuditEventError):
+        await AuditLog(db).record(action="agent.grant_issued", result="ok")
+
+
+@pytest.mark.parametrize("value", ["", "a" * 65, "con espacio", "T" * 43])
+def test_f1b_detail_values_are_validated(value: str) -> None:
+    with pytest.raises(InvalidAuditEventError):
+        parse_core_event(core_event(details={"agent_kind": value}))
