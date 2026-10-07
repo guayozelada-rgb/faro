@@ -25,6 +25,7 @@ Reglas de comunicación:
 - Protocolo por stdin/stdout (ADR 0004 y 0010): token, `db_key`, `ready`, `shutdown`, `secret_request`/`secret_response` y `audit` (skill `tauri-sidecar-python`).
 - El motor pide secretos al núcleo cuando va a usarlos, solo dentro de una concesión por operación (skill `llavero-y-cifrado`); no los guarda en disco. El núcleo nunca habla con sitios WordPress: todas las peticiones a sitios las hace el motor (ADR 0011).
 - Toda petición saliente del motor a una URL no fija en código pasa por `faro_engine/net` (SSRF, IP fijada, tiempos, tamaño; ADR 0012).
+- Todo HTTPS del motor (sitios, proveedores de IA, rastreador) usa el único contexto TLS `net/tls.py::tls_context()`: almacén de certificados del sistema con `truststore`, nunca `certifi` directo, `verify=False` ni `SSL_CERT_FILE` (ADR 0012, actualización 2026-10-06).
 - Google Ads siempre pasa por el relay de la nube; el developer token nunca está en la app.
 
 ## Repositorio
@@ -67,6 +68,7 @@ core/  app.py security.py protocol.py secrets.py audit.py run_id.py operations.p
        db/ (connection, database, migrations, backups, profile, migrations/*.sql)
        routes/ (health, sites)  schemas/ (common, sites)
 net/   urls.py (normalización)  guard.py (SSRF, IP fijada)  client.py (httpx, Deadline, reintentos)
+       tls.py (contexto TLS único con el almacén del sistema; desde F1b T2b)
 wordpress/  signing.py  client.py  errors.py (wp.* → site.*)
 sites/ service.py (connect, reconnect, check, list_content, remove)  repository.py (SQL)
 ```

@@ -26,7 +26,11 @@ class Test_Faro_Crypto_Uninstall extends Faro_Test_Case {
 	public function test_decrypt_fails_with_other_salts_or_tampering(): void {
 		$stored = Faro_Crypto::encrypt( 'secreto-de-prueba' );
 
-		$tampered = 'v1:' . base64_encode( substr( (string) base64_decode( substr( $stored, 3 ) ), 0, -1 ) . 'x' ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions -- Alteración de prueba.
+		// Se invierte un bit del último byte: siempre cambia el texto cifrado (poner un byte fijo
+		// fallaba 1 de cada 256 veces, cuando ese byte ya tenía ese valor).
+		$raw      = (string) base64_decode( substr( $stored, 3 ) ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions -- Alteración de prueba.
+		$raw[-1]  = chr( ord( $raw[-1] ) ^ 0x01 );
+		$tampered = 'v1:' . base64_encode( $raw ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions -- Alteración de prueba.
 		$this->assertNull( Faro_Crypto::decrypt( $tampered ) );
 		$this->assertNull( Faro_Crypto::decrypt( 'v2:abc' ) );
 		$this->assertNull( Faro_Crypto::decrypt( 'v1:corto' ) );

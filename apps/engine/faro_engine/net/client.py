@@ -4,7 +4,10 @@
   operación (`guard.AddressPins`) y se conecta a esa IP con `Host` y SNI del nombre.
 - Sin redirecciones automáticas: `request` devuelve el 3xx tal cual; `get_following` (solo
   para el descubrimiento del sitio) sigue hasta 3, validando cada salto.
-- TLS siempre verificado, sin proxies del sistema (`trust_env=False`), sin conexiones
+- TLS siempre verificado contra el almacén de certificados del sistema, con el contexto
+  único del motor (`tls.tls_context()`, ADR 0012, actualización 2026-10-06). El nombre se
+  valida contra el `sni_hostname` que pone `pin_request` (el que escribió el usuario, nunca
+  la IP fijada). Sin proxies del sistema (`trust_env=False`), sin HTTP/2, sin conexiones
   reutilizadas entre peticiones y `User-Agent: Faro/<versión>`.
 - Tiempos: conexión 5 s, lectura 15 s, 20 s por petición y el plazo total de la operación
   (`Deadline`, 5 s menos que el timeout del núcleo).
@@ -43,6 +46,7 @@ from faro_engine.core.errors import (
     site_error,
 )
 from faro_engine.net.guard import AddressPins, Resolver, pin_request, system_resolver
+from faro_engine.net.tls import tls_context
 from faro_engine.net.urls import NetPolicy, target_of
 
 log = structlog.get_logger(__name__)
@@ -103,9 +107,11 @@ class ConcurrencyLimits:
 
 
 def default_transport() -> httpx.AsyncBaseTransport:
-    """Transporte real: TLS verificado (certifi), sin reintentos ni conexiones reutilizadas."""
+    """Transporte real: TLS verificado con el almacén del sistema (`tls_context()`), sin
+    proxies, sin HTTP/2 (el contexto es compartido), sin reintentos ni conexiones reutilizadas.
+    """
     return httpx.AsyncHTTPTransport(
-        verify=True,
+        verify=tls_context(),
         trust_env=False,
         retries=0,
         http2=False,

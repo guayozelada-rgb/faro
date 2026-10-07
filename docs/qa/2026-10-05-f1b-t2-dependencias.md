@@ -235,7 +235,7 @@ anthropic: listado de modelos (sin costo)
 | 4 | OpenAI: clave en claro dentro de la clave de la caché de clientes y en el `AsyncOpenAI` guardado 1 h. Vaciar tras cada llamada. | T6, revisor-seguridad |
 | 5 | LiteLLM 1.104 no trae `cl100k_base`; Anthropic y Gemini lo descargan y lo escriben en la carpeta del paquete. Incluirlo en el motor con su SHA-256. | T6, T11 |
 | 6 | `truststore.inject_into_ssl()` debe ir antes de `import litellm`. | T6/T7 |
-| 7 | **F1a también afectado:** `faro_engine/net/client.py` usa `verify=True` (raíces de `certifi`). Detrás de Norton, conectar un WordPress real por HTTPS fallará con un error TLS. Con `truststore.inject_into_ssl()` al arrancar el motor se resuelve, pero cambia la red saliente de ADR 0012: lo decide `arquitecto`. | arquitecto, motor-python |
+| 7 | **F1a también afectado:** `faro_engine/net/client.py` usa `verify=True` (raíces de `certifi`). Detrás de Norton, conectar un WordPress real por HTTPS fallará con un error TLS. Con `truststore.inject_into_ssl()` al arrancar el motor se resuelve, pero cambia la red saliente de ADR 0012: lo decide `arquitecto`. **Decidido (2026-10-06):** contexto `truststore` explícito y compartido para todo el HTTPS del motor (ADR 0012, actualización 2026-10-06), tarea T2b. | arquitecto, motor-python |
 | 8 | Importar LiteLLM tarda ~6,5 s: importarlo de forma perezosa, nunca antes de `ready`. | T6/T7 |
 | 9 | El transporte asíncrono por defecto de LiteLLM es aiohttp: `respx` no lo intercepta (la petición sale a la red). Para probar con `respx`, `litellm.disable_aiohttp_transport = True`; si no, un servidor falso en loopback. | T6 |
 | 10 | `pytest` del motor tarda ~70 s más por las sondas en proceso aparte (cada una importa LiteLLM). | T11 (si hace falta, marcarlas para la CI nocturna) |
@@ -292,7 +292,7 @@ Ninguna prueba queda en `xfail`.
 
 1. **Antes de `import litellm`:**
    - `LITELLM_MODE=PRODUCTION`, `LITELLM_LOCAL_MODEL_COST_MAP=True` y `CUSTOM_TIKTOKEN_CACHE_DIR` apuntando al `cl100k_base` incluido en el motor;
-   - `truststore.inject_into_ssl()`;
+   - `truststore.inject_into_ssl()`, **(revisión de T2b)** solo a través de `faro_engine.net.tls.install_system_trust_for_libraries()` (ADR 0012, condición 13);
    - quitar del entorno `SSL_VERIFY`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `SSLKEYLOGFILE`, `LANGSMITH_*`, `LANGCHAIN_*`, el resto de `LITELLM_*` (incluido `LITELLM_LOG`) y todas las `OPENAI_*`, `ANTHROPIC_*` y `GEMINI_*`, incluidas `*_API_KEY`, `*_API_BASE` y `*_BASE_URL` (el script quita también `GOOGLE_API_KEY`, que LiteLLM usa como clave de Gemini);
    - **(segunda revisión)** quitar también:
      - `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` y `NO_PROXY`, en mayúsculas y en minúsculas;
@@ -313,7 +313,7 @@ Ninguna prueba queda en `xfail`.
 10. Fixture automático de bloqueo de red en las pruebas, sin confiar en `respx` con el transporte aiohttp. Más adelante, aislamiento a nivel de sistema operativo (`unshare -rn` en la CI de Linux) o `sys.addaudithook`.
 11. **(T7/T11, núcleo):** lanzar el motor con `env_clear()` y una lista de variables permitidas. Hoy `launcher.rs:281-286` hereda todo el entorno.
 12. **(T11):** `hook-litellm.py` con lista permitida (núcleo + openai, anthropic y gemini) en vez de `collect_submodules("litellm")`, y build sin red.
-13. **Vigilar** `httpx2` y `httpcore2`: son paquetes nuevos y sin attestations.
+13. **Vigilar** `httpx2` y `httpcore2`: son paquetes nuevos y sin attestations. Además, crean un `truststore.SSLContext` directamente, sin el cerrojo del motor: es una excepción conocida mientras LangSmith siga desactivado (condición 7), y la prueba de T8 debe comprobar que no crean contextos ni abren conexiones (ADR 0012, condición 13).
 
 **Condiciones nuevas de la segunda revisión de seguridad:**
 
@@ -330,6 +330,13 @@ Ninguna prueba queda en `xfail`.
     También hace falta una prueba en loopback: un 307 a otro puerto no recibe nada, y un proxy del entorno tampoco. Es la misma forma que en el script (`build_litellm_client`) y en sus pruebas. Motivo: por defecto, LiteLLM sigue el 307 y reenvía `x-api-key` y `x-goog-api-key` (prueba de control).
 16. **Ampliación de la condición 1:** variables de proxy, aiohttp y `SSL_*` (ver la condición 1). Lo mejor sigue siendo el cliente propio de la condición 15.
 17. **Punto de entrada de PyInstaller (T11).** El ejecutable empaquetado del motor debe ejecutar el `os.environ.pop("SSLKEYLOGFILE", None)` de `faro_engine/__main__.py` antes de cualquier otro import, igual que `python -m faro_engine`. Esto incluye los hooks de ejecución de PyInstaller y cualquier script de entrada distinto. Hace falta una prueba de humo con el ejecutable empaquetado: con `SSLKEYLOGFILE` definida, tras una conexión TLS (en loopback), el archivo no se crea.
+
+**Condiciones de la revisión de seguridad de T2b para T6** (ADR 0012, actualización 2026-10-06; informe [`2026-10-06-f1b-t2b-truststore.md`](2026-10-06-f1b-t2b-truststore.md) §6). El contexto TLS del motor lleva un cerrojo por contexto (condición 12 del ADR; antes, un "dueño de hilo" que la revisión final rechazó porque rompía el HTTPS real con anyio) porque `truststore` lo cambia durante cada `wrap_bio`/`wrap_socket`:
+
+18. Solo `acompletion`, con el cliente asíncrono propio de cada llamada (condición 15).
+19. Prohibidos `litellm.completion` síncrono, `litellm.ssl_verify`, `litellm.aclient_session` y cualquier cliente que LiteLLM construya por su cuenta.
+20. La inyección global de la condición 1, solo con `install_system_trust_for_libraries()`.
+21. Una prueba que espíe `wrap_bio`, `wrap_socket` y `do_handshake` y demuestre que, durante `acompletion` con los tres proveedores, (a) todos los contextos TLS que se usan son `tls_context()` o un `_LockedContext` (nunca un `truststore.SSLContext` sin cerrojo) y, tras cada llamada, siguen en `CERT_REQUIRED` con `check_hostname`; (b) no se usa ningún contexto de `_ssl_context_cache` de LiteLLM; y (c) nada llama a `wrap_socket` (bloqueante) en el hilo del bucle. Que `wrap_bio` ocurra en un hilo de trabajo (anyio) ya no es un error.
 
 **Correspondencia entre hallazgos y condiciones**
 
@@ -355,4 +362,4 @@ Ninguna prueba queda en `xfail`.
 - mantener `trust_env=False`, `CERT_REQUIRED`, `check_hostname` y la fijación de IP con `sni_hostname`;
 - modificar el ADR 0012 en ese sentido.
 
-`net/client.py` no cambia en este cambio.
+`net/client.py` no cambia en este cambio. **Implementado en T2b** (ADR 0012, actualización 2026-10-06): ver [`2026-10-06-f1b-t2b-truststore.md`](2026-10-06-f1b-t2b-truststore.md).

@@ -36,7 +36,7 @@ Revisa solo las secciones que el cambio toca. Cada hallazgo necesita archivo, l�
 ## 5. Crawler y red
 - [ ] Protección SSRF: el crawler no sigue redirecciones ni enlaces a IPs privadas, `localhost`, `169.254.0.0/16` ni al puerto del motor.
 - [ ] Límites de tamaño de respuesta, tiempo y número de páginas.
-- [ ] TLS verificado siempre.
+- [ ] TLS verificado siempre, con el contexto único `net/tls.py::tls_context()` (condiciones 1–11 de ADR 0012, actualización 2026-10-06): ningún otro `SSLContext`, `verify=True`, `verify=<ruta>` ni `verify=False` en `faro_engine/`.
 
 ## 6. OAuth (Google)
 - [ ] Flujo para apps instaladas con PKCE y redirección a loopback con puerto aleatorio; `state` verificado.
