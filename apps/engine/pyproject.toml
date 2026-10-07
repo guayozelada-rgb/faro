@@ -19,7 +19,7 @@ dependencies = [
     "sqlcipher3-wheels>=0.5.7,<0.6",
     "structlog>=26.1.0",
     "truststore==0.10.4",
-    "uvicorn>=0.54.0",
+    "uvicorn>=0.54.0,<0.55",  # core/server.py usa detalles internos de uvicorn 0.54
 ]
 
 [build-system]

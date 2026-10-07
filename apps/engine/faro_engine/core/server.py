@@ -24,12 +24,16 @@ responde 503; una conexión que nunca envía nada no llega a contarse.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import time
 from typing import Final
 
 import h11
 import structlog
 from uvicorn.protocols.http.h11_impl import H11Protocol
+
+# Orden de llegada compartido por todas las conexiones del proceso.
+_ARRIVAL_ORDER: Final = itertools.count()
 
 # Un único cliente legítimo (el núcleo) con pocas peticiones a la vez (`/health` cada 15 s
 # y las operaciones de la interfaz). 64 deja holgura de sobra y queda muy por debajo de
@@ -89,8 +93,9 @@ class LimitedH11Protocol(H11Protocol):
 
     _rejected: bool = False
     _read_deadline: asyncio.TimerHandle | None = None
-    # Momento (reloj del bucle) desde el que espera la petición; `None` si ya la recibió.
-    _waiting_since: float | None = None
+    # Orden de llegada (contador estricto; el reloj del bucle en Windows tiene ticks de
+    # ~15,6 ms y empataría) desde que espera la petición; `None` si ya la recibió.
+    _waiting_since: int | None = None
 
     def connection_made(self, transport: asyncio.Transport) -> None:  # type: ignore[override]
         if not self._make_room():
@@ -135,14 +140,14 @@ class LimitedH11Protocol(H11Protocol):
         ]
         if not waiting:
             return False
-        oldest = min(waiting, key=lambda c: c._waiting_since or 0.0)
+        oldest = min(waiting, key=lambda c: c._waiting_since or 0)
         oldest._close_waiting()
         evictions.record(limit=self.max_connections)
         return True
 
     def _arm_read_deadline(self) -> None:
         self._cancel_read_deadline()
-        self._waiting_since = self.loop.time()
+        self._waiting_since = next(_ARRIVAL_ORDER)
         self._read_deadline = self.loop.call_later(
             self.request_read_timeout, self._on_read_deadline
         )
