@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   tokens_out INTEGER NOT NULL DEFAULT 0,
   cost_micros INTEGER NOT NULL DEFAULT 0,
   estimated_cost_micros INTEGER,
-  max_cost_micros INTEGER NOT NULL,
+  max_cost_micros INTEGER NOT NULL CHECK (max_cost_micros > 0),
   currency TEXT NOT NULL DEFAULT 'USD' CHECK (currency = 'USD'),
   result TEXT,                            -- JSON del esquema del agente; nunca secretos
   activity_seq INTEGER NOT NULL DEFAULT 0,
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS agent_steps (
   provider TEXT CHECK (provider IN ('anthropic', 'openai', 'gemini')),
   model TEXT,
   tier TEXT CHECK (tier IN ('economy', 'premium')),
-  secret_ref TEXT,                        -- llm/<proveedor>/default; nunca el valor
+  secret_ref TEXT CHECK (secret_ref IS NULL OR secret_ref GLOB 'llm/*'),  -- nunca el valor
   prompt_id TEXT,
   prompt_version INTEGER,
   attempts INTEGER NOT NULL DEFAULT 0,
@@ -113,7 +113,10 @@ CREATE TABLE IF NOT EXISTS approvals (
   expires_at TEXT NOT NULL,
   decided_at TEXT,
   executed_at TEXT,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  -- ADR 0016 §2: en F1b solo una acción `internal` puede decidirla una regla (niveles 2
+  -- y 3). Ampliarlo a `publish`/`spend` exige su decisión y una migración nueva.
+  CHECK (decided_by IS NOT 'rule' OR side_effect = 'internal')
 ) STRICT;
 CREATE UNIQUE INDEX IF NOT EXISTS approvals_idempotency_uq ON approvals(idempotency_key);
 CREATE INDEX IF NOT EXISTS approvals_status_idx ON approvals(status, created_at);
@@ -132,7 +135,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS autonomy_rules_site_uq ON autonomy_rules(agent
 
 CREATE TABLE IF NOT EXISTS credential_usage (
   id TEXT PRIMARY KEY,
-  secret_ref TEXT NOT NULL,               -- llm/<proveedor>/default
+  secret_ref TEXT NOT NULL CHECK (secret_ref GLOB 'llm/*'),  -- llm/<proveedor>/default
   provider TEXT NOT NULL CHECK (provider IN ('anthropic', 'openai', 'gemini')),
   usage_date TEXT NOT NULL,               -- día local 'AAAA-MM-DD'
   requests INTEGER NOT NULL DEFAULT 0,
@@ -146,7 +149,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS credential_usage_ref_date_uq ON credential_usa
 
 CREATE TABLE IF NOT EXISTS credential_limits (
   id TEXT PRIMARY KEY,
-  secret_ref TEXT NOT NULL,
+  secret_ref TEXT NOT NULL CHECK (secret_ref GLOB 'llm/*'),
   daily_limit_micros INTEGER NOT NULL CHECK (daily_limit_micros BETWEEN 500000 AND 500000000),
   currency TEXT NOT NULL DEFAULT 'USD' CHECK (currency = 'USD'),
   updated_at TEXT NOT NULL
@@ -175,7 +178,7 @@ CREATE TABLE IF NOT EXISTS agent_checkpoints (
   checkpoint_ns TEXT NOT NULL DEFAULT '',
   checkpoint_id TEXT NOT NULL,
   parent_checkpoint_id TEXT,
-  type TEXT NOT NULL,
+  type TEXT NOT NULL CHECK (type = 'json'),   -- serializador solo JSON (ADR 0015 §2)
   checkpoint BLOB NOT NULL,
   metadata BLOB NOT NULL,
   created_at TEXT NOT NULL,
@@ -190,7 +193,7 @@ CREATE TABLE IF NOT EXISTS agent_checkpoint_writes (
   task_path TEXT NOT NULL DEFAULT '',
   idx INTEGER NOT NULL,
   channel TEXT NOT NULL,
-  type TEXT NOT NULL,
+  type TEXT NOT NULL CHECK (type = 'json'),
   value BLOB NOT NULL,
   PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
 ) STRICT;

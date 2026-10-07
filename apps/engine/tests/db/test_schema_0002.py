@@ -255,6 +255,23 @@ CHECK_CASES: list[tuple[str, dict[str, object]]] = [
     ("credential_limits", limit(daily_limit_micros=500_000_001)),
     ("credential_limits", limit(currency="EUR")),
     ("site_summaries", summary(ai_generated=2, approval_id=None)),
+    # Revisión de seguridad de T4.
+    ("agent_runs", run(max_cost_micros=0)),
+    ("agent_runs", run(max_cost_micros=-1)),
+    ("agent_steps", step(secret_ref="wp/01920000-0000-7000-8000-00000000a001/token")),
+    ("agent_steps", step(secret_ref="LLM/anthropic/default")),  # GLOB distingue mayúsculas
+    ("agent_steps", step(secret_ref="")),
+    ("credential_usage", usage(secret_ref="db/perfil/key")),
+    ("credential_usage", usage(secret_ref="llm")),
+    ("credential_limits", limit(secret_ref="oauth/google/refresh")),
+    ("approvals", approval(side_effect="publish", status="approved", decided_by="rule")),
+    ("approvals", approval(side_effect="spend", status="approved", decided_by="rule")),
+    ("approvals", approval(side_effect="spend", status="executed", decided_by="rule")),
+    ("agent_checkpoints", checkpoint(type="pickle")),
+    ("agent_checkpoints", checkpoint(type="msgpack")),
+    ("agent_checkpoints", checkpoint(type="JSON")),
+    ("agent_checkpoint_writes", write(type="pickle")),
+    ("agent_checkpoint_writes", write(type="null")),
 ]
 
 
@@ -279,6 +296,48 @@ def test_check_constraints_accept_valid_edges(conn: Connection) -> None:
     insert_row(conn, "agent_runs", run(provider="gemini"))
     insert_row(conn, "approvals", approval(autonomy_level=3, status="approved", decided_by="rule"))
     assert _count(conn, "schedules", "weekday = 6") == 1
+
+
+def test_security_checks_accept_valid_values(conn: Connection) -> None:
+    insert_row(conn, "agent_runs", run(max_cost_micros=1))
+    insert_row(conn, "agent_steps", step(secret_ref=None))
+    insert_row(conn, "agent_steps", step(id="s2", seq=2, idempotency_key="k2", secret_ref="llm/x"))
+    insert_row(conn, "credential_usage", usage(secret_ref="llm/gemini/default"))
+    insert_row(conn, "credential_limits", limit(secret_ref="llm/openai/default"))
+    # `publish`/`spend` decididas por el usuario sí; y sin decidir.
+    for index, (side_effect, decided_by, status) in enumerate(
+        [
+            ("publish", "user", "approved"),
+            ("spend", "user", "executed"),
+            ("spend", None, "pending"),
+            ("internal", "rule", "executed"),
+        ]
+    ):
+        insert_row(
+            conn,
+            "approvals",
+            approval(
+                id=f"ap-{index}",
+                idempotency_key=f"k-{index}",
+                side_effect=side_effect,
+                decided_by=decided_by,
+                status=status,
+            ),
+        )
+    insert_row(conn, "agent_checkpoints", checkpoint())
+    insert_row(conn, "agent_checkpoint_writes", write())
+    assert _count(conn, "approvals") == 4
+
+
+def test_rule_cannot_take_over_a_publish_decision(conn: Connection) -> None:
+    # Ni al insertar ni al cambiar una fila existente (`UPDATE` también pasa por el CHECK).
+    insert_row(conn, "agent_runs", run())
+    insert_row(conn, "approvals", approval(side_effect="publish"))
+    with pytest.raises(DatabaseError, match="CHECK"):
+        conn.execute("UPDATE approvals SET status = 'approved', decided_by = 'rule'")
+    with pytest.raises(DatabaseError, match="CHECK"):
+        conn.execute("UPDATE agent_runs SET max_cost_micros = 0")
+    assert _count(conn, "approvals", "status = 'pending' AND decided_by IS NULL") == 1
 
 
 def test_new_tables_are_strict(conn: Connection) -> None:
