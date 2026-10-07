@@ -3,7 +3,8 @@
 Criterios 5, 6 y 7 de ADR 0015 §6. Construye dos variantes con el mismo lock:
 
 - `base`: el motor de F1a. Excluye los módulos de F1b, así que PyInstaller no recorre
-  LiteLLM, LangGraph, APScheduler, `truststore` ni `sqlite-vec` ni sus dependencias.
+  LiteLLM, LangGraph, APScheduler ni `sqlite-vec` ni sus dependencias. `truststore` sí
+  entra: desde T2b es del núcleo de red (`faro_engine/net/tls.py`, ADR 0012).
 - `full`: el motor con las dependencias de F1b, el hook de LiteLLM
   (`scripts/pyinstaller_hooks`), `sqlite-vec` y el vocabulario `cl100k_base` de tiktoken.
 
@@ -55,7 +56,6 @@ F1B_TOP_MODULES: Final = (
     "langchain_core",
     "langsmith",
     "apscheduler",
-    "truststore",
     "sqlite_vec",
 )
 # Puente nativo de LiteLLM (~45 MB): `acompletion` va por Python en 1.104 (`chat_completions`
