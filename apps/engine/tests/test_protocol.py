@@ -326,6 +326,46 @@ def test_engine_keeps_accepting_after_clients_reset_before_accept(spawn: Any) ->
     _assert_orderly(engine, elapsed)
 
 
+# Más que los 512 sockets que admite `select()` en Windows.
+IDLE_CONNECTIONS = 600
+
+
+def test_idle_connections_do_not_exhaust_the_engine(spawn: Any) -> None:
+    """Cientos de conexiones inactivas, sin token, no tumban el motor ni dejan fuera al núcleo.
+
+    Con el bucle de selectores, `select()` en Windows admite como mucho 512 sockets. Sin
+    `LimitedH11Protocol`, unas 515 conexiones que no envían nada hacían que `select()`
+    lanzara `ValueError` y el motor moría con código 1 en unos 3 s.
+    """
+    token = secrets.token_urlsafe(32)
+    engine = spawn()
+    engine.send(token.encode("ascii") + b"\n" + DB_KEY_ERROR_LINE)
+    port = engine.ready()["port"]
+
+    idle: list[socket.socket] = []
+    try:
+        for _ in range(IDLE_CONNECTIONS):
+            # Si el motor muere, falla en el acto (los `connect` rechazados tardan ~2 s).
+            assert engine.proc.poll() is None, engine.stderr()[-2000:]
+            idle.append(socket.create_connection(("127.0.0.1", port), timeout=5.0))
+        _wait_for_log(engine, "server.idle_connection_closed")
+        time.sleep(3.0)  # lo que tardaba en morir sin el límite
+        assert engine.proc.poll() is None, engine.stderr()[-2000:]
+        # Con las conexiones inactivas aún abiertas, el núcleo sigue entrando.
+        for _ in range(3):
+            with _http(port) as http:
+                response = http.get("/health", headers={"Authorization": f"Bearer {token}"})
+                assert response.status_code == 200
+    finally:
+        for sock in idle:
+            sock.close()
+
+    assert engine.proc.poll() is None
+    elapsed = _shutdown_and_time(engine)
+    _assert_orderly(engine, elapsed)
+    assert "engine.loop_failed" not in engine.stderr()
+
+
 def _dev_command(env_file: Path) -> list[str]:
     """`python -m faro_engine --dev` leyendo un `.env.local` temporal (nunca el de la raíz)
     y con datos en una carpeta temporal (nunca `apps/engine/.devdata`)."""

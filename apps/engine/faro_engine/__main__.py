@@ -13,7 +13,10 @@ Protocolo (spec F0 §4.4, skill `tauri-sidecar-python`, ADR 0004):
    no disponible (lo informa `/health`); nunca sale por eso. La llave se sobrescribe.
 5. Abre el socket, escribe una sola línea `ready` en stdout y hace flush.
 6. Sirve con uvicorn sobre ese socket (sin access log), siempre en un bucle de selectores
-   (`serve_loop_factory`, también en Windows). Mientras sirve, el hilo de stdin
+   (`serve_loop_factory`, también en Windows), con `LimitedH11Protocol` (`core/server.py`):
+   como mucho `MAX_CONNECTIONS` conexiones entrantes y `REQUEST_READ_TIMEOUT_SECONDS` para
+   recibir cada petición. Si el bucle falla, registra `engine.loop_failed`, cierra la base
+   y sale con código 3. Mientras sirve, el hilo de stdin
    reparte `secret_response` (al cliente del canal de secretos) y `audit` (a `audit_log`),
    y las rutas escriben `secret_request` en stdout por el mismo `ProtocolWriter` que
    `ready` (ADR 0010). En `--dev` no hay canal: `engine.secrets_unavailable`.
@@ -23,7 +26,8 @@ Protocolo (spec F0 §4.4, skill `tauri-sidecar-python`, ADR 0004):
    Ctrl+C / SIGINT / SIGTERM / CTRL_BREAK. En ambos modos esas señales salen con código 0.
 
 Códigos de salida: 0 = apagado normal, 1 = no se pudo abrir el socket, 2 = uso o token
-inválido. Un problema con la base nunca cambia el código de salida (ADR 0009 §4).
+inválido, 3 = el bucle del servidor falló. Un problema con la base nunca cambia el código
+de salida (ADR 0009 §4).
 
 Antes de cualquier otro import se quitan del entorno (`TLS_ENV_REMOVED`):
 - `SSLKEYLOGFILE`: la biblioteca estándar la aplica en `ssl.create_default_context` y
@@ -78,10 +82,12 @@ from faro_engine.core.db.profile import dev_data_dir
 from faro_engine.core.errors import DB_KEY_MISSING, DB_UNAVAILABLE
 from faro_engine.core.logging import configure_logging
 from faro_engine.core.secrets import SecretBroker
+from faro_engine.core.server import LimitedH11Protocol
 
 EXIT_OK = 0
 EXIT_BIND_FAILED = 1
 EXIT_USAGE = 2
+EXIT_LOOP_FAILED = 3
 
 log = structlog.get_logger("faro_engine")
 
@@ -144,10 +150,11 @@ class ShutdownController:
         self._force_exit = force_exit
         self._lock = threading.Lock()
         self._timer: threading.Timer | None = None
+        self._finished = False
 
     def request_exit(self, reason: str) -> None:
         with self._lock:
-            if self._timer is not None:
+            if self._timer is not None or self._finished:
                 return
             log.info("engine.shutdown_requested", reason=reason)
             self._server.should_exit = True
@@ -156,7 +163,9 @@ class ShutdownController:
             self._timer.start()
 
     def cancel(self) -> None:
+        """El servidor ya terminó: anula el temporizador y las peticiones posteriores."""
         with self._lock:
+            self._finished = True
             if self._timer is not None:
                 self._timer.cancel()
 
@@ -271,8 +280,15 @@ def serve_loop_factory() -> asyncio.AbstractEventLoop:
     - Si un cliente cancela la conexión antes de que termine el `accept`, WinError 64 hace
       que asyncio cierre el socket de escucha: el motor deja de aceptar conexiones.
 
-    El bucle de selectores no tiene ninguno de los dos. Sus límites en Windows (sin
-    subprocesos de asyncio y hasta 512 sockets por `select`) no afectan a una API local.
+    El bucle de selectores no tiene ninguno de los dos. Sus límites en Windows:
+
+    - Sin subprocesos de asyncio: el motor no los usa.
+    - Como mucho 512 sockets por `select()`; con uno más, `select()` lanza `ValueError` y
+      el bucle muere. Cualquier proceso local, sin token, podría provocarlo abriendo
+      conexiones inactivas. Por eso el servidor usa `LimitedH11Protocol`
+      (`core/server.py`): como mucho `MAX_CONNECTIONS` (64) conexiones entrantes, que
+      dejan sitio a las salientes (httpx, LLM), y `REQUEST_READ_TIMEOUT_SECONDS` (10 s)
+      para recibir cada petición completa.
     """
     return asyncio.SelectorEventLoop()
 
@@ -418,6 +434,9 @@ def run(
             access_log=False,
             server_header=False,
             lifespan="off",
+            # Límite de conexiones y plazo de lectura: ver `serve_loop_factory`.
+            http=LimitedH11Protocol,
+            ws="none",
         ),
     )
     controller = ShutdownController(server, grace=shutdown_grace)
@@ -433,15 +452,19 @@ def run(
     writer.write_line(protocol.ready_line(port=real_port, version=__version__, pid=os.getpid()))
     log.info("engine.ready", port=real_port, pid=os.getpid(), dev=args.dev)
 
+    code = EXIT_OK
     try:
         with handle_stop_signals(controller):
             asyncio.run(server.serve(sockets=[sock]), loop_factory=serve_loop_factory)
+    except Exception as exc:  # noqa: BLE001 - JSON en stderr en vez de una traza suelta
+        log.error("engine.loop_failed", error_type=type(exc).__name__, error=str(exc))
+        code = EXIT_LOOP_FAILED
     finally:
         controller.cancel()
         sock.close()
         database.close()
-    log.info("engine.stopped")
-    return EXIT_OK
+    log.info("engine.stopped", exit_code=code)
+    return code
 
 
 def main(argv: Sequence[str] | None = None) -> int:

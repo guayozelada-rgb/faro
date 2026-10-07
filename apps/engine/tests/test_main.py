@@ -7,6 +7,7 @@ import io
 import json
 import os
 import secrets
+import selectors
 import signal
 import socket
 import subprocess
@@ -267,6 +268,59 @@ def test_shutdown_controller_forces_exit_after_grace() -> None:
 def test_shutdown_controller_cancel_without_request() -> None:
     controller = entry.ShutdownController(_server(), grace=WAIT, force_exit=lambda _c: None)
     controller.cancel()  # sin temporizador: no falla
+
+
+def test_shutdown_controller_ignores_requests_after_cancel() -> None:
+    server = _server()
+    forced: list[int] = []
+    controller = entry.ShutdownController(server, grace=0.0, force_exit=forced.append)
+    controller.cancel()  # el servidor ya terminó
+    controller.request_exit("late_eof")
+    assert server.should_exit is False
+    assert forced == []
+
+
+class _FullSelector(selectors.SelectSelector):
+    """Como `select()` de Windows al pasar de 512 sockets, con el servidor ya arrancado."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def select(self, timeout: float | None = None) -> list[Any]:
+        self.calls += 1
+        # La 1.ª deja arrancar `Server.serve`; solo falla la 2.ª, para que el cierre de
+        # `asyncio.run` pueda cancelar la tarea limpiamente.
+        if self.calls == 2:
+            raise ValueError("too many file descriptors in select()")
+        return super().select(timeout)
+
+
+def test_run_logs_loop_failure_and_closes_database(
+    pipe: Pipe, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    closed: list[bool] = []
+    real_close = Database.close
+
+    def tracking_close(self: Database) -> None:
+        closed.append(True)
+        real_close(self)
+
+    monkeypatch.setattr(Database, "close", tracking_close)
+    monkeypatch.setattr(
+        entry, "serve_loop_factory", lambda: asyncio.SelectorEventLoop(_FullSelector())
+    )
+    pipe.write(secrets.token_urlsafe(32).encode("ascii") + NL + db_key_line())
+    sink = ReadySink()
+    code = entry.run(["--data-dir", str(tmp_path / "data")], stdin_fd=pipe.read_fd, out=sink)
+    assert code == entry.EXIT_LOOP_FAILED
+    assert closed
+    events = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    failed = [e for e in events if e["event"] == "engine.loop_failed"]
+    assert failed
+    assert failed[0]["error_type"] == "ValueError"
+    assert events[-1]["event"] == "engine.stopped"
+    assert events[-1]["exit_code"] == entry.EXIT_LOOP_FAILED
 
 
 def test_watch_stdin_ignores_unknown_lines_then_shuts_down(pipe: Pipe) -> None:
