@@ -127,6 +127,8 @@ strict_modules = [
     "faro_engine/net/client.py",
     "faro_engine/net/tls.py",
     "faro_engine/wordpress/signing.py",
+    # Tabla de concesiones por ejecución de los agentes (spec F1b T3, ADR 0014 §1).
+    "faro_engine/agents/grants.py",
 ]
 strict_fail_under = 95
 

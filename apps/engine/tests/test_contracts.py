@@ -4,7 +4,8 @@ CI comprueba con `git diff --exit-code` que `npm run contracts` no genera difere
 esta prueba lo detecta antes y sin git: los archivos versionados siguen al día con la app,
 la lista permitida contiene exactamente las 7 operaciones de la spec F1a §5.2 con sus
 `timeout_seconds` y `secrets` (§9.6) y cada operación lleva lo que declara su ruta
-(ADR 0010 §3, spec F1a §4.5).
+(ADR 0010 §3, spec F1a §4.5). `agent-grants.json` coincide con el registro de agentes y,
+en T3, está vacío (ADR 0014 §1, spec F1b T3).
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from faro_engine.agents.registry import agent_grants_table
 from faro_engine.core.operations import (
     MAX_TIMEOUT_SECONDS,
     MIN_TIMEOUT_SECONDS,
@@ -117,3 +119,15 @@ def test_engine_d_ts_declares_the_operations() -> None:
         assert operation in text
     assert '"/health"' in text
     assert '"/sites/{site_id}/content"' in text
+
+
+def test_agent_grants_are_exactly_the_t3_table() -> None:
+    # Concesiones exactas de los agentes: cambiar esta tabla requiere revisor-seguridad.
+    # T9 la cambia a `site_summary` con exactamente sus cuatro referencias (spec F1b §9.5).
+    assert _load("agent-grants.json") == []
+
+
+def test_agent_grants_match_the_registry() -> None:
+    assert _load("agent-grants.json") == agent_grants_table()
+    text = (SHARED / "agent-grants.json").read_text(encoding="utf-8")
+    assert text == json.dumps(agent_grants_table(), indent=2, sort_keys=True) + "\n"
