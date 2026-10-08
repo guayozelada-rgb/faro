@@ -177,11 +177,12 @@ impl VaultService {
     }
 
     /// Proveedores con clave en el llavero (para `agents_control`, ADR 0014 §2). Solo los
-    /// nombres; un fallo del llavero cuenta como sin clave.
+    /// nombres; un fallo del llavero cuenta como sin clave. Usa [`SecretStore::exists`]:
+    /// no lee el valor de las claves (revisión de seguridad de T5).
     pub fn providers_with_key(store: &dyn SecretStore) -> Vec<Provider> {
         Provider::ALL
             .into_iter()
-            .filter(|p| matches!(store.get(p.secret_ref()), Ok(Some(_))))
+            .filter(|p| matches!(store.exists(p.secret_ref()), Ok(true)))
             .collect()
     }
 

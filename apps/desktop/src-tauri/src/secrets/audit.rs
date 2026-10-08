@@ -7,27 +7,43 @@
 //!  "secret_ref":"…"|null,"run_id":"…"|null,"result":"ok|denied|error","details":{…}}
 //! ```
 //!
-//! [`AuditQueue`] es una tarea con un búfer de [`AUDIT_BUFFER`] eventos: mientras el motor
-//! no está listo o su base no está disponible, guarda los eventos (si se llena, descarta
-//! los más viejos y lo registra); al quedar listo, los envía en orden. En modo de
-//! desarrollo externo (sin stdin) los eventos solo van al log.
+//! [`AuditQueue`] guarda los eventos en un búfer **acotado** de [`AUDIT_BUFFER`] eventos
+//! (revisión de seguridad de T5) y una tarea los envía en orden cuando el motor está listo
+//! con su base disponible. `record` nunca bloquea ni hace crecer la memoria: si el búfer
+//! está lleno (motor no listo, o un motor que no lee su stdin), descarta el evento más
+//! viejo, lo cuenta ([`AuditQueue::dropped`]) y lo registra muestreado (el primero y uno
+//! de cada 100). En modo de desarrollo externo (sin stdin) los eventos solo van al log.
+//!
+//! Los eventos marcados con [`AuditEvent::aggregated`] (solicitudes malformadas y
+//! liberaciones de concesiones inexistentes, que un motor puede repetir sin límite) se
+//! **agregan** mientras esperan en el búfer: uno igual (misma acción, actor, resultado,
+//! referencia y `details`) suma 1 a `details.count` del que ya estaba en lugar de ocupar
+//! otro sitio. Si los `run_id` difieren, el agregado queda sin `run_id`.
+//!
+//! El canal de control (motor listo, detenido, modo externo) no tiene límite: solo lo usa
+//! el supervisor en cada cambio de estado del motor, nunca una línea del motor.
 //!
 //! Nunca llevan el valor de un secreto ni `last4`: solo acción, resultado, referencia,
 //! `run_id` y `details` con claves y valores cortos y validados.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
-use tokio::sync::mpsc;
 #[cfg(test)]
 use tokio::sync::oneshot;
+use tokio::sync::{mpsc, Notify};
 use zeroize::Zeroizing;
 
 use crate::engine::supervisor::StdinWriter;
+use crate::logging::sample::LogSampler;
 use crate::secrets::refs::{is_canonical_uuid, parse_ref};
 
 /// Eventos que se guardan como máximo mientras el motor no puede recibirlos.
 pub const AUDIT_BUFFER: usize = 500;
+/// Máximo de `details.count` (el motor acepta de 1 a 18 dígitos).
+pub const MAX_COUNT: u64 = 999_999_999_999_999_999;
 
 /// Quién hizo la acción.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -120,6 +136,8 @@ pub enum DetailKey {
     ErrorCode,
     /// Tipo de agente de `agent.grant_*` (F1b).
     AgentKind,
+    /// Veces que se repitió un evento agregado (2 o más; revisión de seguridad de T5).
+    Count,
 }
 
 /// Un evento de auditoría. Solo datos no sensibles.
@@ -133,6 +151,12 @@ pub struct AuditEvent {
     pub run_id: Option<String>,
     pub result: Outcome,
     pub details: std::collections::BTreeMap<DetailKey, String>,
+    /// Se agrega con los iguales mientras espera en el búfer.
+    #[serde(skip)]
+    aggregate: bool,
+    /// Repeticiones agregadas (1 = solo este).
+    #[serde(skip)]
+    count: u64,
 }
 
 /// Hora actual en UTC con milisegundos (`2026-09-30T12:00:00.123Z`).
@@ -160,7 +184,50 @@ impl AuditEvent {
             run_id: None,
             result,
             details: std::collections::BTreeMap::new(),
+            aggregate: false,
+            count: 1,
         }
+    }
+
+    /// Marca el evento como agregable (ver el módulo).
+    #[must_use]
+    pub fn aggregated(mut self) -> Self {
+        self.aggregate = true;
+        self
+    }
+
+    /// Veces que representa este evento (1 si no se agregó).
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// ¿Se puede sumar `other` a este evento?
+    fn absorbs(&self, other: &AuditEvent) -> bool {
+        self.aggregate
+            && other.aggregate
+            && self.actor == other.actor
+            && self.action == other.action
+            && self.result == other.result
+            && self.secret_ref == other.secret_ref
+            && self
+                .details
+                .iter()
+                .filter(|(k, _)| **k != DetailKey::Count)
+                .eq(other
+                    .details
+                    .iter()
+                    .filter(|(k, _)| **k != DetailKey::Count))
+    }
+
+    /// Suma `other` (ya comprobado con [`absorbs`](Self::absorbs)). El contador se queda
+    /// en [`MAX_COUNT`] (18 dígitos, la forma que acepta el motor).
+    fn absorb(&mut self, other: &AuditEvent) {
+        self.count = self.count.saturating_add(other.count).min(MAX_COUNT);
+        if self.run_id != other.run_id {
+            self.run_id = None;
+        }
+        self.details
+            .insert(DetailKey::Count, self.count.to_string());
     }
 
     /// Solo se guarda si cumple la gramática del llavero.
@@ -194,8 +261,8 @@ impl AuditEvent {
     }
 }
 
+/// Cambios de estado del motor (solo los manda el supervisor) y sincronía de pruebas.
 enum AuditMsg {
-    Event(AuditEvent),
     Attach(StdinWriter),
     LogOnly,
     Detach,
@@ -212,15 +279,80 @@ enum Mode {
     LogOnly,
 }
 
+/// Búfer acotado compartido entre `record` y la tarea que envía.
+struct Shared {
+    buffer: Mutex<VecDeque<AuditEvent>>,
+    /// Hay eventos nuevos.
+    notify: Notify,
+    dropped: AtomicU64,
+    dropped_log: LogSampler,
+}
+
+impl Shared {
+    fn lock(&self) -> MutexGuard<'_, VecDeque<AuditEvent>> {
+        match self.buffer.lock() {
+            Ok(buffer) => buffer,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// Agrega o guarda al final; si no cabe, descarta el más viejo.
+    fn push_back(&self, event: AuditEvent) {
+        let mut buffer = self.lock();
+        if event.aggregate {
+            if let Some(existing) = buffer.iter_mut().rev().find(|e| e.absorbs(&event)) {
+                existing.absorb(&event);
+                return;
+            }
+        }
+        if buffer.len() >= AUDIT_BUFFER {
+            buffer.pop_front();
+            drop(buffer);
+            self.count_drop();
+            buffer = self.lock();
+        }
+        buffer.push_back(event);
+    }
+
+    /// Devuelve al principio un evento que no se pudo enviar (si no cabe, se descarta).
+    fn push_front(&self, event: AuditEvent) {
+        let mut buffer = self.lock();
+        if buffer.len() >= AUDIT_BUFFER {
+            drop(buffer);
+            self.count_drop();
+            return;
+        }
+        buffer.push_front(event);
+    }
+
+    fn pop_front(&self) -> Option<AuditEvent> {
+        self.lock().pop_front()
+    }
+
+    fn count_drop(&self) {
+        let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+        if self.dropped_log.hit() {
+            tracing::warn!(
+                limit = AUDIT_BUFFER,
+                descartados = total,
+                "búfer de auditoría lleno: se descarta el evento más viejo"
+            );
+        }
+    }
+}
+
 /// Cola de auditoría del núcleo. Clonable; `record` nunca bloquea.
 #[derive(Clone)]
 pub struct AuditQueue {
+    shared: Arc<Shared>,
     tx: mpsc::UnboundedSender<AuditMsg>,
 }
 
 impl std::fmt::Debug for AuditQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AuditQueue").finish_non_exhaustive()
+        f.debug_struct("AuditQueue")
+            .field("dropped", &self.dropped())
+            .finish_non_exhaustive()
     }
 }
 
@@ -228,15 +360,26 @@ impl AuditQueue {
     /// Crea la cola y su tarea en `runtime`.
     pub fn spawn(runtime: &tokio::runtime::Handle) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        runtime.spawn(forward(rx));
-        Self { tx }
+        let shared = Arc::new(Shared {
+            buffer: Mutex::new(VecDeque::new()),
+            notify: Notify::new(),
+            dropped: AtomicU64::new(0),
+            dropped_log: LogSampler::new(),
+        });
+        runtime.spawn(forward(Arc::clone(&shared), rx));
+        Self { shared, tx }
     }
 
-    /// Registra un evento (se envía o se guarda según el estado del motor).
+    /// Registra un evento (se envía o se guarda según el estado del motor). Nunca
+    /// bloquea: si el búfer está lleno, se descarta el más viejo.
     pub fn record(&self, event: AuditEvent) {
-        if self.tx.send(AuditMsg::Event(event)).is_err() {
-            tracing::warn!("la cola de auditoría no está disponible");
-        }
+        self.shared.push_back(event);
+        self.shared.notify.notify_one();
+    }
+
+    /// Eventos descartados por el búfer lleno desde que se creó la cola.
+    pub fn dropped(&self) -> u64 {
+        self.shared.dropped.load(Ordering::Relaxed)
     }
 
     /// El motor está listo y su base disponible: se envía lo guardado y lo siguiente.
@@ -261,17 +404,18 @@ impl AuditQueue {
         let _ = self.tx.send(AuditMsg::Sync(tx));
         rx.await.unwrap_or(usize::MAX)
     }
-}
 
-fn push(buffer: &mut VecDeque<AuditEvent>, event: AuditEvent) {
-    if buffer.len() >= AUDIT_BUFFER {
-        buffer.pop_front();
-        tracing::warn!(
-            limit = AUDIT_BUFFER,
-            "búfer de auditoría lleno: se descarta el evento más viejo"
-        );
+    /// Eventos en el búfer ahora mismo, sin esperar a la tarea (pruebas).
+    #[cfg(test)]
+    pub fn buffered(&self) -> usize {
+        self.shared.lock().len()
     }
-    buffer.push_back(event);
+
+    /// Eventos en el búfer ahora mismo (pruebas): copia para inspeccionarlos.
+    #[cfg(test)]
+    pub fn snapshot(&self) -> Vec<AuditEvent> {
+        self.shared.lock().iter().cloned().collect()
+    }
 }
 
 fn log_event(event: &AuditEvent) {
@@ -280,46 +424,56 @@ fn log_event(event: &AuditEvent) {
         result = event.result.as_str(),
         secret_ref = event.secret_ref.as_deref(),
         run_id = event.run_id.as_deref(),
+        count = event.count,
         "auditoría (sin motor gestionado)"
     );
 }
 
-async fn forward(mut rx: mpsc::UnboundedReceiver<AuditMsg>) {
-    let mut buffer: VecDeque<AuditEvent> = VecDeque::new();
-    let mut mode = Mode::Buffer;
-    while let Some(msg) = rx.recv().await {
-        match msg {
-            AuditMsg::Event(event) => match &mode {
-                Mode::LogOnly => log_event(&event),
-                Mode::Buffer | Mode::Engine(_) => push(&mut buffer, event),
-            },
-            AuditMsg::Attach(writer) => mode = Mode::Engine(writer),
-            AuditMsg::LogOnly => {
-                for event in buffer.drain(..) {
-                    log_event(&event);
-                }
-                mode = Mode::LogOnly;
-            }
-            AuditMsg::Detach => mode = Mode::Buffer,
-            #[cfg(test)]
-            AuditMsg::Sync(reply) => {
-                let _ = reply.send(buffer.len());
-                continue;
+/// Envía (o registra) lo que haya en el búfer según el modo.
+async fn flush(shared: &Shared, mode: &mut Mode) {
+    match mode {
+        Mode::Buffer => {}
+        Mode::LogOnly => {
+            let drained: Vec<AuditEvent> = shared.lock().drain(..).collect();
+            for event in &drained {
+                log_event(event);
             }
         }
-        // Envía en orden; ante un fallo de escritura, el evento se conserva y se vuelve
-        // a guardar hasta el siguiente motor listo.
-        if let Mode::Engine(writer) = &mode {
-            while let Some(event) = buffer.front() {
-                if writer.send(event.to_line()).await {
-                    buffer.pop_front();
-                } else {
+        Mode::Engine(writer) => {
+            // En orden; ante un fallo (tubería cerrada o motor atascado, con plazo en
+            // `StdinWriter::send`) el evento vuelve al búfer hasta el siguiente motor.
+            while let Some(event) = shared.pop_front() {
+                if !writer.send(event.to_line()).await {
+                    shared.push_front(event);
                     tracing::warn!("no se pudo enviar la auditoría al motor; se guarda");
-                    mode = Mode::Buffer;
+                    *mode = Mode::Buffer;
                     break;
                 }
             }
         }
+    }
+}
+
+async fn forward(shared: Arc<Shared>, mut rx: mpsc::UnboundedReceiver<AuditMsg>) {
+    let mut mode = Mode::Buffer;
+    loop {
+        tokio::select! {
+            biased;
+            msg = rx.recv() => match msg {
+                None => break,
+                Some(AuditMsg::Attach(writer)) => mode = Mode::Engine(writer),
+                Some(AuditMsg::LogOnly) => mode = Mode::LogOnly,
+                Some(AuditMsg::Detach) => mode = Mode::Buffer,
+                #[cfg(test)]
+                Some(AuditMsg::Sync(reply)) => {
+                    flush(&shared, &mut mode).await;
+                    let _ = reply.send(shared.lock().len());
+                    continue;
+                }
+            },
+            () = shared.notify.notified() => {}
+        }
+        flush(&shared, &mut mode).await;
     }
 }
 
@@ -434,6 +588,7 @@ mod tests {
             DetailKey::Reason,
             DetailKey::ErrorCode,
             DetailKey::AgentKind,
+            DetailKey::Count,
         ]
         .map(|k| serde_json::to_value(k).unwrap());
         assert_eq!(
@@ -445,7 +600,8 @@ mod tests {
                 "op",
                 "reason",
                 "error_code",
-                "agent_kind"
+                "agent_kind",
+                "count"
             ]
             .map(Value::from)
             .to_vec()
@@ -522,6 +678,135 @@ mod tests {
         assert_eq!(queue.sync().await, 1, "el evento no se pierde");
         queue.record(event(1));
         assert_eq!(queue.sync().await, 2);
+    }
+
+    fn malformed(run_id: Option<&str>) -> AuditEvent {
+        let mut event = AuditEvent::new(Actor::System, Action::GrantReleased, Outcome::Denied)
+            .detail(DetailKey::Reason, "not_active")
+            .aggregated();
+        if let Some(run_id) = run_id {
+            event = event.run_id(run_id);
+        }
+        event
+    }
+
+    #[tokio::test]
+    async fn los_repetidos_agregables_se_suman_en_un_evento() {
+        let queue = AuditQueue::spawn(&tokio::runtime::Handle::current());
+        let other = "0192f0a0-0000-7abc-8def-000000000003";
+        queue.record(malformed(Some(RUN)));
+        queue.record(event(0));
+        queue.record(malformed(Some(RUN)));
+        assert_eq!(queue.sync().await, 2);
+        assert_eq!(
+            queue.snapshot()[0].run_id.as_deref(),
+            Some(RUN),
+            "mismo run_id"
+        );
+        queue.record(malformed(Some(other)));
+        queue.record(malformed(None));
+        // Uno distinto (otro motivo) no se suma; uno sin marcar tampoco.
+        queue.record(
+            AuditEvent::new(Actor::System, Action::GrantReleased, Outcome::Denied)
+                .detail(DetailKey::Reason, "malformed")
+                .aggregated(),
+        );
+        queue.record(event(0));
+        assert_eq!(queue.sync().await, 4);
+        let events = queue.snapshot();
+        assert_eq!(events[0].count(), 4);
+        assert_eq!(
+            events[0].run_id, None,
+            "run_id distintos: el agregado no lleva"
+        );
+        assert_eq!(events[1].count(), 1);
+        assert_eq!(events[2].count(), 1);
+        assert_eq!(events[3].count(), 1);
+
+        let (core, engine) = tokio::io::duplex(64 * 1024);
+        queue.attach(StdinWriter::spawn(Box::new(core)));
+        assert_eq!(queue.sync().await, 0);
+        let lines = read_lines(&mut BufReader::new(engine), 4).await;
+        assert_eq!(
+            lines[0]["details"],
+            json!({"reason": "not_active", "count": "4"})
+        );
+        assert_eq!(lines[0]["run_id"], Value::Null);
+        assert_eq!(lines[0]["result"], "denied");
+        assert_eq!(lines[1]["details"]["reason"], "n0");
+        assert_eq!(lines[2]["details"], json!({"reason": "malformed"}));
+    }
+
+    #[test]
+    fn el_contador_agregado_no_pasa_del_maximo() {
+        let mut first = malformed(None);
+        first.count = MAX_COUNT - 1;
+        first.absorb(&malformed(None));
+        first.absorb(&malformed(None));
+        assert_eq!(first.count(), MAX_COUNT);
+        assert_eq!(first.details[&DetailKey::Count].len(), 18);
+    }
+
+    /// Un motor que no lee stdin: `record` no bloquea y la memoria queda acotada al búfer.
+    #[tokio::test]
+    async fn motor_que_no_lee_stdin_no_hace_crecer_la_cola() {
+        let (logs, _guard) = crate::test_logs::capture();
+        let queue = AuditQueue::spawn(&tokio::runtime::Handle::current());
+        // Tubería de 256 bytes que nadie lee; plazo de atasco largo para que la tarea
+        // quede esperando mientras llegan eventos.
+        let (core, _engine) = tokio::io::duplex(256);
+        queue.attach(StdinWriter::spawn_with_stall(
+            Box::new(core),
+            std::time::Duration::from_secs(60),
+        ));
+        let started = std::time::Instant::now();
+        for n in 0..20_000 {
+            queue.record(event(n));
+            queue.record(malformed(Some(RUN)));
+            if n % 1000 == 0 {
+                tokio::task::yield_now().await;
+                assert!(queue.buffered() <= AUDIT_BUFFER);
+            }
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "record no bloquea"
+        );
+        assert!(queue.buffered() <= AUDIT_BUFFER, "{}", queue.buffered());
+        assert!(queue.dropped() > 19_000, "{}", queue.dropped());
+        // Muestreado: el aviso no se repite por cada descarte.
+        let warnings = logs.text().matches("búfer de auditoría lleno").count();
+        assert!((1..=400).contains(&warnings), "{warnings}");
+        assert!(format!("{queue:?}").contains("dropped"));
+    }
+
+    #[tokio::test]
+    async fn el_escritor_de_stdin_avisa_del_atasco_y_no_espera_sin_plazo() {
+        let (logs, _guard) = crate::test_logs::capture();
+        let (core, _engine) = tokio::io::duplex(16);
+        let writer =
+            StdinWriter::spawn_with_stall(Box::new(core), std::time::Duration::from_millis(100));
+        let line = || Zeroizing::new(vec![b'x'; 64]);
+        // La primera no cabe: tras el plazo falla y el escritor queda atascado.
+        let (first, second) = tokio::join!(writer.send(line()), writer.send(line()));
+        assert!(!first && !second);
+        tokio::time::timeout(std::time::Duration::from_secs(5), writer.stalled())
+            .await
+            .expect("no avisó del atasco");
+        assert!(!writer.send(line()).await, "ya no acepta líneas");
+        assert!(logs
+            .text()
+            .contains(crate::engine::supervisor::LOG_STDIN_STALLED));
+        // Si la tubería se cierra (no atasco), `stalled` no vuelve.
+        let (core, engine) = tokio::io::duplex(16);
+        drop(engine);
+        let closed = StdinWriter::spawn(Box::new(core));
+        assert!(!closed.send(line()).await);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), closed.stalled())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

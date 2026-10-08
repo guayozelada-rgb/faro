@@ -266,6 +266,20 @@ pub fn engine_env(
         .collect()
 }
 
+/// Comando del motor con el entorno limpio (`env_clear()`), solo las variables de
+/// [`ENGINE_ENV_ALLOWLIST`] del núcleo y las fijas del intérprete. Todo lanzador del motor
+/// (también el de release, T11) debe partir de aquí; la prueba lanza un proceso real con
+/// este mismo comando para comprobar que no hereda nada más.
+pub fn engine_command(program: &Path) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(program);
+    command
+        .env_clear()
+        .envs(engine_env(std::env::vars_os()))
+        .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONIOENCODING", "utf-8");
+    command
+}
+
 /// Modo "gestionado" de desarrollo: lanza el Python de `apps/engine/.venv` (ADR 0004).
 #[cfg(debug_assertions)]
 #[derive(Debug, Clone)]
@@ -331,14 +345,8 @@ impl EngineLauncher for DevVenvLauncher {
             // Solo desarrollo (ADR 0012): `http` y loopback para wp-env.
             tracing::warn!("motor lanzado con --allow-local-sites (solo desarrollo)");
         }
-        let mut command = tokio::process::Command::new(&self.python);
-        command
-            .args(self.args())
-            .current_dir(&self.engine_dir)
-            .env_clear()
-            .envs(engine_env(std::env::vars_os()))
-            .env("PYTHONUNBUFFERED", "1")
-            .env("PYTHONIOENCODING", "utf-8");
+        let mut command = engine_command(&self.python);
+        command.args(self.args()).current_dir(&self.engine_dir);
         ChildProcess::spawn(command)
     }
 }
@@ -417,6 +425,56 @@ mod tests {
             .map(|(k, _)| k.into_string().unwrap())
             .collect();
         assert_eq!(kept, ["SystemRoot", "PATH", "TEMP", "HOME"]);
+    }
+
+    /// Revisión de seguridad de T5: el proceso lanzado **no** hereda el entorno del núcleo
+    /// (`env_clear()`), no solo que `engine_env` filtre. Un proceso real imprime su
+    /// entorno; una variable del padre fuera de la lista (la trampa) no debe aparecer.
+    #[tokio::test]
+    async fn el_proceso_lanzado_no_hereda_el_entorno_del_nucleo() {
+        let trap = std::env::vars_os()
+            .filter_map(|(name, _)| name.into_string().ok())
+            .find(|name| {
+                !name.is_empty()
+                    && !name.starts_with('=')
+                    && !ENGINE_ENV_ALLOWLIST
+                        .iter()
+                        .any(|allowed| allowed.eq_ignore_ascii_case(name))
+            })
+            .expect("el entorno de la prueba tiene alguna variable fuera de la lista");
+        let mut command = if cfg!(windows) {
+            let shell = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
+            let mut command = engine_command(Path::new(&shell));
+            command.args(["/d", "/c", "set"]);
+            command
+        } else {
+            engine_command(Path::new("/usr/bin/env"))
+        };
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000);
+        let output = command.output().await.unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8_lossy(&output.stdout);
+        let names: Vec<String> = text
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(name, _)| name.to_ascii_uppercase())
+            .collect();
+        assert!(
+            !names.contains(&trap.to_ascii_uppercase()),
+            "{trap} se heredó: {names:?}"
+        );
+        assert!(names.contains(&"PATH".to_owned()), "{names:?}");
+        assert!(names.contains(&"PYTHONUNBUFFERED".to_owned()), "{names:?}");
+        for name in &names {
+            assert!(
+                ENGINE_ENV_ALLOWLIST
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(name))
+                    || ["PYTHONUNBUFFERED", "PYTHONIOENCODING", "PROMPT"].contains(&name.as_str()),
+                "variable inesperada en el motor: {name}"
+            );
+        }
     }
 
     #[test]

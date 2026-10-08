@@ -817,3 +817,42 @@ async fn cada_operacion_deja_un_evento_de_auditoria_sin_la_clave() {
         }
     }
 }
+
+/// Revisión de seguridad de T5: saber qué proveedores tienen clave no lee su valor.
+#[test]
+fn providers_with_key_no_lee_el_valor_de_las_claves() {
+    use crate::error::AppError;
+
+    struct NoRead(MemoryStore);
+    impl SecretStore for NoRead {
+        fn get(&self, _: &str) -> Result<Option<SecretString>, AppError> {
+            panic!("providers_with_key no debe leer el valor");
+        }
+        fn set(&self, secret_ref: &str, secret: &SecretString) -> Result<(), AppError> {
+            self.0.set(secret_ref, secret)
+        }
+        fn delete(&self, secret_ref: &str) -> Result<(), AppError> {
+            self.0.delete(secret_ref)
+        }
+        fn exists(&self, secret_ref: &str) -> Result<bool, AppError> {
+            self.0.exists(secret_ref)
+        }
+    }
+    let store = NoRead(MemoryStore::new());
+    assert!(VaultService::providers_with_key(&store).is_empty());
+    for provider in [Provider::Openai, Provider::Gemini] {
+        store
+            .set(
+                provider.secret_ref(),
+                &SecretString::from("test-clave-ficticia-0000000000".to_owned()),
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        VaultService::providers_with_key(&store),
+        [Provider::Openai, Provider::Gemini]
+    );
+    // Un llavero caído cuenta como sin clave.
+    store.0.set_unavailable(true);
+    assert!(VaultService::providers_with_key(&store).is_empty());
+}

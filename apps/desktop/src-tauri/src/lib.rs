@@ -75,7 +75,7 @@ pub fn run() -> Result<(), tauri::Error> {
         });
         let agents = AgentsLink {
             control: Arc::clone(&control),
-            activity: Arc::new(ActivityRelay::new(activity_sink)),
+            activity: Arc::new(ActivityRelay::new(activity_sink, secrets.agent_table())),
         };
         // Perfil activo (`profiles.json`) y llave de su base en el llavero (ADR 0009 §3).
         let db_key = Arc::new(ProfileKeys::new(data_dir.clone(), keyring));

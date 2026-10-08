@@ -403,6 +403,7 @@ async fn engine_real_supervisor_reinicia_y_apaga_sin_huerfanos() {
         providers,
     );
     let activity_sink: ActivitySink = Arc::new(|_: &AgentActivity| {});
+    let agent_table = broker.agent_table();
     let handle = EngineSupervisor::spawn_with_agents(
         &tokio::runtime::Handle::current(),
         SupervisorConfig::default(),
@@ -411,7 +412,7 @@ async fn engine_real_supervisor_reinicia_y_apaga_sin_huerfanos() {
         broker,
         Some(AgentsLink {
             control: Arc::clone(&control),
-            activity: Arc::new(ActivityRelay::new(activity_sink)),
+            activity: Arc::new(ActivityRelay::new(activity_sink, agent_table)),
         }),
     );
     let mut statuses = Statuses(rx);

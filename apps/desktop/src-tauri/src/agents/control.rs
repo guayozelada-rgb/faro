@@ -5,10 +5,12 @@
 //!   + `sync_all` + renombrar). No es secreto.
 //! - Archivo ausente = no pausado. Ilegible o con otra forma = **pausado** (falla cerrado),
 //!   con aviso en el log; no se sobrescribe hasta que el usuario pausa o reanuda.
-//! - Pausar, en este orden: guarda el archivo → [`SecretBroker::pause_agents`] (borra todas
-//!   las concesiones de ejecución y rechaza las nuevas con `agents.paused`) → avisa al
-//!   motor → audita `agents.paused` (actor `user`). Si el archivo no se pudo guardar, la
-//!   pausa en memoria **sí** se aplica y el comando devuelve `agents.control_unavailable`.
+//! - Pausar, en este orden: [`SecretBroker::pause_agents`] (borra todas las concesiones de
+//!   ejecución y rechaza las nuevas con `agents.paused`) → avisa al motor → guarda el
+//!   archivo → audita `agents.paused` (actor `user`). La revocación en memoria va primero
+//!   (revisión de seguridad de T5): nunca espera al disco. Si el archivo no se pudo
+//!   guardar, la pausa en memoria ya está aplicada y el comando devuelve
+//!   `agents.control_unavailable`.
 //! - Reanudar: guarda el archivo; si falla, no reanuda (`agents.control_unavailable`).
 //! - El motor recibe `{"event":"agents_control","paused":…,"llm_providers":[…]}` justo
 //!   después de `ready` (cada arranque) y en cada cambio: pausa, reanudación y alta o baja
@@ -153,6 +155,9 @@ pub struct AgentsControl {
     tx: mpsc::UnboundedSender<ControlMsg>,
     /// Serializa pausar y reanudar.
     ops: tokio::sync::Mutex<()>,
+    /// Solo pruebas: se llama justo antes de guardar el archivo.
+    #[cfg(test)]
+    save_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl fmt::Debug for AgentsControl {
@@ -191,6 +196,8 @@ impl AgentsControl {
             audit,
             tx,
             ops: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            save_hook: Mutex::new(None),
         })
     }
 
@@ -214,18 +221,18 @@ impl AgentsControl {
                 _ => now_utc(),
             }
         };
-        // 1. Guardar.
-        let saved = self.save(true, &changed_at).await;
-        // 2–3. Revocar y rechazar nuevas (aunque no se haya podido guardar).
+        // 1. Revocar y rechazar nuevas, en memoria y antes que nada.
         let state = ControlState {
             paused: true,
-            changed_at: Some(changed_at),
+            changed_at: Some(changed_at.clone()),
         };
         *self.lock() = state.clone();
         let revoked = self.broker.pause_agents();
-        // 4. Avisar al motor.
+        // 2. Avisar al motor.
         let _ = self.tx.send(ControlMsg::Changed);
-        // 5. Auditar.
+        // 3. Guardar (si falla, la pausa ya está aplicada).
+        let saved = self.save(true, &changed_at).await;
+        // 4. Auditar.
         let mut event = AuditEvent::new(Actor::User, Action::AgentsPaused, Outcome::Ok);
         if !saved {
             event = event
@@ -292,7 +299,17 @@ impl AgentsControl {
         let _ = rx.await;
     }
 
+    /// Solo pruebas: `hook` se llama justo antes de cada guardado.
+    #[cfg(test)]
+    pub(crate) fn set_save_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *lock_any(&self.save_hook) = Some(hook);
+    }
+
     async fn save(&self, paused: bool, changed_at: &str) -> bool {
+        #[cfg(test)]
+        if let Some(hook) = lock_any(&self.save_hook).clone() {
+            hook();
+        }
         let path = self.path.clone();
         let changed_at = changed_at.to_owned();
         match tokio::task::spawn_blocking(move || write_state(&path, paused, &changed_at)).await {
@@ -310,8 +327,12 @@ impl AgentsControl {
 }
 
 fn lock(state: &Mutex<ControlState>) -> MutexGuard<'_, ControlState> {
-    match state.lock() {
-        Ok(state) => state,
+    lock_any(state)
+}
+
+fn lock_any<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }
 }

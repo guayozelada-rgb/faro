@@ -19,15 +19,25 @@ pub struct FakeLauncher {
     tx: mpsc::UnboundedSender<FakeProcess>,
     failures: Mutex<VecDeque<AppError>>,
     next_pid: AtomicUsize,
+    /// Tamaño de la tubería de stdin (un motor que no lee la llena antes).
+    stdin_buffer: usize,
 }
 
 impl FakeLauncher {
     pub fn new() -> (Arc<Self>, mpsc::UnboundedReceiver<FakeProcess>) {
+        Self::with_stdin_buffer(PIPE_BUFFER)
+    }
+
+    /// Como `new`, con una tubería de stdin de `stdin_buffer` bytes.
+    pub fn with_stdin_buffer(
+        stdin_buffer: usize,
+    ) -> (Arc<Self>, mpsc::UnboundedReceiver<FakeProcess>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let launcher = Arc::new(Self {
             tx,
             failures: Mutex::new(VecDeque::new()),
             next_pid: AtomicUsize::new(1000),
+            stdin_buffer,
         });
         (launcher, rx)
     }
@@ -43,7 +53,7 @@ impl EngineLauncher for FakeLauncher {
         if let Some(err) = self.failures.lock().unwrap().pop_front() {
             return Err(err);
         }
-        let (stdin_core, stdin_engine) = duplex(PIPE_BUFFER);
+        let (stdin_core, stdin_engine) = duplex(self.stdin_buffer);
         let (stdout_engine, stdout_core) = duplex(PIPE_BUFFER);
         let (stderr_engine, stderr_core) = duplex(PIPE_BUFFER);
         let (exit_tx, _exit_rx) = watch::channel(None);

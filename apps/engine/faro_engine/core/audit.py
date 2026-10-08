@@ -19,14 +19,15 @@ Dos orígenes, una tabla:
 
 Validación común: `actor` ∈ `user`, `agent`, `system`; `result` ∈ `ok`, `denied`,
 `error`; `secret_ref` con la gramática del llavero; `run_id` UUID; `details` solo con
-las claves `site_id`, `operation`, `provider`, `op`, `reason`, `error_code` (F1a) y
-`agent_kind` (F1b) en cualquier acción, más las de `ACTION_DETAIL_KEYS` solo en su acción
+las claves `site_id`, `operation`, `provider`, `op`, `reason`, `error_code` (F1a),
+`agent_kind` (F1b) y `count` (eventos agregados del núcleo, revisión de seguridad de T5)
+en cualquier acción, más las de `ACTION_DETAIL_KEYS` solo en su acción
 del motor (`level` en `autonomy.changed`; `approval_id` en `approval.*`; `decision` en
 `approval.decided`), nunca en un evento del núcleo. Valores de texto de 1 a 64
 caracteres `[A-Za-z0-9._:/-]` que no tengan forma de secreto (filtro de ADR 0013) y, para
 esas claves, su forma exacta (`DETAIL_VALUE_PATTERNS`: `decision` ∈ `approve`, `reject`;
-`level` de `0` a `3`; `approval_id` UUID). Nunca se guarda un valor de un secreto ni
-`last4`.
+`level` de `0` a `3`; `approval_id` UUID; `count` entero positivo en decimal). Nunca se
+guarda un valor de un secreto ni `last4`.
 
 La fila guarda `occurred_at` normalizado a UTC con milisegundos (`…T12:00:00.123Z`),
 `id` = UUID v7 nuevo y `details` como JSON compacto con las claves ordenadas.
@@ -110,6 +111,8 @@ DETAIL_KEYS: Final = frozenset(
         "error_code",
         # F1b §6.
         "agent_kind",
+        # Revisión de seguridad de T5: repeticiones de un evento agregado del núcleo.
+        "count",
     },
 )
 # Claves que solo admite una acción concreta del motor (F1b §6); nunca llegan del núcleo.
@@ -124,6 +127,8 @@ DETAIL_VALUE_PATTERNS: Final[Mapping[str, re.Pattern[str]]] = {
     "decision": re.compile(r"approve|reject"),
     "level": re.compile(r"[0-3]"),
     "approval_id": RUN_ID_PATTERN,
+    # Entero de 2 a 18 dígitos sin ceros a la izquierda (el núcleo solo lo pone si es ≥ 2).
+    "count": re.compile(r"[1-9][0-9]{0,17}"),
 }
 # RFC 3339 en UTC con `Z` y de 0 a 9 decimales.
 OCCURRED_AT_PATTERN: Final = re.compile(

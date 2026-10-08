@@ -29,6 +29,7 @@ fn test_config() -> SupervisorConfig {
         restart_window: Duration::from_secs(600),
         shutdown_grace: Duration::from_millis(300),
         startup_health_retry: Duration::from_millis(20),
+        stdin_stall_timeout: Duration::from_secs(5),
     }
 }
 
@@ -531,9 +532,14 @@ async fn lineas_de_stdout_no_reconocidas_se_ignoran_sin_registrar_contenido() {
         .await;
     proc.send_ready(h.server.port).await;
     h.expect_state(EngineState::Ready).await;
-    proc.stdout_line("contenido-secreto-despues-de-ready").await;
+    // Muestreado: la 1.ª y la 100.ª (2 antes de `ready` y 98 después).
+    for _ in 0..98 {
+        proc.stdout_line("contenido-secreto-despues-de-ready").await;
+    }
 
-    wait_until(|| logs.text().matches(LOG_UNRECOGNIZED_LINE).count() >= 3).await;
+    wait_until(|| logs.text().matches(LOG_UNRECOGNIZED_LINE).count() >= 2).await;
+    assert_eq!(logs.text().matches(LOG_UNRECOGNIZED_LINE).count(), 2);
+    assert!(logs.text().contains("total=100"), "{}", logs.text());
     assert_eq!(h.handle.status().state, EngineState::Ready);
     let text = logs.text();
     assert!(!text.contains("contenido-secreto"));

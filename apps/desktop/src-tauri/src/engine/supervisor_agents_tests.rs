@@ -36,6 +36,7 @@ fn config() -> SupervisorConfig {
         restart_window: Duration::from_secs(600),
         shutdown_grace: Duration::from_millis(300),
         startup_health_retry: Duration::from_millis(20),
+        stdin_stall_timeout: Duration::from_secs(5),
     }
 }
 
@@ -47,11 +48,16 @@ struct Harness {
     data_dir: tempfile::TempDir,
     control: Arc<AgentsControl>,
     activity: Arc<Mutex<Vec<AgentActivity>>>,
+    audit: AuditQueue,
 }
 
 async fn harness() -> Harness {
+    harness_with(config(), 256 * 1024).await
+}
+
+async fn harness_with(config: SupervisorConfig, stdin_buffer: usize) -> Harness {
     let server = FakeHealthServer::start().await;
-    let (launcher, procs) = FakeLauncher::new();
+    let (launcher, procs) = FakeLauncher::with_stdin_buffer(stdin_buffer);
     let (tx, statuses) = mpsc::unbounded_channel();
     let sink: StatusSink = Arc::new(move |s: &EngineStatus| {
         let _ = tx.send(s.clone());
@@ -94,15 +100,17 @@ async fn harness() -> Harness {
     let seen = Arc::clone(&activity);
     let activity_sink: ActivitySink =
         Arc::new(move |a: &AgentActivity| seen.lock().unwrap().push(a.clone()));
+    let agent_table = broker.agent_table();
+    let audit = broker.audit().clone();
     let handle = EngineSupervisor::spawn_with_agents(
         &tokio::runtime::Handle::current(),
-        config(),
+        config,
         EngineMode::Managed { launcher, db_key },
         sink,
         broker,
         Some(AgentsLink {
             control: Arc::clone(&control),
-            activity: Arc::new(ActivityRelay::new(activity_sink)),
+            activity: Arc::new(ActivityRelay::new(activity_sink, agent_table)),
         }),
     );
     Harness {
@@ -113,6 +121,7 @@ async fn harness() -> Harness {
         data_dir,
         control,
         activity,
+        audit,
     }
 }
 
@@ -319,4 +328,90 @@ impl Harness {
             .expect("no se lanzó ningún proceso")
             .expect("canal cerrado")
     }
+}
+
+/// Revisión de seguridad de T5: un motor comprometido inunda stdout con liberaciones
+/// inventadas y solicitudes sin `id`, y no lee su stdin. La cola de auditoría queda
+/// acotada, el núcleo sigue respondiendo y, cuando stdin lleva el plazo atascado, el
+/// supervisor reinicia el motor; el nuevo recibe la auditoría agregada.
+#[tokio::test(flavor = "current_thread")]
+async fn motor_que_inunda_y_no_lee_stdin_queda_acotado_y_se_reinicia() {
+    use tokio::io::AsyncWriteExt;
+
+    let (logs, _guard) = crate::test_logs::capture();
+    let mut cfg = config();
+    cfg.stdin_stall_timeout = Duration::from_millis(500);
+    // Tubería de stdin de 16 KB: un motor que no lee la llena enseguida.
+    let mut h = harness_with(cfg, 16 * 1024).await;
+    let mut proc = h.bring_up().await;
+    // A partir de aquí el motor no vuelve a leer stdin.
+    let flood = tokio::spawn(async move {
+        // Hasta que el núcleo lo mate (se cierra su stdout); tope por si acaso.
+        for n in 0..2_000_000u32 {
+            let line = match n % 3 {
+                0 => json!({"event": "run_grant_release",
+                            "run_id": format!("0192f0a0-3333-7abc-8def-{n:012}"),
+                            "status": "succeeded"})
+                .to_string(),
+                1 => r#"{"event":"run_grant_request"}"#.to_owned(),
+                _ => r#"{"event":"secret_request","id":"x"}"#.to_owned(),
+            };
+            if proc
+                .stdout
+                .write_all(format!("{line}\n").as_bytes())
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+        proc
+    });
+    // Mientras tanto: memoria acotada y el núcleo responde.
+    let deadline = Instant::now() + WAIT;
+    let mut paused = false;
+    loop {
+        assert!(h.audit.buffered() <= crate::secrets::audit::AUDIT_BUFFER);
+        if !paused {
+            timeout(Duration::from_secs(1), h.control.pause())
+                .await
+                .expect("pausar no espera al motor atascado")
+                .unwrap();
+            paused = true;
+        }
+        if h.handle.status().state != EngineState::Ready {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no se detectó el atasco");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    h.expect_state(EngineState::Restarting).await;
+    let first = flood.await.unwrap();
+    assert!(first.was_killed(), "el motor atascado se mata");
+    assert!(
+        logs.text()
+            .contains(crate::engine::supervisor::LOG_STDIN_STALLED),
+        "{}",
+        logs.text()
+    );
+    assert!(h.audit.buffered() <= crate::secrets::audit::AUDIT_BUFFER);
+
+    // El motor nuevo recibe la auditoría guardada, con los repetidos agregados.
+    let mut second = h.bring_up().await;
+    let deadline = Instant::now() + WAIT;
+    let aggregated = loop {
+        let event = next_event(&mut second, "audit").await;
+        if event["details"]["count"].is_string() {
+            break event;
+        }
+        assert!(Instant::now() < deadline, "no llegó un evento agregado");
+    };
+    let count: u64 = aggregated["details"]["count"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(count > 1, "{aggregated}");
+    assert_eq!(aggregated["result"], "denied");
+    h.handle.shutdown().await;
 }

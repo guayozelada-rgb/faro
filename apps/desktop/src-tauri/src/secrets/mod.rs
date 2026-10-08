@@ -58,6 +58,7 @@ use crate::agents::manifest::{self, AgentTable};
 use crate::engine::protocol::{parse_stdout_line, StdoutLine};
 use crate::engine::supervisor::StdinWriter;
 use crate::error::AppError;
+use crate::logging::sample::LogSampler;
 use crate::profile::{new_uuid_v7, NIL_PROFILE_ID};
 use crate::secrets::audit::{Action, Actor, AuditEvent, AuditQueue, DetailKey, Outcome};
 use crate::secrets::operations::{OperationSpec, TemplateKind};
@@ -130,6 +131,10 @@ impl Origin {
 
 #[derive(Debug)]
 struct Grant {
+    /// Número de serie único (nunca se repite en la vida de la app): `prepare` exige que
+    /// la concesión tras el candado sea la misma que se comprobó, aunque otra con el mismo
+    /// `run_id` la haya reemplazado (p. ej. un motor nuevo; revisión de seguridad de T5).
+    serial: u64,
     origin: Origin,
     expires_at: Instant,
     /// Motor y perfil para los que se concedió: la ejecución usa estos, no los actuales.
@@ -148,6 +153,8 @@ struct BrokerState {
     /// Pausa global de los agentes (ADR 0014 §2). Empieza en `true` (falla cerrado) hasta
     /// que `AgentsControl` aplica el estado guardado.
     agents_paused: bool,
+    /// Último número de serie de concesión entregado.
+    last_serial: u64,
 }
 
 impl Default for BrokerState {
@@ -158,11 +165,27 @@ impl Default for BrokerState {
             profile_id: None,
             grants: HashMap::new(),
             agents_paused: true,
+            last_serial: 0,
         }
     }
 }
 
+impl Grant {
+    /// ¿Incluye la referencia con esa operación (permiso simple)?
+    fn allows(&self, secret_ref: &str, op: Op) -> bool {
+        self.refs
+            .iter()
+            .any(|(r, ops)| r == secret_ref && ops.contains(&op))
+    }
+}
+
 impl BrokerState {
+    /// Número de serie para una concesión nueva.
+    fn next_serial(&mut self) -> u64 {
+        self.last_serial = self.last_serial.saturating_add(1);
+        self.last_serial
+    }
+
     /// Quita las concesiones caducadas.
     fn prune(&mut self, now: Instant) {
         self.grants.retain(|_, grant| grant.expires_at > now);
@@ -188,8 +211,16 @@ const fn deny(code: &'static str, reason: &'static str) -> Denial {
     Denial { code, reason }
 }
 
+/// Concesión que permitió una solicitud: qué permite, su origen y su número de serie.
+#[derive(Debug, Clone)]
+struct Checked {
+    permit: Permit,
+    origin: Origin,
+    serial: u64,
+}
+
 /// Permiso o rechazo de una solicitud, con el origen de la concesión (si se encontró).
-type GrantCheck = Result<(Permit, Origin), (Denial, Option<Origin>)>;
+type GrantCheck = Result<Checked, (Denial, Option<Origin>)>;
 
 /// Resultado de ejecutar una operación en el llavero.
 enum Done {
@@ -235,6 +266,24 @@ impl Drop for GrantGuard {
     }
 }
 
+/// Avisos del log que un motor puede repetir sin límite: se muestrean (el primero y uno
+/// de cada 100; revisión de seguridad de T5).
+#[derive(Debug, Default)]
+struct Samples {
+    /// `secret_request` sin `id` válido.
+    secret_unanswerable: LogSampler,
+    /// `secret_request` malformada (con o sin `id`).
+    secret_malformed: LogSampler,
+    /// `run_grant_request` sin `id` válido.
+    grant_unanswerable: LogSampler,
+    /// `run_grant_request` malformada (con o sin `id`).
+    grant_malformed: LogSampler,
+    /// `run_grant_release` malformada.
+    release_malformed: LogSampler,
+    /// `run_grant_release` de una concesión que no existe.
+    release_not_active: LogSampler,
+}
+
 /// Canal de secretos del núcleo. Uno por app (`AppState`), compartido con el supervisor.
 pub struct SecretBroker {
     store: Arc<dyn SecretStore>,
@@ -245,6 +294,7 @@ pub struct SecretBroker {
     state: Mutex<BrokerState>,
     /// Serializa las operaciones del llavero de todas las solicitudes.
     keyring: tokio::sync::Mutex<()>,
+    samples: Samples,
 }
 
 impl fmt::Debug for SecretBroker {
@@ -262,6 +312,7 @@ impl SecretBroker {
             agents: manifest::embedded(),
             state: Mutex::new(BrokerState::default()),
             keyring: tokio::sync::Mutex::new(()),
+            samples: Samples::default(),
         }
     }
 
@@ -271,6 +322,11 @@ impl SecretBroker {
     pub(crate) fn with_agent_table(mut self, table: AgentTable) -> Self {
         self.agents = Arc::new(table);
         self
+    }
+
+    /// Tabla de agentes (también la usa el relevo de actividad).
+    pub fn agent_table(&self) -> Arc<AgentTable> {
+        Arc::clone(&self.agents)
     }
 
     /// Cola de auditoría (también la usa la Bóveda).
@@ -423,9 +479,11 @@ impl SecretBroker {
         if !state.running || state.generation != generation {
             return Err(AppError::engine_not_ready());
         }
+        let serial = state.next_serial();
         state.grants.insert(
             run_id.clone(),
             Grant {
+                serial,
                 origin: Origin::operation(operation.operation_id.as_str()),
                 expires_at: Instant::now() + ttl,
                 generation,
@@ -448,9 +506,11 @@ impl SecretBroker {
         let mut state = self.lock();
         let generation = state.generation;
         let profile_id = state.profile_id.clone();
+        let serial = state.next_serial();
         state.grants.insert(
             run_id.to_owned(),
             Grant {
+                serial,
                 origin: Origin::operation("pruebaInterna"),
                 expires_at: Instant::now() + Duration::from_secs(60),
                 generation,
@@ -472,9 +532,11 @@ impl SecretBroker {
         let mut state = self.lock();
         let generation = state.generation;
         let profile_id = state.profile_id.clone();
+        let serial = state.next_serial();
         state.grants.insert(
             run_id.to_owned(),
             Grant {
+                serial,
                 origin: Origin::run(agent),
                 expires_at: Instant::now() + Duration::from_secs(60),
                 generation,
@@ -547,7 +609,12 @@ impl SecretBroker {
                 return Some(error_line(&id, NOT_ALLOWED));
             }
             ParsedRequest::Unanswerable => {
-                tracing::warn!("solicitud de secreto sin id válido: se ignora");
+                if self.samples.secret_unanswerable.hit() {
+                    tracing::warn!(
+                        total = self.samples.secret_unanswerable.total(),
+                        "solicitud de secreto sin id válido: se ignora"
+                    );
+                }
                 self.record_denial(None, None, None, None, deny(NOT_ALLOWED, "malformed"));
                 return None;
             }
@@ -588,7 +655,7 @@ impl SecretBroker {
             return error_line(&id, NOT_ALLOWED);
         };
         // 2–3. Concesión activa con esa referencia y operación.
-        let (permit, origin) = match self.check_grant(&run_id, &secret_ref, kind, op) {
+        let checked = match self.check_grant(&run_id, &secret_ref, kind, op) {
             Ok(found) => found,
             Err((denial, origin)) => {
                 self.record_denial(
@@ -601,10 +668,16 @@ impl SecretBroker {
                 return error_line(&id, denial.code);
             }
         };
+        let Checked {
+            permit,
+            origin,
+            serial,
+        } = checked;
         let context = Context {
             secret_ref: &secret_ref,
             run_id: &run_id,
             op,
+            serial,
             origin: Some(origin),
             site_id: match kind {
                 RefKind::Wp { site_id } => Some(site_id),
@@ -645,12 +718,16 @@ impl SecretBroker {
             return Err((deny(NOT_ALLOWED, "run_inactive"), None));
         };
         let origin = grant.origin.clone();
-        let plain = grant
-            .refs
-            .iter()
-            .any(|(r, ops)| r == secret_ref && ops.contains(&op));
-        if plain {
-            return Ok((Permit::Plain, origin));
+        let serial = grant.serial;
+        let checked = |permit| {
+            Ok(Checked {
+                permit,
+                origin: origin.clone(),
+                serial,
+            })
+        };
+        if grant.allows(secret_ref, op) {
+            return checked(Permit::Plain);
         }
         if let (Some(slot), RefKind::Wp { .. }) = (grant.new_slot.as_mut(), kind) {
             if op == Op::Create {
@@ -658,7 +735,7 @@ impl SecretBroker {
                     return Err((deny(NOT_ALLOWED, "new_already_used"), Some(origin)));
                 }
                 slot.attempted = Some(secret_ref.to_owned());
-                return Ok((Permit::NewCreate, origin));
+                return checked(Permit::NewCreate);
             }
             if op == Op::Delete
                 && slot.allow_delete
@@ -670,7 +747,7 @@ impl SecretBroker {
                     // `create` esté antes en la cola del llavero.
                     slot.cancelled = true;
                 }
-                return Ok((Permit::NewDelete, origin));
+                return checked(Permit::NewDelete);
             }
         }
         Err((deny(NOT_ALLOWED, "not_granted"), Some(origin)))
@@ -730,7 +807,10 @@ impl SecretBroker {
     }
 
     /// Ya con el candado del llavero (ninguna otra solicitud ejecuta): la concesión debe
-    /// seguir viva (no caducó y el motor que la recibió sigue en marcha) y, para `{new}`:
+    /// ser **la misma** que se comprobó (mismo número de serie: otra con el mismo `run_id`,
+    /// p. ej. de un motor nuevo, no vale), seguir viva (no caducó y el motor que la recibió
+    /// sigue en marcha) y, si es un permiso simple, seguir incluyendo la referencia y la
+    /// operación. Para `{new}`:
     ///
     /// - `create` cancelada por un `delete` → se rechaza sin tocar el llavero ni el índice;
     /// - `delete` sin nada creado en esta concesión → bien sin tocar el llavero (y la
@@ -740,7 +820,8 @@ impl SecretBroker {
         let (running, generation) = (state.running, state.generation);
         let grant = match state.grants.get_mut(context.run_id) {
             Some(grant)
-                if grant.expires_at > Instant::now()
+                if grant.serial == context.serial
+                    && grant.expires_at > Instant::now()
                     && running
                     && grant.generation == generation =>
             {
@@ -748,6 +829,9 @@ impl SecretBroker {
             }
             _ => return Err(deny(NOT_ALLOWED, "run_inactive")),
         };
+        if permit == Permit::Plain && !grant.allows(context.secret_ref, context.op) {
+            return Err(deny(NOT_ALLOWED, "not_granted"));
+        }
         match permit {
             Permit::NewCreate if grant.new_slot.as_ref().is_some_and(|slot| slot.cancelled) => {
                 Err(deny(NOT_ALLOWED, "new_cancelled"))
@@ -844,17 +928,26 @@ impl SecretBroker {
     ) {
         // Solo se registra la referencia si cumple la gramática (nunca texto arbitrario).
         let valid_ref = secret_ref.filter(|r| parse_ref(r).is_some());
-        tracing::warn!(
-            op,
-            secret_ref = valid_ref,
-            operation = origin.map(|o| &*o.label),
-            error_code = denial.code,
-            reason = denial.reason,
-            "solicitud de secreto rechazada"
-        );
+        // Las malformadas, que el motor puede repetir sin límite, se muestrean en el log y
+        // se agregan en la auditoría.
+        let malformed = denial.reason == "malformed";
+        if !malformed || self.samples.secret_malformed.hit() {
+            tracing::warn!(
+                op,
+                secret_ref = valid_ref,
+                operation = origin.map(|o| &*o.label),
+                error_code = denial.code,
+                reason = denial.reason,
+                total = malformed.then(|| self.samples.secret_malformed.total()),
+                "solicitud de secreto rechazada"
+            );
+        }
         let mut event = AuditEvent::new(Actor::System, Action::Denied, Outcome::Denied)
             .detail(DetailKey::ErrorCode, denial.code)
             .detail(DetailKey::Reason, denial.reason);
+        if malformed {
+            event = event.aggregated();
+        }
         if let Some(secret_ref) = valid_ref {
             event = event.secret_ref(secret_ref);
             if let Some(RefKind::Wp { site_id }) = parse_ref(secret_ref) {
@@ -888,6 +981,8 @@ struct Context<'a> {
     secret_ref: &'a str,
     run_id: &'a str,
     op: Op,
+    /// Número de serie de la concesión comprobada en `check_grant`.
+    serial: u64,
     origin: Option<Origin>,
     site_id: Option<&'a str>,
 }

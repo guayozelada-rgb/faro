@@ -1,5 +1,7 @@
 //! Registro con `tracing` en JSON a `<app_log_dir>/faro.<AAAA-MM-DD>.log`,
-//! rotación diaria y como máximo 7 archivos (spec F0 §4.3, §6).
+//! rotación diaria y como máximo 7 archivos (spec F0 §4.3, §6), con un tope de
+//! [`capped::MAX_LOG_BYTES_PER_DAY`] por día ([`capped`]). Los avisos que un motor puede
+//! repetir sin límite se muestrean ([`sample`]).
 //!
 //! Nunca se registran: token del motor, claves, cabeceras, cuerpos hacia
 //! proveedores ni líneas crudas del stdout del motor. Como segunda defensa, todo lo
@@ -7,7 +9,9 @@
 //! sustituye por `[redactado]` los valores con forma de secreto y los campos con
 //! nombre sensible (ADR 0013).
 
+pub mod capped;
 mod redact;
+pub mod sample;
 
 pub use redact::{redact, RedactingMakeWriter, REDACTED, SENSITIVE_NAMES};
 
@@ -103,7 +107,12 @@ where
 
 /// Inicia el registro global. Devuelve el guardián que debe vivir hasta salir.
 pub fn init(log_dir: &Path) -> Result<LogGuard, AppError> {
-    let appender = file_appender(log_dir)?;
+    let appender = capped::CappedWriter::new(
+        file_appender(log_dir)?,
+        log_dir,
+        capped::MAX_LOG_BYTES_PER_DAY,
+    );
+    // `non_blocking` tiene su propia cola acotada (descarta si se llena).
     let (writer, guard) = tracing_appender::non_blocking(appender);
     // En depuración también a stderr, legible, para la terminal de `tauri dev`.
     let console = cfg!(debug_assertions).then_some(std::io::stderr as fn() -> std::io::Stderr);

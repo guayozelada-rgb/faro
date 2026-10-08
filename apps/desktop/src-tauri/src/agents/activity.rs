@@ -13,8 +13,13 @@
 //! - Identificadores (`agent`, `status`, `step`, `error_code`) con forma
 //!   `^[a-z][a-z0-9_.]{0,47}$`; `kind` de la lista; UUID canónicos; enteros de 0 a 10^12;
 //!   `occurred_at` RFC 3339 en UTC (`Z`); línea de 4 KB como mucho.
+//! - `agent` debe ser un tipo de la tabla de agentes incrustada
+//!   ([`crate::agents::manifest`]); si no, se descarta (campo `agent`).
 //! - **Nunca texto libre**: una línea que no cumpla se descarta con un aviso que dice qué
-//!   campo falló, nunca su contenido.
+//!   campo falló, nunca su contenido. El aviso se muestrea (el primero y uno de cada 100,
+//!   con el total), igual que el del límite.
+//! - `status`, `step` y `error_code` solo tienen forma de identificador: la interfaz los
+//!   traduce **siempre** por catálogo y nunca los muestra en crudo (condición para T10).
 //! - Cubo de fichas de [`RATE_PER_SECOND`] eventos por segundo: el exceso se descarta (la
 //!   interfaz lo nota por el salto de `seq` y vuelve a pedir el estado).
 //!
@@ -30,6 +35,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
+use crate::agents::manifest::AgentTable;
+use crate::logging::sample::should_log;
 use crate::secrets::refs::is_canonical_uuid;
 
 /// Evento Tauri hacia la ventana `main`.
@@ -235,6 +242,8 @@ pub type ActivitySink = Arc<dyn Fn(&AgentActivity) + Send + Sync>;
 /// Relevo de `agent_activity` hacia la interfaz.
 pub struct ActivityRelay {
     sink: ActivitySink,
+    /// Tipos de agente admitidos (`agent-grants.json`).
+    agents: Arc<AgentTable>,
     bucket: Mutex<Bucket>,
     invalid: AtomicU64,
     rate_limited: AtomicU64,
@@ -250,9 +259,10 @@ impl fmt::Debug for ActivityRelay {
 }
 
 impl ActivityRelay {
-    pub fn new(sink: ActivitySink) -> Self {
+    pub fn new(sink: ActivitySink, agents: Arc<AgentTable>) -> Self {
         Self {
             sink,
+            agents,
             bucket: Mutex::new(Bucket::new(RATE_PER_SECOND, Instant::now())),
             invalid: AtomicU64::new(0),
             rate_limited: AtomicU64::new(0),
@@ -265,15 +275,25 @@ impl ActivityRelay {
     }
 
     fn relay_at(&self, line: &str, now: Instant) -> Relayed {
-        let activity = match parse_activity(line) {
+        let parsed = parse_activity(line).and_then(|activity| {
+            if self.agents.find(&activity.agent).is_some() {
+                Ok(activity)
+            } else {
+                Err(InvalidActivity("agent"))
+            }
+        });
+        let activity = match parsed {
             Ok(activity) => activity,
             Err(InvalidActivity(field)) => {
                 let total = self.invalid.fetch_add(1, Ordering::Relaxed) + 1;
-                tracing::warn!(
-                    field,
-                    descartadas = total,
-                    "actividad de agente inválida: se descarta"
-                );
+                // Un aviso a la primera y luego uno cada 100, para no llenar el log.
+                if should_log(total) {
+                    tracing::warn!(
+                        field,
+                        descartadas = total,
+                        "actividad de agente inválida: se descarta"
+                    );
+                }
                 return Relayed::Invalid;
             }
         };
@@ -284,7 +304,7 @@ impl ActivityRelay {
         if !allowed {
             let total = self.rate_limited.fetch_add(1, Ordering::Relaxed) + 1;
             // Un aviso al primer descarte y luego uno cada 100, para no llenar el log.
-            if total == 1 || total.is_multiple_of(100) {
+            if should_log(total) {
                 tracing::warn!(
                     limite_por_segundo = RATE_PER_SECOND,
                     descartadas = total,

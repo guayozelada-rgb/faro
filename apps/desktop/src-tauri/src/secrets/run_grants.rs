@@ -33,6 +33,11 @@
 //! Todo rechazo responde `agent.grant_denied` (o `agents.paused`) **sin motivo**: el motivo
 //! solo va al log y a la auditoría. `run_grant_release` solo borra la concesión de
 //! ejecución de su `run_id` (nunca una de operación) y no tiene respuesta.
+//!
+//! Lo que un motor puede repetir sin límite (solicitudes malformadas o sin `id`,
+//! liberaciones malformadas o de concesiones que no existen) se registra muestreado (el
+//! primero y uno de cada 100) y se audita agregado (`details.count`); la liberación de
+//! una concesión que no existe se audita como `denied` (`not_active`).
 
 use serde::Deserialize;
 
@@ -211,7 +216,12 @@ impl SecretBroker {
                 return Some(error_response(&id, GRANT_DENIED));
             }
             Parsed::Unanswerable => {
-                tracing::warn!("solicitud de concesión de agente sin id válido: se ignora");
+                if self.samples.grant_unanswerable.hit() {
+                    tracing::warn!(
+                        total = self.samples.grant_unanswerable.total(),
+                        "solicitud de concesión de agente sin id válido: se ignora"
+                    );
+                }
                 self.record_run_denial(&Facts::none(), deny(GRANT_DENIED, "malformed"));
                 return None;
             }
@@ -302,9 +312,11 @@ impl SecretBroker {
             refs.push((wp_ref(site), vec![Op::Get]));
         }
         let seconds = spec.grant_seconds();
+        let serial = state.next_serial();
         state.grants.insert(
             request.run_id.clone(),
             Grant {
+                serial,
                 origin: Origin::run(&spec.kind),
                 expires_at: Instant::now() + Duration::from_secs(seconds),
                 generation,
@@ -349,7 +361,12 @@ impl SecretBroker {
         let release = match serde_json::from_str::<RawRelease>(line.trim()) {
             Ok(raw) if raw.event == "run_grant_release" && is_canonical_uuid(&raw.run_id) => raw,
             _ => {
-                tracing::warn!("liberación de concesión de agente malformada: se ignora");
+                if self.samples.release_malformed.hit() {
+                    tracing::warn!(
+                        total = self.samples.release_malformed.total(),
+                        "liberación de concesión de agente malformada: se ignora"
+                    );
+                }
                 return;
             }
         };
@@ -380,17 +397,33 @@ impl SecretBroker {
             }
         };
         let status = release.status.as_str();
-        tracing::info!(
-            run_id = release.run_id.as_str(),
-            status,
-            found = removed.is_some(),
-            "concesión de agente liberada"
-        );
-        let mut event = AuditEvent::new(Actor::System, Action::GrantReleased, Outcome::Ok)
-            .run_id(&release.run_id);
-        event = match &removed {
-            Some(origin) => with_origin(event, origin).detail(DetailKey::Reason, status),
-            None => event.detail(DetailKey::Reason, "not_active"),
+        let event = match &removed {
+            Some(origin) => {
+                // Cada una corresponde a una concesión emitida: no hace falta muestrear.
+                tracing::info!(
+                    run_id = release.run_id.as_str(),
+                    status,
+                    "concesión de agente liberada"
+                );
+                let event = AuditEvent::new(Actor::System, Action::GrantReleased, Outcome::Ok)
+                    .run_id(&release.run_id);
+                with_origin(event, origin).detail(DetailKey::Reason, status)
+            }
+            None => {
+                // Caducada, ya liberada o inventada: el motor puede repetirla sin límite.
+                if self.samples.release_not_active.hit() {
+                    tracing::info!(
+                        run_id = release.run_id.as_str(),
+                        status,
+                        total = self.samples.release_not_active.total(),
+                        "liberación de una concesión de agente que no existe"
+                    );
+                }
+                AuditEvent::new(Actor::System, Action::GrantReleased, Outcome::Denied)
+                    .run_id(&release.run_id)
+                    .detail(DetailKey::Reason, "not_active")
+                    .aggregated()
+            }
         };
         self.audit.record(event);
     }
@@ -416,17 +449,24 @@ impl SecretBroker {
 
     /// Log y auditoría de un rechazo: el motivo solo aquí, nunca en la respuesta.
     fn record_run_denial(&self, facts: &Facts<'_>, denial: Denial) {
-        tracing::warn!(
-            run_id = facts.run_id,
-            agent = facts.agent,
-            trigger = facts.trigger.map(Trigger::as_str),
-            error_code = denial.code,
-            reason = denial.reason,
-            "concesión de agente denegada"
-        );
+        let malformed = denial.reason == "malformed";
+        if !malformed || self.samples.grant_malformed.hit() {
+            tracing::warn!(
+                run_id = facts.run_id,
+                agent = facts.agent,
+                trigger = facts.trigger.map(Trigger::as_str),
+                error_code = denial.code,
+                reason = denial.reason,
+                total = malformed.then(|| self.samples.grant_malformed.total()),
+                "concesión de agente denegada"
+            );
+        }
         let mut event = AuditEvent::new(Actor::System, Action::GrantDenied, Outcome::Denied)
             .detail(DetailKey::ErrorCode, denial.code)
             .detail(DetailKey::Reason, denial.reason);
+        if malformed {
+            event = event.aggregated();
+        }
         event = facts.apply(event);
         if let Some(provider) = facts.provider {
             event = event.detail(DetailKey::Provider, provider.as_str());

@@ -37,7 +37,55 @@ fn recording() -> (ActivityRelay, Arc<Mutex<Vec<AgentActivity>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let out = Arc::clone(&seen);
     let sink: ActivitySink = Arc::new(move |a: &AgentActivity| out.lock().unwrap().push(a.clone()));
-    (ActivityRelay::new(sink), seen)
+    let table = crate::agents::manifest::parse_agent_grants(
+        r#"[{"kind":"site_summary","requires_site":true,"max_grant_seconds":900,"secrets":[
+            {"ref":"llm/openai/default","access":["get"]}]}]"#,
+    )
+    .unwrap();
+    (ActivityRelay::new(sink, Arc::new(table)), seen)
+}
+
+#[test]
+fn un_agente_fuera_de_la_tabla_se_descarta() {
+    let (logs, _guard) = crate::test_logs::capture();
+    let (relay, seen) = recording();
+    // Forma válida, pero el tipo no está en `agent-grants.json`.
+    assert!(parse_activity(&with("agent", json!("agente_inventado"))).is_ok());
+    assert_eq!(
+        relay.relay(&with("agent", json!("agente_inventado"))),
+        Relayed::Invalid
+    );
+    assert!(seen.lock().unwrap().is_empty());
+    let text = logs.text();
+    assert!(text.contains("field=\"agent\""), "{text}");
+    assert!(!text.contains("agente_inventado"), "{text}");
+    // Con la tabla incrustada (vacía hasta T9) no se emite nada.
+    let empty = ActivityRelay::new(
+        Arc::new(|_: &AgentActivity| panic!("no debe emitirse")),
+        crate::agents::manifest::embedded(),
+    );
+    if crate::agents::manifest::embedded()
+        .find("site_summary")
+        .is_none()
+    {
+        assert_eq!(empty.relay(&valid().to_string()), Relayed::Invalid);
+    }
+}
+
+#[test]
+fn las_lineas_invalidas_se_registran_muestreadas() {
+    let (logs, _guard) = crate::test_logs::capture();
+    let (relay, _seen) = recording();
+    for _ in 0..250 {
+        assert_eq!(relay.relay("no es json"), Relayed::Invalid);
+    }
+    assert_eq!(relay.dropped(), (250, 0));
+    // La primera, la 100 y la 200.
+    assert_eq!(
+        logs.text().matches("actividad de agente inválida").count(),
+        3
+    );
+    assert!(logs.text().contains("descartadas=200"), "{}", logs.text());
 }
 
 #[test]

@@ -577,12 +577,12 @@ async fn la_liberacion_solo_borra_su_concesion_de_ejecucion() {
         Some(OPENAI_KEY)
     );
 
-    // Liberar algo que ya no existe no hace nada.
+    // Liberar algo que ya no existe no hace nada (y se audita como rechazo).
     s.release(RUN, "succeeded");
-    assert_eq!(
-        s.audit_of("agent.grant_released").await["details"]["reason"],
-        "not_active"
-    );
+    let event = s.audit_of("agent.grant_released").await;
+    assert_eq!(event["details"]["reason"], "not_active");
+    assert_eq!(event["result"], "denied");
+    assert_eq!(event["run_id"], RUN);
 
     // Formas inválidas o de otra generación se ignoran.
     let (logs, _guard) = crate::test_logs::capture();
@@ -878,4 +878,63 @@ async fn las_concesiones_de_engine_call_no_dependen_de_la_pausa() {
     );
     assert_eq!(s.broker.pause_agents(), 0);
     assert_eq!(s.broker.active_grants(), 1);
+}
+
+// ---------- Inundación desde el motor (revisión de seguridad de T5) ----------
+
+/// Liberaciones de concesiones inexistentes y solicitudes sin `id`, repetidas: el log las
+/// muestrea (la 1.ª, la 100.ª y la 200.ª) y la auditoría las agrega con `details.count`.
+#[tokio::test(flavor = "current_thread")]
+async fn lo_que_el_motor_repite_se_muestrea_en_el_log_y_se_agrega_en_la_auditoria() {
+    let (logs, _guard) = crate::test_logs::capture();
+    let s = setup().await;
+    // Sin motor que lea: la auditoría espera en el búfer (ahí se agrega).
+    s.audit.detach();
+    assert_eq!(s.audit.sync().await, 0);
+    for n in 0..250 {
+        s.release(&run_id(n), "succeeded");
+        assert!(s
+            .broker
+            .handle_run_grant_line(r#"{"event":"run_grant_request"}"#, 1)
+            .is_none());
+        assert!(s
+            .broker
+            .handle_line(r#"{"event":"secret_request","id":"x"}"#)
+            .await
+            .is_none());
+        s.broker
+            .handle_run_release_line(r#"{"event":"run_grant_release"}"#, 1);
+    }
+    assert_eq!(s.audit.sync().await, 3);
+    let events = s.audit.snapshot();
+    let lines: Vec<Value> = events
+        .iter()
+        .map(|e| serde_json::from_slice(&e.to_line()).unwrap())
+        .collect();
+    assert_eq!(lines[0]["action"], "agent.grant_released");
+    assert_eq!(lines[0]["result"], "denied");
+    assert_eq!(lines[0]["run_id"], Value::Null, "run_id distintos");
+    assert_eq!(
+        lines[0]["details"],
+        json!({"reason": "not_active", "count": "250"})
+    );
+    assert_eq!(lines[1]["action"], "agent.grant_denied");
+    assert_eq!(lines[1]["details"]["reason"], "malformed");
+    assert_eq!(lines[1]["details"]["count"], "250");
+    assert_eq!(lines[2]["action"], "secret.denied");
+    assert_eq!(lines[2]["details"]["reason"], "malformed");
+    assert_eq!(lines[2]["details"]["count"], "250");
+
+    let text = logs.text();
+    for message in [
+        "liberación de una concesión de agente que no existe",
+        "solicitud de concesión de agente sin id válido",
+        "concesión de agente denegada",
+        "solicitud de secreto sin id válido",
+        "solicitud de secreto rechazada",
+        "liberación de concesión de agente malformada",
+    ] {
+        assert_eq!(text.matches(message).count(), 3, "{message}: {text}");
+    }
+    assert!(text.contains("total=200"), "{text}");
 }

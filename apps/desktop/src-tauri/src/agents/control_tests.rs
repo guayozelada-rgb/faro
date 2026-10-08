@@ -282,6 +282,58 @@ async fn fallo_al_guardar_la_pausa_se_aplica_igual_pero_reanudar_no() {
     assert!(!s.dir.path().join("agents-control.json.tmp").exists());
 }
 
+/// Revisión de seguridad de T5: la revocación en memoria no espera al disco. Cuando se
+/// guarda el archivo, las concesiones de ejecución ya no existen y las nuevas se rechazan.
+#[tokio::test]
+async fn pausar_revoca_en_memoria_antes_de_guardar() {
+    let (s, control) = setup_with(setup_dir());
+    s.broker.engine_started(1, None);
+    s.broker.insert_test_run_grant(
+        "0192f0a0-5555-7abc-8def-000000000001",
+        "site_summary",
+        vec![(
+            "llm/anthropic/default".to_owned(),
+            vec![crate::secrets::request::Op::Get],
+        )],
+    );
+    assert_eq!(s.broker.active_run_grants(), 1);
+    let seen: Arc<Mutex<Vec<(bool, usize, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+    let (broker, out, file) = (Arc::clone(&s.broker), Arc::clone(&seen), s.file());
+    control.set_save_hook(Arc::new(move || {
+        out.lock().unwrap().push((
+            broker.agents_paused(),
+            broker.active_run_grants(),
+            file.exists(),
+        ));
+    }));
+    control.pause().await.unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [(true, 0, false)],
+        "al guardar ya estaba en pausa, sin concesiones y aún sin archivo"
+    );
+    assert!(s.read_file()["paused"].as_bool().unwrap());
+
+    // Si el guardado falla, la pausa en memoria se mantiene y el error es el mismo.
+    control.resume().await.unwrap();
+    fs::remove_file(s.file()).unwrap();
+    fs::create_dir(s.file()).unwrap();
+    fs::write(s.file().join("x"), b"x").unwrap();
+    s.broker.insert_test_run_grant(
+        "0192f0a0-5555-7abc-8def-000000000002",
+        "site_summary",
+        vec![(
+            "llm/anthropic/default".to_owned(),
+            vec![crate::secrets::request::Op::Get],
+        )],
+    );
+    let err = control.pause().await.unwrap_err();
+    assert_eq!(err.code, "agents.control_unavailable");
+    assert_eq!(seen.lock().unwrap().last(), Some(&(true, 0, true)));
+    assert!(control.state().paused);
+    assert_eq!(s.broker.active_run_grants(), 0);
+}
+
 // ---------- Aviso al motor ----------
 
 #[tokio::test]

@@ -373,3 +373,25 @@ async def test_engine_only_keys_accept_their_values(
     assert await AuditLog(db).record(action=action, result="ok", details=details)
     [row] = _rows(db)
     assert json.loads(row[7]) == details
+
+
+# --- `details.count` de eventos agregados del núcleo (revisión de seguridad de T5) ----
+
+
+def test_core_aggregated_event_with_count_is_inserted(db: Database) -> None:
+    event = core_event(
+        action="agent.grant_released",
+        secret_ref=None,
+        run_id=None,
+        result="denied",
+        details={"reason": "not_active", "count": "250"},
+    )
+    assert AuditLog(db).record_core_event(event)
+    [row] = _rows(db)
+    assert row[3] == "agent.grant_released"
+
+
+@pytest.mark.parametrize("value", ["0", "01", "-1", "1.5", "x", "1" * 19, ""])
+def test_count_must_be_a_positive_integer(value: str) -> None:
+    with pytest.raises(InvalidAuditEventError):
+        parse_core_event(core_event(details={"count": value}))
