@@ -66,8 +66,14 @@ Líneas nuevas, una línea JSON compacta cada una:
 - `run_grant_*` y `agent_activity`: motor → núcleo. `run_grant_response` y `agents_control`: núcleo → motor.
 - **`agents_control` justo después de `ready`** (en cada arranque) y en cada cambio (pausa, reanudación, alta o baja de clave en la Bóveda). **Hasta recibirlo, el motor no ejecuta ninguna tarea** (`core/jobs/control.py`); en `--dev` nunca llega. Una línea `agents_control` con otra forma pausa (falla cerrado).
 - Concesiones (núcleo `secrets/run_grants.rs`, motor `core/jobs/grants.py`): espera de 10 s; sin respuesta o canal cerrado → `agent.grant_denied`. Reglas en la skill `llavero-y-cifrado`.
-- Pausa en el núcleo (`agents/control.rs`, `<app_data_dir>/agents-control.json`): ausente = activo, ilegible = pausado; comandos `agents_pause_all`, `agents_resume_all`, `agents_control_state`.
-- `agent_activity`: esquema cerrado, ≤ 4 KB, 20 eventos/s; el núcleo la reenvía como `engine://agents` solo a la ventana `main` (`agents/activity.rs`). Sin texto libre.
+- Pausa en el núcleo (`agents/control.rs`, `<app_data_dir>/agents-control.json`): ausente = activo, ilegible = pausado; comandos `agents_pause_all`, `agents_resume_all`, `agents_control_state`. Al pausar se revoca en memoria antes de guardar el archivo.
+- `agent_activity`: esquema cerrado, ≤ 4 KB, 20 eventos/s, `agent` de `agent-grants.json`; el núcleo la reenvía como `engine://agents` solo a la ventana `main` (`agents/activity.rs`). Sin texto libre; la interfaz traduce `status`, `step` y `error_code` por catálogo.
+
+## Un motor que inunda o no lee stdin (revisión de seguridad de T5)
+
+- Todo lo que va al stdin del motor pasa por `StdinWriter` con plazo de atasco (`stdin_stall_timeout`, 10 s): si una línea no se escribe en ese plazo, el escritor deja de aceptar líneas y el supervisor mata y reinicia el motor (cuenta para el límite de reinicios).
+- La cola de auditoría del núcleo (`secrets/audit.rs`) está acotada a 500 eventos y `record` nunca bloquea; las repetidas (`malformed`, `not_active`) se agregan con `details.count`.
+- Los avisos que el motor puede provocar sin límite se muestrean con `logging::sample::LogSampler` (el primero y uno de cada 100). El log del núcleo tiene un tope de 64 MiB por día (`logging/capped.rs`).
 
 ## Reintento de conexiones cortadas (revisión del PR #39)
 
@@ -77,7 +83,7 @@ Con `LimitedH11Protocol` (PR #39) el motor acepta como mucho 64 conexiones entra
 
 ## Entorno del proceso del motor
 
-El lanzador usa `env_clear()` y solo pasa las variables de `ENGINE_ENV_ALLOWLIST` (`engine/launcher.rs`: las del sistema que el intérprete necesita, `PATH`, `TEMP`/`TMP`, `HOME`, locale y `TZ`) más `PYTHONUNBUFFERED` y `PYTHONIOENCODING`. Nunca hereda `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, proxies, `SSL_*`, `SSLKEYLOGFILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` ni variables de LiteLLM, LangSmith o de los proveedores (condición 11 de la revisión de T2). El lanzador de release (PyInstaller) debe hacer lo mismo.
+El lanzador arma el comando con `engine_command` (`env_clear()`) y solo pasa las variables de `ENGINE_ENV_ALLOWLIST` (`engine/launcher.rs`: las del sistema que el intérprete necesita, `PATH`, `TEMP`/`TMP`, `HOME`, locale y `TZ`) más `PYTHONUNBUFFERED` y `PYTHONIOENCODING`. Nunca hereda `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, proxies, `SSL_*`, `SSLKEYLOGFILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` ni variables de LiteLLM, LangSmith o de los proveedores (condición 11 de la revisión de T2). El lanzador de release (PyInstaller) debe partir de `engine_command`. Prueba con un proceso real: `el_proceso_lanzado_no_hereda_el_entorno_del_nucleo`.
 - El motor guarda el secreto solo en memoria durante la operación (`bytearray` que se sobrescribe); nunca lo escribe en disco ni en logs. La llave de SQLCipher solo llega en la 2.ª línea, nunca por `secret_request`.
 
 ## Integridad

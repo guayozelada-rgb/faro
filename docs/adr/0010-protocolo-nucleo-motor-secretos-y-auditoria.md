@@ -127,3 +127,9 @@ Amplía la validación de `details` de §4 para las acciones de F1b (spec F1b §
   Las acciones del núcleo (`secret.*`, `agents.*`, `agent.grant_*`) no tienen claves propias: un evento del núcleo con `approval_id`, `decision` o `level` se descarta como inválido. Así un núcleo con un error, o un evento mal construido, no puede falsear una decisión de aprobación en el registro.
 - **Forma exacta** (`DETAIL_VALUE_PATTERNS`), además del patrón general (1 a 64 caracteres `[A-Za-z0-9._:/-]`) y del filtro de valores con forma de secreto (ADR 0013): `decision` ∈ `approve`, `reject`; `level` de `0` a `3`; `approval_id` UUID (mismo patrón que `run_id`).
 - Una clave nueva de `details` se añade aquí y en `core/audit.py` a la vez, con su lista de acciones y, si tiene un conjunto cerrado de valores, su forma exacta. Para el núcleo: `DetailKey` de Rust (`secrets/audit.rs`) puede añadir `agent_kind` para `agent.grant_*` y `agents.*`, pero nunca una clave de `ACTION_DETAIL_KEYS`.
+
+## Actualización (2026-10-08, revisión de seguridad de T5): `details.count`
+
+- Clave común nueva en `DETAIL_KEYS`: `count`, con forma exacta `[1-9][0-9]{0,17}` (entero positivo en decimal, hasta 18 dígitos).
+- La usa el núcleo para **agregar** auditorías que un motor comprometido podría repetir sin límite: solicitudes malformadas (`secret.denied` y `agent.grant_denied` con `reason = malformed`) y liberaciones de concesiones que no existen (`agent.grant_released`, `denied`, `reason = not_active`). Mientras esperan en la cola del núcleo (acotada a 500 eventos), un evento igual suma 1 a `count` en lugar de ocupar otro sitio; si los `run_id` difieren, el agregado queda sin `run_id`. Solo aparece con valor 2 o más.
+- La cola de auditoría del núcleo descarta el evento más viejo si se llena (lo cuenta y lo registra muestreado). El log `tracing` del núcleo es la fuente fiable de lo que hizo el núcleo frente a un motor comprometido; `audit_log` está en la base del motor.
