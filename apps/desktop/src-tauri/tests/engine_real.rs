@@ -21,6 +21,9 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use faro_lib::agents::activity::{ActivityRelay, ActivitySink, AgentActivity};
+use faro_lib::agents::control::{AgentsControl, ProviderSource};
+use faro_lib::agents::AgentsLink;
 use faro_lib::engine::client::{EngineClient, HealthError};
 use faro_lib::engine::launcher::{DevVenvLauncher, EngineLauncher, EngineProcess};
 use faro_lib::engine::protocol::{self, StdoutLine};
@@ -266,6 +269,16 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
         )
         .await
         .unwrap();
+    // Protocolo v3 (F1b T5, ADR 0014): un `agents_control` válido, uno inválido a
+    // propósito (falla cerrado) y una `run_grant_response` que el motor no espera.
+    for line in [
+        r#"{"event":"agents_control","paused":false,"llm_providers":["openai"]}"#,
+        r#"{"event":"agents_control","paused":1,"llm_providers":[]}"#,
+        r#"{"event":"run_grant_response","id":"0192f0a0-0000-7abc-8def-00000000000b","ok":true,"expires_in_seconds":900}"#,
+    ] {
+        stdin.write_all(line.as_bytes()).await.unwrap();
+        stdin.write_all(b"\n").await.unwrap();
+    }
     stdin.flush().await.unwrap();
 
     // El intérprete real (pid de `ready`) está dentro del Job Object.
@@ -318,6 +331,19 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
         stderr_text.contains("secrets.response_ignored"),
         "la respuesta con id desconocido debe ignorarse"
     );
+    assert!(
+        stderr_text.contains("\"agents.control\""),
+        "el motor no recibió agents_control: {stderr_text}"
+    );
+    assert_eq!(
+        stderr_text.matches("agents.control_invalid").count(),
+        1,
+        "solo el agents_control inválido a propósito debe rechazarse"
+    );
+    assert!(
+        stderr_text.contains("agents.grant_response_ignored"),
+        "la respuesta de concesión con id desconocido debe ignorarse"
+    );
     assert!(!stderr_text.contains("protocol.unknown_line"));
     control.kill();
     let mut all = tree.clone();
@@ -362,20 +388,39 @@ async fn engine_real_supervisor_reinicia_y_apaga_sin_huerfanos() {
         launcher: Arc::new(DevVenvLauncher::new(dir.path().to_path_buf())),
         db_key: Arc::new(ProfileKeys::new(dir.path().to_path_buf(), store.clone())),
     };
-    let handle = EngineSupervisor::spawn(
+    let broker = Arc::new(SecretBroker::new(
+        store.clone(),
+        dir.path(),
+        AuditQueue::spawn(&tokio::runtime::Handle::current()),
+    ));
+    // Pausa y actividad de los agentes (F1b T5): el motor real recibe `agents_control`
+    // tras cada `ready` y en cada cambio.
+    let providers: ProviderSource = Arc::new(Vec::new);
+    let control = AgentsControl::load(
+        &tokio::runtime::Handle::current(),
+        dir.path(),
+        Arc::clone(&broker),
+        providers,
+    );
+    let activity_sink: ActivitySink = Arc::new(|_: &AgentActivity| {});
+    let handle = EngineSupervisor::spawn_with_agents(
         &tokio::runtime::Handle::current(),
         SupervisorConfig::default(),
         mode,
         sink,
-        Arc::new(SecretBroker::new(
-            store.clone(),
-            dir.path(),
-            AuditQueue::spawn(&tokio::runtime::Handle::current()),
-        )),
+        broker,
+        Some(AgentsLink {
+            control: Arc::clone(&control),
+            activity: Arc::new(ActivityRelay::new(activity_sink)),
+        }),
     );
     let mut statuses = Statuses(rx);
 
     let ready = statuses.expect(EngineState::Ready).await;
+    // Pausar y reanudar con el motor real en marcha: se guarda y el motor sigue sano.
+    assert!(control.pause().await.unwrap().paused);
+    assert!(!control.resume().await.unwrap().paused);
+    assert!(dir.path().join("agents-control.json").is_file());
     assert!(ready.version.is_some());
     // El núcleo creó perfil y llave y el motor abrió la base con ella.
     assert_eq!(ready.database_error, None, "{:?}", ready.database_error);
