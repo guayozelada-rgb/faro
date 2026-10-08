@@ -48,7 +48,36 @@ description: Cómo se empaqueta el motor Python de Faro con PyInstaller, cómo e
   `{"event":"secret_response","id":"<uuid>","value":"…"}` (get), `{"event":"secret_response","id":"<uuid>","ok":true}` (create, set, delete) o `{"event":"secret_response","id":"<uuid>","error":"vault.…"}`.
 - El `run_id` es el de la concesión que creó `engine_call` (cabecera `X-Faro-Run-Id`); sin él el motor no pide nada. Reglas de concesiones, `{new}`, índice de sitios y `max_wait`: skill `llavero-y-cifrado`.
 - Por stdin llegan también eventos `{"event":"audit",…}` del núcleo, que el motor inserta en `audit_log` (ADR 0010 §4).
-- Despacho: en el núcleo, el supervisor reparte las líneas de stdout (`ready`, `secret_request` → `SecretBroker`) y tiene un **escritor de stdin único** (canal) para token, `db_key`, `secret_response`, `audit` y `shutdown`. En el motor, el hilo `faro-protocol` reparte `shutdown`, `secret_response` y `audit`; todo lo que va a stdout pasa por `ProtocolWriter` (candado + una escritura + `flush`).
+- Despacho: en el núcleo, el supervisor reparte las líneas de stdout (`ready`; `secret_request`, `run_grant_request` y `run_grant_release` → tarea de `SecretBroker`; `agent_activity` → `agents::activity`) y tiene un **escritor de stdin único** (canal) para token, `db_key`, `secret_response`, `run_grant_response`, `agents_control`, `audit` y `shutdown`. En el motor, el hilo `faro-protocol` **solo reparte** `shutdown`, `secret_response`, `run_grant_response`, `agents_control` y `audit` (este último validado y encolado para el hilo `faro-audit`, que hace la inserción: una base lenta no retrasa ninguna respuesta); todo lo que va a stdout pasa por `ProtocolWriter` (candado + una escritura + `flush`).
+
+## Agentes en el protocolo (v3, ADR 0014, F1b T5)
+
+Líneas nuevas, una línea JSON compacta cada una:
+
+```json
+{"event":"run_grant_request","id":"<uuid>","run_id":"<uuid>","agent":"site_summary","site_id":"<uuid>"|null,"provider":"anthropic"|"openai"|"gemini"|null,"trigger":"user"|"schedule"|"catch_up"}
+{"event":"run_grant_response","id":"<uuid>","ok":true,"expires_in_seconds":900}
+{"event":"run_grant_response","id":"<uuid>","error":"agents.paused"|"agent.grant_denied"}
+{"event":"run_grant_release","run_id":"<uuid>","status":"succeeded"|"failed"|"cancelled"|"waiting_approval"|"paused"}
+{"event":"agent_activity","run_id":"<uuid>","seq":1,"occurred_at":"…Z","kind":"run_status"|"step_started"|"step_finished"|"approval_requested","agent":"…","site_id":"<uuid>"|null,"status":"…","step":"…"|null,"step_cost_micros":0,"run_cost_micros":0,"run_tokens":0,"error_code":"…"|null}
+{"event":"agents_control","paused":true,"llm_providers":["anthropic","openai"]}
+```
+
+- `run_grant_*` y `agent_activity`: motor → núcleo. `run_grant_response` y `agents_control`: núcleo → motor.
+- **`agents_control` justo después de `ready`** (en cada arranque) y en cada cambio (pausa, reanudación, alta o baja de clave en la Bóveda). **Hasta recibirlo, el motor no ejecuta ninguna tarea** (`core/jobs/control.py`); en `--dev` nunca llega. Una línea `agents_control` con otra forma pausa (falla cerrado).
+- Concesiones (núcleo `secrets/run_grants.rs`, motor `core/jobs/grants.py`): espera de 10 s; sin respuesta o canal cerrado → `agent.grant_denied`. Reglas en la skill `llavero-y-cifrado`.
+- Pausa en el núcleo (`agents/control.rs`, `<app_data_dir>/agents-control.json`): ausente = activo, ilegible = pausado; comandos `agents_pause_all`, `agents_resume_all`, `agents_control_state`.
+- `agent_activity`: esquema cerrado, ≤ 4 KB, 20 eventos/s; el núcleo la reenvía como `engine://agents` solo a la ventana `main` (`agents/activity.rs`). Sin texto libre.
+
+## Reintento de conexiones cortadas (revisión del PR #39)
+
+Con `LimitedH11Protocol` (PR #39) el motor acepta como mucho 64 conexiones entrantes; con una inundación local cierra con RST entre el 10 % y el 18 % de las conexiones nuevas antes de procesar su petición. `engine/client.rs` reintenta **una vez** `GET /health` y las operaciones repetibles (`GET`/`HEAD`, o con `Idempotency-Key`; hoy ninguna operación la usa) cuando `send()` falla por conexión antes de recibir la cabecera de la respuesta. No se reintenta un tiempo agotado, una respuesta empezada (cabecera recibida y cuerpo cortado) ni `POST`/`PUT`/`DELETE` sin clave. El plazo total de la operación incluye el reintento.
+
+**Riesgo residual:** `reqwest` no dice si llegó parte de la cabecera antes del corte, y un RST puede descartar en el sistema una respuesta ya escrita por el motor. En esos casos un `GET` puede ejecutarse dos veces en el motor. Se acepta porque solo se repiten operaciones sin efectos (o con clave de idempotencia). Si una inundación corta también el reintento, la operación falla con `engine.not_ready` (o `/health` cuenta un fallo; hacen falta 3 seguidos para reiniciar). Pruebas: `engine/client_tests.rs`.
+
+## Entorno del proceso del motor
+
+El lanzador usa `env_clear()` y solo pasa las variables de `ENGINE_ENV_ALLOWLIST` (`engine/launcher.rs`: las del sistema que el intérprete necesita, `PATH`, `TEMP`/`TMP`, `HOME`, locale y `TZ`) más `PYTHONUNBUFFERED` y `PYTHONIOENCODING`. Nunca hereda `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, proxies, `SSL_*`, `SSLKEYLOGFILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` ni variables de LiteLLM, LangSmith o de los proveedores (condición 11 de la revisión de T2). El lanzador de release (PyInstaller) debe hacer lo mismo.
 - El motor guarda el secreto solo en memoria durante la operación (`bytearray` que se sobrescribe); nunca lo escribe en disco ni en logs. La llave de SQLCipher solo llega en la 2.ª línea, nunca por `secret_request`.
 
 ## Integridad

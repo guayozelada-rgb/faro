@@ -36,9 +36,7 @@ function coreCodes(): string[] {
   const body = source.split("#[cfg(test)]")[0] ?? "";
   return [
     ...body.matchAll(/^\s+"((?:engine|vault|db|plugin|internal|agents|agent)\.[a-z_]+)",\r?$/gm),
-  ].map(
-    (match) => match[1] ?? "",
-  );
+  ].map((match) => match[1] ?? "");
 }
 
 describe("catálogo de errores", () => {

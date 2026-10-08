@@ -65,6 +65,14 @@ ADR 0010 §2–3. El motor pide (stdout) → el núcleo valida → responde (std
 - Orden de comprobación: gramática (`vault.invalid_ref`) → `run_id` activo → referencia y `op` concedidas (`vault.secret_not_allowed`) → `db/*` **nunca** → forma del valor en `create`/`set` (`vault.invalid_input`) → en el llavero: para `get`, que exista (`vault.not_found`); para `create`, que no exista (`vault.already_exists`). Fallo del llavero → `vault.keyring_unavailable`.
 - Cada solicitud, aceptada o rechazada, deja un evento de auditoría (sin valor) y una línea de log con `op`, `secret_ref`, `operation` y código.
 
+### Concesiones por ejecución de agentes (ADR 0014 §1, F1b T5)
+
+- El motor las pide con `run_grant_request` antes de cada ejecución; el núcleo decide con `packages/shared/agent-grants.json` incrustado y validado con tipos cerrados (`src/agents/manifest.rs`; tabla inválida = vacía, no se concede nada).
+- Orden: pausa (`agents.paused`) → agente en la tabla → `run_id` UUID sin otra concesión activa → sitio requerido y del índice del perfil activo → proveedor presente y declarado → como mucho 4 activas. Cualquier otro fallo responde `agent.grant_denied` **sin motivo** (el motivo va al log y a la auditoría).
+- La concesión lleva solo `llm/<provider>/default: get` y, si el agente declara `wp/{site_id}/token`, `wp/<site_id>/token: get`. Nunca `create`/`set`/`delete`, `{new}`, `db/*` ni `oauth/*`. Caduca a `min(max_grant_seconds, 900)` s; se renueva solo para el mismo `run_id` tras caducar y repitiendo todas las comprobaciones.
+- Mismo mapa que las de operación: atadas a generación y perfil, revalidadas tras el candado del llavero, borradas al reiniciar el motor. `run_grant_release` solo borra la de ejecución de su `run_id`. **Pausar borra todas las de ejecución** y no toca las de `engine_call`.
+- Auditoría `agent.grant_issued`/`agent.grant_denied`/`agent.grant_released` (actor `system`) y `agents.paused`/`agents.resumed` (actor `user`), con `details.operation = "agent:<kind>"` y `details.agent_kind` (solo para tipos de la tabla). El núcleo nunca envía `approval_id`, `decision` ni `level`.
+
 ### `{new}` (solo `connectSite`)
 
 - **Una sola** `create` por concesión, aunque falle (el slot guarda `attempted`).

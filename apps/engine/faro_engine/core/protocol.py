@@ -1,9 +1,11 @@
 """Protocolo núcleo ↔ motor por stdin/stdout (skill `tauri-sidecar-python`, ADR 0004 y 0010).
 
 - stdin: 1.ª línea = token de sesión; 2.ª = `db_key` con la llave de la base del perfil
-  (o el error del núcleo); después, eventos JSON: `shutdown`, `secret_response` y `audit`.
-- stdout: solo eventos JSON del protocolo, una línea cada uno (`ready`, `secret_request`),
-  siempre por `ProtocolWriter` (candado + una sola escritura + `flush`).
+  (o el error del núcleo); después, eventos JSON: `shutdown`, `secret_response`, `audit` y,
+  desde F1b (ADR 0014), `run_grant_response` y `agents_control`.
+- stdout: solo eventos JSON del protocolo, una línea cada uno (`ready`, `secret_request` y,
+  desde F1b, `run_grant_request`, `run_grant_release` y `agent_activity`), siempre por
+  `ProtocolWriter` (candado + una sola escritura + `flush`).
 
 Nunca se registra el contenido de ninguna línea de stdin.
 
