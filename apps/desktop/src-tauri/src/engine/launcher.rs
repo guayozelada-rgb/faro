@@ -213,6 +213,59 @@ pub fn venv_python(engine_dir: &Path) -> PathBuf {
     }
 }
 
+/// Variables del entorno del núcleo que hereda el motor (condición 11 de la revisión de
+/// T2): lo mínimo para que el intérprete arranque y encuentre sus carpetas. Todo lo demás
+/// se quita con `env_clear()`, entre otras: `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`,
+/// proxies (`HTTP(S)_PROXY`, `ALL_PROXY`, `NO_PROXY`), `SSL_*`, `SSLKEYLOGFILE`,
+/// `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `LITELLM_*`, `OPENAI_*`, `ANTHROPIC_*`,
+/// `GEMINI_*`, `GOOGLE_API_KEY`, `LANGSMITH_*` y `LANGCHAIN_*`. En Windows los nombres no
+/// distinguen mayúsculas.
+pub const ENGINE_ENV_ALLOWLIST: &[&str] = &[
+    // Windows
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "PROGRAMDATA",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "OS",
+    // Ambos
+    "PATH",
+    "TEMP",
+    "TMP",
+    // macOS y Linux
+    "HOME",
+    "TMPDIR",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+];
+
+/// Filtra el entorno con [`ENGINE_ENV_ALLOWLIST`] (sin distinguir mayúsculas).
+pub fn engine_env(
+    vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    vars.into_iter()
+        .filter(|(name, _)| {
+            name.to_str().is_some_and(|name| {
+                ENGINE_ENV_ALLOWLIST
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(name))
+            })
+        })
+        .collect()
+}
+
 /// Modo "gestionado" de desarrollo: lanza el Python de `apps/engine/.venv` (ADR 0004).
 #[cfg(debug_assertions)]
 #[derive(Debug, Clone)]
@@ -282,6 +335,8 @@ impl EngineLauncher for DevVenvLauncher {
         command
             .args(self.args())
             .current_dir(&self.engine_dir)
+            .env_clear()
+            .envs(engine_env(std::env::vars_os()))
             .env("PYTHONUNBUFFERED", "1")
             .env("PYTHONIOENCODING", "utf-8");
         ChildProcess::spawn(command)
@@ -332,6 +387,36 @@ mod tests {
             .with_allow_local_sites(true)
             .with_allow_local_sites(false);
         assert!(!off.args().iter().any(|a| a == "--allow-local-sites"));
+    }
+
+    #[test]
+    fn el_motor_solo_hereda_las_variables_permitidas() {
+        use std::ffi::OsString;
+        let vars = [
+            ("SystemRoot", "C:\\Windows"),
+            ("PATH", "C:\\bin"),
+            ("TEMP", "C:\\tmp"),
+            ("HOME", "/home/ana"),
+            ("PYTHONPATH", "C:\\malicioso"),
+            ("PYTHONHOME", "C:\\malicioso"),
+            ("PYTHONSTARTUP", "C:\\malicioso\\x.py"),
+            ("HTTPS_PROXY", "http://proxy"),
+            ("http_proxy", "http://proxy"),
+            ("SSL_CERT_FILE", "C:\\ca.pem"),
+            ("SSLKEYLOGFILE", "C:\\keys.log"),
+            ("REQUESTS_CA_BUNDLE", "C:\\ca.pem"),
+            ("OPENAI_API_KEY", "sk-test-ficticia"),
+            ("ANTHROPIC_BASE_URL", "http://otro"),
+            ("LITELLM_LOG", "DEBUG"),
+            ("LANGSMITH_TRACING", "true"),
+            ("FARO_ENGINE_DEV_TOKEN", "x"),
+        ]
+        .map(|(k, v)| (OsString::from(k), OsString::from(v)));
+        let kept: Vec<String> = engine_env(vars)
+            .into_iter()
+            .map(|(k, _)| k.into_string().unwrap())
+            .collect();
+        assert_eq!(kept, ["SystemRoot", "PATH", "TEMP", "HOME"]);
     }
 
     #[test]
