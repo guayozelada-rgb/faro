@@ -38,3 +38,10 @@ La revisión de seguridad de T3 (PR #37) dio **APROBADO**. El núcleo Rust es qu
 ## Hallazgos bajos aceptados
 - **Números escritos de otra forma.** `JSON.parse` acepta `900.0`, `9e2` y `6e1` como enteros, mientras que Python los rechaza. Hoy no se puede explotar: la entrada de JS es la salida ya validada de Python, y un `900.0` escrito a mano lo detectan la prueba de forma canónica y el diff de la CI. La condición 1 cierra esto en el núcleo.
 - **Revisión obligatoria solo por casilla.** La revisión de `revisor-seguridad` sobre `agent-grants.json` depende de una casilla de la plantilla de PR. No se añade `CODEOWNERS` con revisión obligatoria porque el repositorio tiene un solo responsable, y GitHub no deja aprobar el propio PR.
+
+## Condición añadida por la revisión del PR #39 (límite de conexiones del motor)
+
+8. **Reintento en el núcleo ante RST sin respuesta.** El motor limita las conexiones a 64 y, si el cupo se llena, cierra la conexión que más tiempo lleva esperando una petición. Con una inundación sostenida de conexiones desde un proceso local sin token, entre un 10 % y un 18 % de las conexiones nuevas del núcleo reciben un RST antes de que se procese su petición.
+   - **Qué hacer:** el núcleo (`engine/client.rs`) reintenta una vez `/health` y las operaciones idempotentes, o las que llevan clave de idempotencia, cuando la conexión se corta sin haber recibido ningún byte de respuesta.
+   - **Efecto esperado:** con un reintento, la probabilidad de fallo por chequeo baja de unos 0,15 a unos 0,02, y se evitan reinicios esporádicos y que se alcance `engine.restart_limit`.
+   - **Documentación:** dejar este riesgo residual en la skill `tauri-sidecar-python`.
