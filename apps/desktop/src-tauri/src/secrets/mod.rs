@@ -26,11 +26,18 @@
 //! `wp/{site_id}/token` solo se concede si el sitio es del perfil activo
 //! ([`sites::SiteRegistry`]). El valor de un secreto solo existe en `SecretString` o
 //! `Zeroizing` y nunca aparece en `Debug`, logs, eventos ni valores de retorno.
+//!
+//! **Dos tipos de concesión** en el mismo mapa (ADR 0014 §1): las de operación, que crea
+//! `engine_call` y viven lo que dura la llamada, y las de ejecución de un agente, que pide
+//! el motor con `run_grant_request` ([`run_grants`]). Las dos quedan atadas a generación
+//! y perfil y se revalidan tras el candado del llavero; las de ejecución solo llevan
+//! `get` y desaparecen al pausar los agentes.
 
 pub mod audit;
 pub mod operations;
 pub mod refs;
 pub mod request;
+pub mod run_grants;
 pub mod sites;
 
 #[cfg(test)]
@@ -47,6 +54,8 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use zeroize::Zeroizing;
 
+use crate::agents::manifest::{self, AgentTable};
+use crate::engine::protocol::{parse_stdout_line, StdoutLine};
 use crate::engine::supervisor::StdinWriter;
 use crate::error::AppError;
 use crate::profile::{new_uuid_v7, NIL_PROFILE_ID};
@@ -89,9 +98,39 @@ struct NewSlot {
     cancelled: bool,
 }
 
+/// Para quién es una concesión: el texto de `details.operation` en la auditoría y, si es
+/// de ejecución, el tipo de agente.
+#[derive(Debug, Clone)]
+struct Origin {
+    /// `operationId` (concesión de operación) o `agent:<kind>` (de ejecución).
+    label: Arc<str>,
+    /// Tipo de agente: solo en las concesiones de ejecución.
+    agent: Option<Arc<str>>,
+}
+
+impl Origin {
+    fn operation(operation_id: &str) -> Self {
+        Self {
+            label: Arc::from(operation_id),
+            agent: None,
+        }
+    }
+
+    fn run(agent: &str) -> Self {
+        Self {
+            label: Arc::from(format!("agent:{agent}")),
+            agent: Some(Arc::from(agent)),
+        }
+    }
+
+    fn is_run(&self) -> bool {
+        self.agent.is_some()
+    }
+}
+
 #[derive(Debug)]
 struct Grant {
-    operation_id: &'static str,
+    origin: Origin,
     expires_at: Instant,
     /// Motor y perfil para los que se concedió: la ejecución usa estos, no los actuales.
     generation: u64,
@@ -100,12 +139,34 @@ struct Grant {
     new_slot: Option<NewSlot>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct BrokerState {
     generation: u64,
     running: bool,
     profile_id: Option<String>,
     grants: HashMap<String, Grant>,
+    /// Pausa global de los agentes (ADR 0014 §2). Empieza en `true` (falla cerrado) hasta
+    /// que `AgentsControl` aplica el estado guardado.
+    agents_paused: bool,
+}
+
+impl Default for BrokerState {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            running: false,
+            profile_id: None,
+            grants: HashMap::new(),
+            agents_paused: true,
+        }
+    }
+}
+
+impl BrokerState {
+    /// Quita las concesiones caducadas.
+    fn prune(&mut self, now: Instant) {
+        self.grants.retain(|_, grant| grant.expires_at > now);
+    }
 }
 
 /// Qué permite la concesión para esta solicitud.
@@ -127,8 +188,8 @@ const fn deny(code: &'static str, reason: &'static str) -> Denial {
     Denial { code, reason }
 }
 
-/// Permiso o rechazo de una solicitud, con la operación de la concesión (si se encontró).
-type GrantCheck = Result<(Permit, Option<&'static str>), (Denial, Option<&'static str>)>;
+/// Permiso o rechazo de una solicitud, con el origen de la concesión (si se encontró).
+type GrantCheck = Result<(Permit, Origin), (Denial, Option<Origin>)>;
 
 /// Resultado de ejecutar una operación en el llavero.
 enum Done {
@@ -179,6 +240,8 @@ pub struct SecretBroker {
     store: Arc<dyn SecretStore>,
     sites: SiteRegistry,
     audit: AuditQueue,
+    /// Tabla de concesiones de los agentes (`agent-grants.json` incrustado).
+    agents: Arc<AgentTable>,
     state: Mutex<BrokerState>,
     /// Serializa las operaciones del llavero de todas las solicitudes.
     keyring: tokio::sync::Mutex<()>,
@@ -196,9 +259,18 @@ impl SecretBroker {
             store,
             sites: SiteRegistry::new(app_data_dir),
             audit,
+            agents: manifest::embedded(),
             state: Mutex::new(BrokerState::default()),
             keyring: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// Solo pruebas: otra tabla de agentes (la incrustada está vacía hasta T9).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_agent_table(mut self, table: AgentTable) -> Self {
+        self.agents = Arc::new(table);
+        self
     }
 
     /// Cola de auditoría (también la usa la Bóveda).
@@ -235,6 +307,35 @@ impl SecretBroker {
     /// Concesiones activas (diagnóstico y pruebas).
     pub fn active_grants(&self) -> usize {
         self.lock().grants.len()
+    }
+
+    /// Concesiones de ejecución activas (sin contar las caducadas).
+    pub fn active_run_grants(&self) -> usize {
+        let mut state = self.lock();
+        state.prune(Instant::now());
+        state.grants.values().filter(|g| g.origin.is_run()).count()
+    }
+
+    /// Pausa los agentes: borra **todas** las concesiones de ejecución y, desde ahora,
+    /// rechaza las nuevas con `agents.paused`, en un solo paso bajo el candado. Las de
+    /// operación (`engine_call`, que inicia el usuario) no se tocan. Devuelve cuántas
+    /// se revocaron.
+    pub fn pause_agents(&self) -> usize {
+        let mut state = self.lock();
+        state.agents_paused = true;
+        let before = state.grants.len();
+        state.grants.retain(|_, grant| !grant.origin.is_run());
+        before - state.grants.len()
+    }
+
+    /// Reanuda: vuelven a concederse (con todas las comprobaciones).
+    pub fn resume_agents(&self) {
+        self.lock().agents_paused = false;
+    }
+
+    /// ¿Están pausados los agentes?
+    pub fn agents_paused(&self) -> bool {
+        self.lock().agents_paused
     }
 
     /// Crea la concesión de una llamada a `operation` del motor `generation`.
@@ -325,7 +426,7 @@ impl SecretBroker {
         state.grants.insert(
             run_id.clone(),
             Grant {
-                operation_id: operation.operation_id.as_str(),
+                origin: Origin::operation(operation.operation_id.as_str()),
                 expires_at: Instant::now() + ttl,
                 generation,
                 profile_id,
@@ -350,7 +451,7 @@ impl SecretBroker {
         state.grants.insert(
             run_id.to_owned(),
             Grant {
-                operation_id: "pruebaInterna",
+                origin: Origin::operation("pruebaInterna"),
                 expires_at: Instant::now() + Duration::from_secs(60),
                 generation,
                 profile_id,
@@ -358,6 +459,14 @@ impl SecretBroker {
                 new_slot: None,
             },
         );
+    }
+
+    /// Solo pruebas: la concesión `run_id` caduca ya (sin esperar su plazo).
+    #[cfg(test)]
+    pub(crate) fn expire_grant_now(&self, run_id: &str) {
+        if let Some(grant) = self.lock().grants.get_mut(run_id) {
+            grant.expires_at = Instant::now();
+        }
     }
 
     /// Solo pruebas: concesión con caducidad corta.
@@ -372,17 +481,27 @@ impl SecretBroker {
         self.grant_with_ttl(operation, path, generation, ttl)
     }
 
-    /// Tarea que atiende en orden las solicitudes de un motor y responde por su stdin.
-    /// Termina cuando se suelta el `Sender` (el proceso terminó).
+    /// Tarea que atiende en orden las líneas del motor de la generación `generation`
+    /// (`secret_request`, `run_grant_request` y `run_grant_release`) y responde por su
+    /// stdin. Termina cuando se suelta el `Sender` (el proceso terminó).
     pub(crate) fn spawn_worker(
         self: &Arc<Self>,
         writer: StdinWriter,
+        generation: u64,
     ) -> mpsc::Sender<Zeroizing<String>> {
         let (tx, mut rx) = mpsc::channel::<Zeroizing<String>>(PENDING_REQUESTS);
         let broker = Arc::clone(self);
         tokio::spawn(async move {
             while let Some(line) = rx.recv().await {
-                let Some(response) = broker.handle_line(&line).await else {
+                let response = match parse_stdout_line(&line) {
+                    StdoutLine::RunGrantRequest => broker.handle_run_grant_line(&line, generation),
+                    StdoutLine::RunGrantRelease => {
+                        broker.handle_run_release_line(&line, generation);
+                        None
+                    }
+                    _ => broker.handle_line(&line).await,
+                };
+                let Some(response) = response else {
                     continue;
                 };
                 drop(line);
@@ -445,14 +564,14 @@ impl SecretBroker {
             return error_line(&id, NOT_ALLOWED);
         };
         // 2–3. Concesión activa con esa referencia y operación.
-        let (permit, operation) = match self.check_grant(&run_id, &secret_ref, kind, op) {
+        let (permit, origin) = match self.check_grant(&run_id, &secret_ref, kind, op) {
             Ok(found) => found,
-            Err((denial, operation)) => {
+            Err((denial, origin)) => {
                 self.record_denial(
                     Some(&secret_ref),
                     Some(&run_id),
                     Some(op.as_str()),
-                    operation,
+                    origin.as_ref(),
                     denial,
                 );
                 return error_line(&id, denial.code);
@@ -462,7 +581,7 @@ impl SecretBroker {
             secret_ref: &secret_ref,
             run_id: &run_id,
             op,
-            operation,
+            origin: Some(origin),
             site_id: match kind {
                 RefKind::Wp { site_id } => Some(site_id),
                 _ => None,
@@ -497,26 +616,25 @@ impl SecretBroker {
 
     fn check_grant(&self, run_id: &str, secret_ref: &str, kind: RefKind<'_>, op: Op) -> GrantCheck {
         let mut state = self.lock();
-        let now = Instant::now();
-        state.grants.retain(|_, grant| grant.expires_at > now);
+        state.prune(Instant::now());
         let Some(grant) = state.grants.get_mut(run_id) else {
             return Err((deny(NOT_ALLOWED, "run_inactive"), None));
         };
-        let operation = Some(grant.operation_id);
+        let origin = grant.origin.clone();
         let plain = grant
             .refs
             .iter()
             .any(|(r, ops)| r == secret_ref && ops.contains(&op));
         if plain {
-            return Ok((Permit::Plain, operation));
+            return Ok((Permit::Plain, origin));
         }
         if let (Some(slot), RefKind::Wp { .. }) = (grant.new_slot.as_mut(), kind) {
             if op == Op::Create {
                 if slot.attempted.is_some() {
-                    return Err((deny(NOT_ALLOWED, "new_already_used"), operation));
+                    return Err((deny(NOT_ALLOWED, "new_already_used"), Some(origin)));
                 }
                 slot.attempted = Some(secret_ref.to_owned());
-                return Ok((Permit::NewCreate, operation));
+                return Ok((Permit::NewCreate, origin));
             }
             if op == Op::Delete
                 && slot.allow_delete
@@ -528,10 +646,10 @@ impl SecretBroker {
                     // `create` esté antes en la cola del llavero.
                     slot.cancelled = true;
                 }
-                return Ok((Permit::NewDelete, operation));
+                return Ok((Permit::NewDelete, origin));
             }
         }
-        Err((deny(NOT_ALLOWED, "not_granted"), operation))
+        Err((deny(NOT_ALLOWED, "not_granted"), Some(origin)))
     }
 
     /// Ejecuta la operación en el llavero (en serie y en `spawn_blocking`).
@@ -650,7 +768,7 @@ impl SecretBroker {
         tracing::info!(
             op = context.op.as_str(),
             secret_ref = context.secret_ref,
-            operation = context.operation,
+            operation = context.origin.as_ref().map(|o| &*o.label),
             result = outcome.as_str(),
             error_code = code,
             "solicitud de secreto del motor"
@@ -671,8 +789,8 @@ impl SecretBroker {
             .secret_ref(context.secret_ref)
             .run_id(context.run_id)
             .detail(DetailKey::Op, context.op.as_str());
-        if let Some(operation) = context.operation {
-            event = event.detail(DetailKey::Operation, operation);
+        if let Some(origin) = &context.origin {
+            event = with_origin(event, origin);
         }
         if let Some(site_id) = context.site_id {
             event = event.detail(DetailKey::SiteId, site_id);
@@ -685,7 +803,7 @@ impl SecretBroker {
             Some(context.secret_ref),
             Some(context.run_id),
             Some(context.op.as_str()),
-            context.operation,
+            context.origin.as_ref(),
             denial,
         );
         error_line(id, denial.code)
@@ -697,7 +815,7 @@ impl SecretBroker {
         secret_ref: Option<&str>,
         run_id: Option<&str>,
         op: Option<&str>,
-        operation: Option<&str>,
+        origin: Option<&Origin>,
         denial: Denial,
     ) {
         // Solo se registra la referencia si cumple la gramática (nunca texto arbitrario).
@@ -705,7 +823,7 @@ impl SecretBroker {
         tracing::warn!(
             op,
             secret_ref = valid_ref,
-            operation,
+            operation = origin.map(|o| &*o.label),
             error_code = denial.code,
             reason = denial.reason,
             "solicitud de secreto rechazada"
@@ -725,10 +843,19 @@ impl SecretBroker {
         if let Some(op) = op {
             event = event.detail(DetailKey::Op, op);
         }
-        if let Some(operation) = operation {
-            event = event.detail(DetailKey::Operation, operation);
+        if let Some(origin) = origin {
+            event = with_origin(event, origin);
         }
         self.audit.record(event);
+    }
+}
+
+/// `details.operation` y, en las concesiones de ejecución, `details.agent_kind`.
+fn with_origin(event: AuditEvent, origin: &Origin) -> AuditEvent {
+    let event = event.detail(DetailKey::Operation, &origin.label);
+    match &origin.agent {
+        Some(agent) => event.detail(DetailKey::AgentKind, agent),
+        None => event,
     }
 }
 
@@ -737,7 +864,7 @@ struct Context<'a> {
     secret_ref: &'a str,
     run_id: &'a str,
     op: Op,
-    operation: Option<&'static str>,
+    origin: Option<Origin>,
     site_id: Option<&'a str>,
 }
 

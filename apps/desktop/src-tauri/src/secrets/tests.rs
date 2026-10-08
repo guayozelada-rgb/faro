@@ -1267,7 +1267,7 @@ async fn la_tarea_del_motor_responde_por_stdin_en_orden() {
     s.put(&wp(SITE), &wp_value(TOKEN));
     let guard = s.grant("checkSiteConnection", site_path(SITE));
     let (core, engine) = tokio::io::duplex(64 * 1024);
-    let tx = s.broker.spawn_worker(StdinWriter::spawn(Box::new(core)));
+    let tx = s.broker.spawn_worker(StdinWriter::spawn(Box::new(core)), 1);
     let mut reader = BufReader::new(engine);
     for secret_ref in [wp(SITE), wp(SITE_2)] {
         tx.send(zeroize::Zeroizing::new(request_line(
@@ -1444,7 +1444,7 @@ async fn la_tarea_sigue_si_no_puede_responder() {
     let s = setup().await;
     let (core, engine) = tokio::io::duplex(64);
     drop(engine);
-    let tx = s.broker.spawn_worker(StdinWriter::spawn(Box::new(core)));
+    let tx = s.broker.spawn_worker(StdinWriter::spawn(Box::new(core)), 1);
     tx.send(zeroize::Zeroizing::new(request_line(
         "0192f0a0-9999-7abc-8def-000000000000",
         "get",

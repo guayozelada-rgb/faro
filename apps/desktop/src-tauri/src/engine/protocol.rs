@@ -45,6 +45,12 @@ pub enum StdoutLine {
     BadReady,
     /// `{"event":"secret_request",...}`: la valida `secrets::SecretBroker`.
     SecretRequest,
+    /// `{"event":"run_grant_request",...}` (ADR 0014 §1): la valida `SecretBroker`.
+    RunGrantRequest,
+    /// `{"event":"run_grant_release",...}` (ADR 0014 §1): la valida `SecretBroker`.
+    RunGrantRelease,
+    /// `{"event":"agent_activity",...}` (ADR 0014 §3): la valida `agents::activity`.
+    AgentActivity,
     /// JSON con otro `event` (reservado para fases futuras): se ignora.
     OtherEvent,
     /// No es un evento JSON: se ignora sin registrar su contenido.
@@ -76,6 +82,9 @@ pub fn parse_stdout_line(line: &str) -> StdoutLine {
     match event.as_str() {
         "ready" => {}
         "secret_request" => return StdoutLine::SecretRequest,
+        "run_grant_request" => return StdoutLine::RunGrantRequest,
+        "run_grant_release" => return StdoutLine::RunGrantRelease,
+        "agent_activity" => return StdoutLine::AgentActivity,
         _ => return StdoutLine::OtherEvent,
     }
     let Ok(raw) = serde_json::from_str::<RawReady>(line) else {
@@ -190,6 +199,24 @@ mod tests {
         assert_eq!(
             parse_stdout_line(r#"{"event":"otro","id":"x"}"#),
             StdoutLine::OtherEvent
+        );
+        // Líneas de agentes (ADR 0014): solo se clasifican; las valida quien las recibe.
+        assert_eq!(
+            parse_stdout_line(r#"{"event":"run_grant_request","id":"x"}"#),
+            StdoutLine::RunGrantRequest
+        );
+        assert_eq!(
+            parse_stdout_line(r#"{"event":"run_grant_release","run_id":"x"}"#),
+            StdoutLine::RunGrantRelease
+        );
+        assert_eq!(
+            parse_stdout_line(r#"{"event":"agent_activity","seq":1}"#),
+            StdoutLine::AgentActivity
+        );
+        assert_eq!(
+            parse_stdout_line(r#"{"event":"agents_control","paused":true}"#),
+            StdoutLine::OtherEvent,
+            "agents_control solo va del núcleo al motor"
         );
         // Un arreglo no se interpreta como evento aunque su primer elemento lo parezca.
         assert_eq!(

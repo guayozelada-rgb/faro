@@ -32,6 +32,8 @@ export const STRICT_PREFIXES = [
   "src/secrets/",
   "src/profile/",
   "src/engine/protocol.rs",
+  // F1b T5 (spec F1b §4.5): tabla de agentes, pausa y actividad.
+  "src/agents/",
 ];
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");

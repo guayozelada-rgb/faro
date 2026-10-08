@@ -12,6 +12,8 @@ pub mod supervisor;
 #[cfg(test)]
 mod fake;
 #[cfg(test)]
+mod supervisor_agents_tests;
+#[cfg(test)]
 mod supervisor_tests;
 
 use std::fmt;

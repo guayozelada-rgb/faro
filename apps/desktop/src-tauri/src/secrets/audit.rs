@@ -53,6 +53,18 @@ pub enum Action {
     Denied,
     #[serde(rename = "secret.deleted")]
     Deleted,
+    /// Pausa global de los agentes (ADR 0014 §2), actor `user`.
+    #[serde(rename = "agents.paused")]
+    AgentsPaused,
+    #[serde(rename = "agents.resumed")]
+    AgentsResumed,
+    /// Concesiones por ejecución (ADR 0014 §1), actor `system`.
+    #[serde(rename = "agent.grant_issued")]
+    GrantIssued,
+    #[serde(rename = "agent.grant_denied")]
+    GrantDenied,
+    #[serde(rename = "agent.grant_released")]
+    GrantReleased,
 }
 
 impl Action {
@@ -64,6 +76,11 @@ impl Action {
             Self::Used => "secret.used",
             Self::Denied => "secret.denied",
             Self::Deleted => "secret.deleted",
+            Self::AgentsPaused => "agents.paused",
+            Self::AgentsResumed => "agents.resumed",
+            Self::GrantIssued => "agent.grant_issued",
+            Self::GrantDenied => "agent.grant_denied",
+            Self::GrantReleased => "agent.grant_released",
         }
     }
 }
@@ -88,6 +105,10 @@ impl Outcome {
 }
 
 /// Claves que admite `details` (`DETAIL_KEYS` de `audit.py`).
+///
+/// Solo las comunes: nunca las propias de una acción del motor (`approval_id`, `decision`,
+/// `level`; `ACTION_DETAIL_KEYS`), que el motor rechazaría en un evento del núcleo
+/// (condición 6 de la revisión de T4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DetailKey {
@@ -97,6 +118,8 @@ pub enum DetailKey {
     Op,
     Reason,
     ErrorCode,
+    /// Tipo de agente de `agent.grant_*` (F1b).
+    AgentKind,
 }
 
 /// Un evento de auditoría. Solo datos no sensibles.
@@ -372,6 +395,11 @@ mod tests {
             (Action::Used, "secret.used"),
             (Action::Denied, "secret.denied"),
             (Action::Deleted, "secret.deleted"),
+            (Action::AgentsPaused, "agents.paused"),
+            (Action::AgentsResumed, "agents.resumed"),
+            (Action::GrantIssued, "agent.grant_issued"),
+            (Action::GrantDenied, "agent.grant_denied"),
+            (Action::GrantReleased, "agent.grant_released"),
         ] {
             assert_eq!(action.as_str(), text);
             assert_eq!(serde_json::to_value(action).unwrap(), json!(text));
@@ -393,6 +421,44 @@ mod tests {
             out.push(serde_json::from_str(&line).unwrap());
         }
         out
+    }
+
+    #[test]
+    fn las_claves_de_details_son_solo_las_comunes_del_motor() {
+        // `DETAIL_KEYS` de `core/audit.py`; nunca `approval_id`, `decision` ni `level`.
+        let keys = [
+            DetailKey::SiteId,
+            DetailKey::Operation,
+            DetailKey::Provider,
+            DetailKey::Op,
+            DetailKey::Reason,
+            DetailKey::ErrorCode,
+            DetailKey::AgentKind,
+        ]
+        .map(|k| serde_json::to_value(k).unwrap());
+        assert_eq!(
+            keys.to_vec(),
+            [
+                "site_id",
+                "operation",
+                "provider",
+                "op",
+                "reason",
+                "error_code",
+                "agent_kind"
+            ]
+            .map(Value::from)
+            .to_vec()
+        );
+        let source = include_str!("audit.rs");
+        let enum_body = source
+            .split("pub enum DetailKey {")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .unwrap();
+        for forbidden in ["ApprovalId", "Decision", "Level"] {
+            assert!(!enum_body.contains(forbidden), "{forbidden}");
+        }
     }
 
     #[tokio::test]

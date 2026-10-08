@@ -55,6 +55,11 @@ impl Provider {
         }
     }
 
+    /// Nombre exacto (`anthropic`, `openai`, `gemini`); cualquier otra forma → `None`.
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.as_str() == value)
+    }
+
     /// Referencia del secreto en el llavero (usuario de la entrada).
     pub fn secret_ref(self) -> &'static str {
         match self {
@@ -169,6 +174,15 @@ impl VaultService {
             Arc::new(providers::HttpProviderChecker::new()?),
             system_clock(),
         ))
+    }
+
+    /// Proveedores con clave en el llavero (para `agents_control`, ADR 0014 §2). Solo los
+    /// nombres; un fallo del llavero cuenta como sin clave.
+    pub fn providers_with_key(store: &dyn SecretStore) -> Vec<Provider> {
+        Provider::ALL
+            .into_iter()
+            .filter(|p| matches!(store.get(p.secret_ref()), Ok(Some(_))))
+            .collect()
     }
 
     /// Claves guardadas, solo proveedores con clave, en orden anthropic, openai, gemini.

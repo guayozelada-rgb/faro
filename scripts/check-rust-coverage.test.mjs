@@ -42,6 +42,7 @@ const PASSING = {
   "src\\secrets\\mod.rs": [99, 100],
   "src\\profile\\mod.rs": [95, 100],
   "src\\engine\\protocol.rs": [100, 100],
+  "src\\agents\\control.rs": [97, 100],
   "src\\lib.rs": [0, 50],
 };
 
@@ -90,6 +91,7 @@ describe("evaluate", () => {
       "src/secrets/",
       "src/profile/",
       "src/engine/protocol.rs",
+      "src/agents/",
     ]);
   });
 

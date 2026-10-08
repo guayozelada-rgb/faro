@@ -1,0 +1,17 @@
+# Permisos de la pausa global de los agentes (spec F1b §5.4, ADR 0014 §2). Uno por comando.
+# Ninguno toca secretos: solo devuelven `{paused, changed_at}`.
+
+[[permission]]
+identifier = "allow-agents-pause-all"
+description = "Permite pausar todos los agentes de IA (revoca sus concesiones y se guarda al reiniciar)."
+commands.allow = ["agents_pause_all"]
+
+[[permission]]
+identifier = "allow-agents-resume-all"
+description = "Permite reanudar los agentes de IA pausados."
+commands.allow = ["agents_resume_all"]
+
+[[permission]]
+identifier = "allow-agents-control-state"
+description = "Permite consultar si los agentes de IA están en pausa y desde cuándo."
+commands.allow = ["agents_control_state"]

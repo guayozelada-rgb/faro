@@ -23,9 +23,15 @@
 //!     base disponible (si no, se guarda); en modo externo solo va al log. En `ready` se
 //!     publica el [`EngineLink`] que usa `engine_call`; al salir de `ready` se retira y
 //!     las concesiones desaparecen.
+//! 11. Agentes (ADR 0014, F1b T5), solo con [`EngineSupervisor::spawn_with_agents`]:
+//!     `run_grant_request` y `run_grant_release` van a la misma tarea de
+//!     [`SecretBroker`] que `secret_request`; justo después de `ready` se envía
+//!     `agents_control` (y en cada cambio, mientras el proceso viva); `agent_activity` se
+//!     valida y se retransmite como `engine://agents` (antes de `ready` se ignora).
 //!
 //! **Escritor de stdin único**: todo lo que va al stdin del motor (token, `db_key`,
-//! `shutdown`, `secret_response` y `audit`) pasa por una sola tarea
+//! `shutdown`, `secret_response`, `run_grant_response`, `agents_control` y `audit`) pasa
+//! por una sola tarea
 //! ([`StdinWriter`]) que escribe cada línea completa y la vacía antes de la siguiente,
 //! así las líneas nunca se intercalan.
 //!
@@ -43,6 +49,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{self, Instant, MissedTickBehavior};
 use zeroize::{Zeroize as _, Zeroizing};
 
+use crate::agents::AgentsLink;
 use crate::engine::client::{EngineClient, HealthError};
 use crate::engine::launcher::{EngineLauncher, EngineProcess, ProcessControl, REAP_TIMEOUT};
 use crate::engine::protocol::{self, StdoutLine, MAX_LINE_BYTES, SHUTDOWN_LINE};
@@ -178,12 +185,26 @@ impl EngineSupervisorHandle {
 pub struct EngineSupervisor;
 
 impl EngineSupervisor {
+    /// Supervisor sin agentes: no envía `agents_control` (el motor no ejecuta ninguna
+    /// tarea) e ignora `agent_activity`.
     pub fn spawn(
         runtime: &tokio::runtime::Handle,
         config: SupervisorConfig,
         mode: EngineMode,
         sink: StatusSink,
         secrets: Arc<SecretBroker>,
+    ) -> EngineSupervisorHandle {
+        Self::spawn_with_agents(runtime, config, mode, sink, secrets, None)
+    }
+
+    /// Supervisor con la pausa global y el relevo de actividad de los agentes.
+    pub fn spawn_with_agents(
+        runtime: &tokio::runtime::Handle,
+        config: SupervisorConfig,
+        mode: EngineMode,
+        sink: StatusSink,
+        secrets: Arc<SecretBroker>,
+        agents: Option<AgentsLink>,
     ) -> EngineSupervisorHandle {
         let (status_tx, status_rx) = watch::channel(EngineStatus::starting());
         let (link_tx, link_rx) = watch::channel(None);
@@ -203,6 +224,7 @@ impl EngineSupervisor {
             secrets,
             generation: 0,
             link_tx,
+            agents,
         };
         runtime.spawn(async move {
             actor.run().await;
@@ -292,14 +314,16 @@ struct Proc {
     /// `None` cuando stdout se cerró.
     lines: Option<mpsc::Receiver<Zeroizing<String>>>,
     control: Box<dyn ProcessControl>,
-    /// Solicitudes de secretos hacia la tarea de [`SecretBroker`] de este proceso.
+    /// Solicitudes de secretos y concesiones hacia la tarea de [`SecretBroker`] de este
+    /// proceso.
     secrets: mpsc::Sender<Zeroizing<String>>,
 }
 
 impl Proc {
-    /// Entrega una línea `secret_request` a su tarea. Si hay demasiadas pendientes se
-    /// descarta (el motor agota su espera). Nunca se registra su contenido.
-    fn secret_request(&self, line: Zeroizing<String>) {
+    /// Entrega una línea `secret_request`, `run_grant_request` o `run_grant_release` a su
+    /// tarea. Si hay demasiadas pendientes se descarta (el motor agota su espera). Nunca
+    /// se registra su contenido.
+    fn to_broker(&self, line: Zeroizing<String>) {
         if self.secrets.try_send(line).is_err() {
             tracing::warn!("demasiadas solicitudes de secretos pendientes: se descarta una");
         }
@@ -349,6 +373,8 @@ struct Actor {
     /// Número del proceso (o conexión externa) actual; cambia en cada arranque.
     generation: u64,
     link_tx: watch::Sender<Option<EngineLink>>,
+    /// Pausa y actividad de los agentes (`None`: el motor nunca recibe `agents_control`).
+    agents: Option<AgentsLink>,
 }
 
 impl Actor {
@@ -441,6 +467,9 @@ impl Actor {
         self.link_tx.send_replace(None);
         self.secrets.engine_stopped();
         self.secrets.audit().detach();
+        if let Some(agents) = &self.agents {
+            agents.control.detach();
+        }
     }
 
     fn set(&self, status: EngineStatus) {
@@ -530,7 +559,7 @@ impl Actor {
             .engine_started(self.generation, Some(&profile_id));
         let stdin = StdinWriter::spawn(stdin);
         let mut proc = Proc {
-            secrets: self.secrets.spawn_worker(stdin.clone()),
+            secrets: self.secrets.spawn_worker(stdin.clone(), self.generation),
             stdin,
             lines: Some(spawn_line_reader(stdout)),
             control,
@@ -574,8 +603,10 @@ impl Actor {
                     Some(line) => match protocol::parse_stdout_line(&line) {
                         StdoutLine::Ready(ready) => break Ok(ready),
                         StdoutLine::BadReady => break Err("bad_ready"),
-                        StdoutLine::SecretRequest => proc.secret_request(line),
-                        StdoutLine::OtherEvent => {
+                        StdoutLine::SecretRequest
+                        | StdoutLine::RunGrantRequest
+                        | StdoutLine::RunGrantRelease => proc.to_broker(line),
+                        StdoutLine::AgentActivity | StdoutLine::OtherEvent => {
                             tracing::debug!("evento del motor ignorado antes de ready");
                         }
                         StdoutLine::Unrecognized => tracing::warn!("{}", LOG_UNRECOGNIZED_LINE),
@@ -591,6 +622,11 @@ impl Actor {
                 return Err(StartError::Failed(AppError::engine_start_failed(reason)));
             }
         };
+        // ADR 0014 §2: `agents_control` justo después de `ready`. Hasta recibirlo, el motor
+        // no ejecuta ninguna tarea.
+        if let Some(agents) = &self.agents {
+            agents.control.attach(proc.stdin.clone());
+        }
 
         let client = match EngineClient::new(
             format!("http://127.0.0.1:{}", ready.port),
@@ -746,11 +782,19 @@ impl Actor {
                 }
                 SuperviseEvent::Line(Some(line)) => match protocol::parse_stdout_line(&line) {
                     StdoutLine::Unrecognized => tracing::warn!("{}", LOG_UNRECOGNIZED_LINE),
-                    StdoutLine::SecretRequest => {
+                    StdoutLine::SecretRequest
+                    | StdoutLine::RunGrantRequest
+                    | StdoutLine::RunGrantRelease => {
                         if let Some(proc) = running.proc.as_ref() {
-                            proc.secret_request(line);
+                            proc.to_broker(line);
                         }
                     }
+                    StdoutLine::AgentActivity => match &self.agents {
+                        Some(agents) => {
+                            agents.activity.relay(&line);
+                        }
+                        None => tracing::debug!("actividad de agente ignorada (sin relevo)"),
+                    },
                     StdoutLine::Ready(_) | StdoutLine::BadReady | StdoutLine::OtherEvent => {
                         tracing::debug!("evento del motor ignorado");
                     }

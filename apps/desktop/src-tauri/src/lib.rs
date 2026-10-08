@@ -3,6 +3,7 @@
 //! Es el único puente entre la interfaz y el motor: la interfaz solo llama
 //! comandos Tauri declarados en `capabilities/main.json`.
 
+pub mod agents;
 pub mod commands;
 pub mod engine;
 pub mod error;
@@ -19,6 +20,11 @@ use std::sync::Arc;
 
 use tauri::{Emitter, Manager};
 
+use crate::agents::activity::{
+    ActivityRelay, ActivitySink, AgentActivity, ACTIVITY_EVENT, ACTIVITY_WINDOW,
+};
+use crate::agents::control::{AgentsControl, ProviderSource};
+use crate::agents::AgentsLink;
 use crate::engine::{EngineStatus, EngineSupervisor, StatusSink, SupervisorConfig};
 use crate::logging::LogGuard;
 use crate::profile::ProfileKeys;
@@ -51,6 +57,26 @@ pub fn run() -> Result<(), tauri::Error> {
         let keyring: Arc<dyn SecretStore> = Arc::new(KeyringStore::new());
         // Concesiones y solicitudes de secretos del motor (ADR 0010 §3).
         let secrets = Arc::new(SecretBroker::new(Arc::clone(&keyring), &data_dir, audit));
+        // Pausa global de los agentes (ADR 0014 §2): antes del motor, para que su primer
+        // `agents_control` y las concesiones ya respeten el estado guardado.
+        let providers_store = Arc::clone(&keyring);
+        let providers: ProviderSource =
+            Arc::new(move || VaultService::providers_with_key(providers_store.as_ref()));
+        let control = AgentsControl::load(&runtime, &data_dir, Arc::clone(&secrets), providers);
+        // Actividad de los agentes → ventana `main` (`engine://agents`, ADR 0014 §3).
+        let activity_emitter = app.handle().clone();
+        let activity_sink: ActivitySink = Arc::new(move |activity: &AgentActivity| {
+            if activity_emitter
+                .emit_to(ACTIVITY_WINDOW, ACTIVITY_EVENT, activity)
+                .is_err()
+            {
+                tracing::warn!("no se pudo emitir la actividad de un agente");
+            }
+        });
+        let agents = AgentsLink {
+            control: Arc::clone(&control),
+            activity: Arc::new(ActivityRelay::new(activity_sink)),
+        };
         // Perfil activo (`profiles.json`) y llave de su base en el llavero (ADR 0009 §3).
         let db_key = Arc::new(ProfileKeys::new(data_dir.clone(), keyring));
         let emitter = app.handle().clone();
@@ -59,17 +85,19 @@ pub fn run() -> Result<(), tauri::Error> {
                 tracing::warn!("no se pudo emitir el estado del motor");
             }
         });
-        let supervisor = EngineSupervisor::spawn(
+        let supervisor = EngineSupervisor::spawn_with_agents(
             &runtime,
             SupervisorConfig::default(),
             engine::default_mode(data_dir, db_key),
             sink,
             Arc::clone(&secrets),
+            Some(agents),
         );
         app.manage(AppState::new(
             supervisor,
             vault,
             secrets,
+            control,
             PluginExporter::system(),
         ));
         Ok(())
@@ -106,6 +134,9 @@ pub fn register_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri
         commands::vault::vault_test_key,
         commands::vault::vault_delete_key,
         commands::wp_plugin::wp_plugin_export,
+        commands::agents::agents_pause_all,
+        commands::agents::agents_resume_all,
+        commands::agents::agents_control_state,
     ])
 }
 
