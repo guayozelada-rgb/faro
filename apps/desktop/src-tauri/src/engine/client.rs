@@ -2,6 +2,17 @@
 //!
 //! `reqwest` con `rustls`, sin proxy, sin redirecciones y siempre con
 //! `Authorization: Bearer <token>`. Nunca registra cabeceras ni el token.
+//!
+//! **Un reintento si la conexión se corta sin respuesta** (revisión del PR #39). El motor
+//! acepta como mucho 64 conexiones entrantes; si se llena (p. ej. otro proceso local abre
+//! conexiones inactivas), cierra con RST algunas conexiones nuevas antes de procesar su
+//! petición. `GET /health` y las operaciones que se pueden repetir (`GET`/`HEAD`, o con
+//! `Idempotency-Key`) se reintentan **una vez** cuando `send()` falla por conexión
+//! (rechazada, cortada o cerrada) antes de recibir la cabecera de la respuesta. Nunca se
+//! reintenta un tiempo agotado, una respuesta ya recibida (aunque el cuerpo se corte) ni
+//! una operación con efectos sin clave de idempotencia (`POST`, `PUT` y `DELETE` de Faro:
+//! el código de vinculación de WordPress, por ejemplo, es de un solo uso). El plazo total
+//! de la operación incluye el reintento.
 
 use std::time::Duration;
 
@@ -24,6 +35,9 @@ pub struct CallRequest<'a> {
     pub body: Option<&'a Value>,
     /// Cabecera `X-Faro-Run-Id` (solo operaciones con secretos).
     pub run_id: Option<&'a str>,
+    /// Cabecera `Idempotency-Key`: permite reintentar una operación con efectos si la
+    /// conexión se corta sin respuesta. Ninguna operación la usa todavía.
+    pub idempotency_key: Option<&'a str>,
     /// Tiempo máximo de toda la llamada (`timeout_seconds` de la operación).
     pub timeout: Duration,
 }
@@ -94,6 +108,21 @@ fn database_error(database: Option<&DatabaseBody>) -> Option<AppError> {
     }
 }
 
+/// ¿Se puede repetir sin riesgo de hacer dos veces algo con efectos?
+fn retry_safe(method: &reqwest::Method, idempotency_key: Option<&str>) -> bool {
+    matches!(*method, reqwest::Method::GET | reqwest::Method::HEAD) || idempotency_key.is_some()
+}
+
+/// `send()` falló por la conexión antes de recibir la cabecera de la respuesta (no por
+/// tiempo): conexión rechazada, cortada con RST o cerrada sin responder.
+///
+/// Riesgo residual (documentado en la skill `tauri-sidecar-python`): `reqwest` no dice si
+/// llegó parte de la cabecera antes del corte. Por eso solo se reintentan operaciones que
+/// se pueden repetir.
+fn cut_before_response(err: &reqwest::Error) -> bool {
+    !err.is_timeout() && !err.is_builder() && (err.is_connect() || err.is_request())
+}
+
 /// Cliente del motor. Su `Debug` no muestra el token (lo oculta `SecretString`).
 #[derive(Debug, Clone)]
 pub struct EngineClient {
@@ -152,25 +181,40 @@ impl EngineClient {
                 pairs.append_pair(key, value);
             }
         }
-        let mut builder = self
-            .http
-            .request(method, url)
-            .bearer_auth(self.token.expose_secret())
-            .timeout(request.timeout);
-        if let Some(run_id) = request.run_id {
-            builder = builder.header("X-Faro-Run-Id", run_id);
-        }
-        if let Some(body) = request.body {
-            builder = builder.json(body);
-        }
-        let mut response = builder.send().await.map_err(|err| {
+        let retry = retry_safe(&method, request.idempotency_key);
+        let build = || {
+            let mut builder = self
+                .http
+                .request(method.clone(), url.clone())
+                .bearer_auth(self.token.expose_secret())
+                .timeout(request.timeout);
+            if let Some(run_id) = request.run_id {
+                builder = builder.header("X-Faro-Run-Id", run_id);
+            }
+            if let Some(key) = request.idempotency_key {
+                builder = builder.header("Idempotency-Key", key);
+            }
+            if let Some(body) = request.body {
+                builder = builder.json(body);
+            }
+            builder
+        };
+        let send_error = |err: reqwest::Error| {
             if err.is_timeout() && !err.is_connect() {
                 ErrorData::from(AppError::engine_timeout())
             } else {
                 tracing::warn!("no se pudo conectar con el motor");
                 ErrorData::from(AppError::engine_not_ready())
             }
-        })?;
+        };
+        let mut response = match build().send().await {
+            Ok(response) => response,
+            Err(err) if retry && cut_before_response(&err) => {
+                tracing::info!("conexión con el motor cortada sin respuesta: se reintenta una vez");
+                build().send().await.map_err(send_error)?
+            }
+            Err(err) => return Err(send_error(err)),
+        };
         let status = response.status();
         let mut bytes: Vec<u8> = Vec::new();
         loop {
@@ -213,22 +257,30 @@ impl EngineClient {
         }
     }
 
-    /// `GET /health` con el token.
+    /// `GET /health` con el token (un reintento si la conexión se corta sin respuesta).
     pub async fn health(&self) -> Result<HealthOk, HealthError> {
         let url = format!("{}/health", self.base_url);
-        let response = self
-            .http
-            .get(url)
-            .bearer_auth(self.token.expose_secret())
-            .send()
-            .await
-            .map_err(|err| {
-                if err.is_timeout() {
-                    HealthError::Timeout
-                } else {
-                    HealthError::Network
-                }
-            })?;
+        let send = || {
+            self.http
+                .get(&url)
+                .bearer_auth(self.token.expose_secret())
+                .send()
+        };
+        let health_error = |err: reqwest::Error| {
+            if err.is_timeout() {
+                HealthError::Timeout
+            } else {
+                HealthError::Network
+            }
+        };
+        let response = match send().await {
+            Ok(response) => response,
+            Err(err) if cut_before_response(&err) => {
+                tracing::debug!("/health: conexión cortada sin respuesta; se reintenta una vez");
+                send().await.map_err(health_error)?
+            }
+            Err(err) => return Err(health_error(err)),
+        };
         let status = response.status();
         match status.as_u16() {
             200 => {}
@@ -253,6 +305,10 @@ impl EngineClient {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "client_tests.rs"]
+mod retry_tests;
 
 #[cfg(test)]
 mod tests {
