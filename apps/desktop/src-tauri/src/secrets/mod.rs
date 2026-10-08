@@ -461,6 +461,30 @@ impl SecretBroker {
         );
     }
 
+    /// Solo pruebas: concesión de ejecución de `agent` con referencias arbitrarias.
+    #[cfg(test)]
+    pub(crate) fn insert_test_run_grant(
+        &self,
+        run_id: &str,
+        agent: &str,
+        refs: Vec<(String, Vec<Op>)>,
+    ) {
+        let mut state = self.lock();
+        let generation = state.generation;
+        let profile_id = state.profile_id.clone();
+        state.grants.insert(
+            run_id.to_owned(),
+            Grant {
+                origin: Origin::run(agent),
+                expires_at: Instant::now() + Duration::from_secs(60),
+                generation,
+                profile_id,
+                refs,
+                new_slot: None,
+            },
+        );
+    }
+
     /// Solo pruebas: la concesión `run_id` caduca ya (sin esperar su plazo).
     #[cfg(test)]
     pub(crate) fn expire_grant_now(&self, run_id: &str) {

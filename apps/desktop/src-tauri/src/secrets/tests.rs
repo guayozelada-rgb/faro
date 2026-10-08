@@ -1462,3 +1462,54 @@ async fn la_tarea_sigue_si_no_puede_responder() {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
+
+/// Concesión de ejecución (ADR 0014 §1): si los agentes se pausan mientras la solicitud
+/// espera el candado del llavero, al tomarlo se revalida y se rechaza sin leer el secreto.
+#[tokio::test]
+async fn concesion_de_ejecucion_se_revalida_tras_el_candado_del_llavero() {
+    let (s, watched) = setup_watched(true).await;
+    let (entered, release) = watched.take_gate();
+    s.put(&wp(SITE), &wp_value(TOKEN));
+    s.put("llm/anthropic/default", LLM_KEY);
+    // Una operación ocupa el llavero (su `set` queda detenido).
+    let guard = s.grant("reconnectSite", site_path(SITE));
+    let broker = Arc::clone(&s.broker);
+    let set_line = request_line(guard.run_id(), "set", &wp(SITE), Some(&wp_value(TOKEN_2)));
+    let set = tokio::spawn(async move { broker.handle_line(&set_line).await });
+    tokio::task::spawn_blocking(move || entered.recv_timeout(Duration::from_secs(5)))
+        .await
+        .unwrap()
+        .unwrap();
+    // La ejecución pide su clave y queda esperando el candado.
+    let run = "0192f0a0-5555-7abc-8def-000000000001";
+    s.broker.resume_agents();
+    s.broker.insert_test_run_grant(
+        run,
+        "site_summary",
+        vec![("llm/anthropic/default".to_owned(), vec![Op::Get])],
+    );
+    let broker = Arc::clone(&s.broker);
+    let get_line = request_line(run, "get", "llm/anthropic/default", None);
+    let get = tokio::spawn(async move { broker.handle_line(&get_line).await });
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!get.is_finished(), "la lectura espera el llavero");
+    let calls_before = watched.calls();
+    // Pausa: la concesión de ejecución desaparece mientras espera.
+    assert_eq!(s.broker.pause_agents(), 1);
+    release.send(()).unwrap();
+    let set: Value = serde_json::from_str(&set.await.unwrap().unwrap()).unwrap();
+    assert_eq!(
+        set["ok"], true,
+        "la operación de engine_call no se toca: {set}"
+    );
+    let get: Value = serde_json::from_str(&get.await.unwrap().unwrap()).unwrap();
+    assert_eq!(get["error"], "vault.secret_not_allowed", "{get}");
+    assert_eq!(
+        watched.calls(),
+        calls_before,
+        "la lectura no tocó el llavero"
+    );
+    drop(guard);
+}
