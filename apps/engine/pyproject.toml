@@ -141,6 +141,10 @@ strict_modules = [
     "faro_engine/core/store/site_summaries.py",
     "faro_engine/core/store/checkpoints.py",
     "faro_engine/core/store/run_control.py",
+    # Protocolo de agentes: concesiones, pausa y actividad (spec F1b T5, ADR 0014).
+    "faro_engine/core/jobs/grants.py",
+    "faro_engine/core/jobs/control.py",
+    "faro_engine/core/jobs/activity.py",
 ]
 strict_fail_under = 95
 

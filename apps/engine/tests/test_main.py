@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,8 @@ from faro_engine.core.app import create_app
 from faro_engine.core.audit import AuditLog
 from faro_engine.core.db.database import Database
 from faro_engine.core.db.profile import dev_data_dir, profile_db_path
+from faro_engine.core.jobs.control import AgentsControlState
+from faro_engine.core.jobs.grants import RunGrantClient
 from faro_engine.core.secrets import SecretBroker
 from tests.conftest import ENGINE_DIR
 from tests.db.helpers import (
@@ -523,6 +526,87 @@ def test_watch_stdin_eof_closes_secret_channel(pipe: Pipe) -> None:
     entry.watch_stdin(reader, controller, exit_on_eof=False, secrets=broker)
     controller.cancel()
     assert broker.closed == 1
+
+
+class RecordingGrants(RunGrantClient):
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.responses: list[dict[str, Any]] = []
+        self.closed = 0
+
+    def handle_response(self, data: dict[str, Any]) -> None:
+        self.responses.append(dict(data))
+        data.clear()
+
+    def close(self) -> None:
+        self.closed += 1
+        super().close()
+
+
+def test_watch_stdin_dispatches_agent_lines(pipe: Pipe) -> None:
+    server = _server()
+    controller = entry.ShutdownController(server, grace=WAIT, force_exit=lambda _c: None)
+    control, grants = AgentsControlState(), RecordingGrants()
+    pipe.write(
+        b'{"event":"agents_control","paused":false,"llm_providers":["openai"]}\n'
+        b'{"event":"run_grant_response","id":"x","ok":true,"expires_in_seconds":900}\n'
+        b'{"event":"shutdown"}\n'
+    )
+    reader = protocol.StdinReader(pipe.read_fd)
+    reader.start()
+    entry.watch_stdin(reader, controller, control=control, grants=grants)
+    controller.cancel()
+    assert control.can_run is True
+    assert control.snapshot().llm_providers == ("openai",)
+    assert grants.responses == [
+        {"event": "run_grant_response", "id": "x", "ok": True, "expires_in_seconds": 900}
+    ]
+    assert grants.closed == 1, "al terminar, el canal de concesiones se cierra"
+
+
+def test_watch_stdin_without_agent_handlers_ignores_their_lines(pipe: Pipe) -> None:
+    controller = entry.ShutdownController(_server(), grace=WAIT, force_exit=lambda _c: None)
+    pipe.write(
+        b'{"event":"agents_control","paused":false,"llm_providers":[]}\n'
+        b'{"event":"run_grant_response","id":"x","ok":true}\n'
+    )
+    pipe.close_write()
+    reader = protocol.StdinReader(pipe.read_fd)
+    reader.start()
+    entry.watch_stdin(reader, controller)
+    controller.cancel()
+
+
+def test_run_starts_paused_until_agents_control_arrives(
+    pipe: Pipe, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El motor real arranca pausado; el `agents_control` del núcleo lo habilita."""
+    apps: list[FastAPI] = []
+
+    def capture(*args: Any, **kwargs: Any) -> FastAPI:
+        app = create_app(*args, **kwargs)
+        apps.append(app)
+        return app
+
+    monkeypatch.setattr("faro_engine.__main__.create_app", capture)
+    token = secrets.token_urlsafe(32)
+    pipe.write(token.encode("ascii") + NL + db_key_line())
+    sink = ReadySink()
+    thread, result = _run_in_thread(
+        argv=["--data-dir", str(tmp_path)], stdin_fd=pipe.read_fd, out=sink
+    )
+    assert sink.flushed.wait(WAIT)
+    control: AgentsControlState = apps[0].state.agents_control
+    assert control.snapshot().can_run is False, "sin agents_control no se ejecuta nada"
+    assert isinstance(apps[0].state.run_grants, RunGrantClient)
+    pipe.write(b'{"event":"agents_control","paused":false,"llm_providers":["gemini"]}' + NL)
+    deadline = time.monotonic() + WAIT
+    while not control.snapshot().can_run:
+        assert time.monotonic() < deadline, "no llegó agents_control"
+        time.sleep(0.01)
+    pipe.write(b'{"event":"shutdown"}' + NL)
+    thread.join(WAIT)
+    assert result == [entry.EXIT_OK]
 
 
 def test_run_writes_audit_events_from_stdin(pipe: Pipe, tmp_path: Path) -> None:
