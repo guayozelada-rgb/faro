@@ -33,7 +33,7 @@ regexes = [
 # del motor y en las del intermediario de secretos del núcleo (la base y los repositorios de F1b también los usan como datos de prueba; sin
 # distinguir mayúsculas, porque una prueba comprueba que la base rechaza `LLM/...`).
 [[allowlists]]
-description = "Referencias del llavero en las pruebas del motor (no son secretos)"
+description = "Referencias del llavero en las pruebas del motor y de secretos del núcleo (no son secretos)"
 condition = "AND"
 paths = [
   '''(^|/)apps/engine/tests/.+\.py$''',
