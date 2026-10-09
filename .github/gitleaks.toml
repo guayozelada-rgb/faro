@@ -30,10 +30,13 @@ regexes = [
 
 # Nombres de referencias del llavero (ADR 0010), no secretos: `generic-api-key` los
 # detecta por la clave `secret_ref`. Solo esos tres valores exactos y solo en las pruebas
-# del motor (la base y los repositorios de F1b también los usan como datos de prueba; sin
+# del motor y en las del intermediario de secretos del núcleo (la base y los repositorios de F1b también los usan como datos de prueba; sin
 # distinguir mayúsculas, porque una prueba comprueba que la base rechaza `LLM/...`).
 [[allowlists]]
 description = "Referencias del llavero en las pruebas del motor (no son secretos)"
 condition = "AND"
-paths = ['''(^|/)apps/engine/tests/.+\.py$''']
+paths = [
+  '''(^|/)apps/engine/tests/.+\.py$''',
+  '''^apps/desktop/src-tauri/src/secrets/tests\.rs$''',
+]
 regexes = ['''(?i)^llm/(anthropic|openai|gemini)/default$''']
