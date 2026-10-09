@@ -72,8 +72,9 @@ Líneas nuevas, una línea JSON compacta cada una:
 ## Un motor que inunda o no lee stdin (revisión de seguridad de T5)
 
 - Todo lo que va al stdin del motor pasa por `StdinWriter` con plazo de atasco (`stdin_stall_timeout`, 10 s): si una línea no se escribe en ese plazo, el escritor deja de aceptar líneas y el supervisor mata y reinicia el motor (cuenta para el límite de reinicios).
-- La cola de auditoría del núcleo (`secrets/audit.rs`) está acotada a 500 eventos y `record` nunca bloquea; las repetidas (`malformed`, `not_active`) se agregan con `details.count`.
-- Los avisos que el motor puede provocar sin límite se muestrean con `logging::sample::LogSampler` (el primero y uno de cada 100). El log del núcleo tiene un tope de 64 MiB por día (`logging/capped.rs`).
+- La cola de auditoría del núcleo (`secrets/audit.rs`) está acotada a 500 eventos y `record` nunca bloquea; con el búfer lleno descarta primero los rechazos y, al volver a enviar, manda `audit.dropped` con `details.count`.
+- Todo rechazo que el motor puede provocar (`secret.denied`, `agent.grant_denied`, `agent.grant_released` con `denied`) se marca con `AuditEvent::aggregated` y la cola lo agrega por (acción, motivo): 10 seguidos y uno por minuto van al log y a la auditoría; el resto se suma con `details.count` y se vuelca cada minuto. No registres un rechazo con `tracing::warn!` aparte: lo hace la cola.
+- Los demás avisos que el motor puede provocar sin límite se muestrean con `logging::sample::LogSampler` (el primero y uno de cada 100). El log del núcleo tiene un tope de 64 MiB por día (`logging/capped.rs`), con 16 MiB reservados para las decisiones del núcleo: regístralas con `target: DECISION_TARGET` (`logging::DECISION_TARGET`), nunca algo que el motor pueda repetir a voluntad.
 
 ## Reintento de conexiones cortadas (revisión del PR #39)
 
