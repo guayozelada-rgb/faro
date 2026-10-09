@@ -1,9 +1,11 @@
 //! Estado compartido de la app, registrado con `app.manage(AppState::new(..))`.
 //!
-//! Spec F0 §4.3 y F1a §4.3: motor, Bóveda, canal de secretos y exportador del plugin.
+//! Spec F0 §4.3, F1a §4.3 y F1b §4.5: motor, Bóveda, canal de secretos, pausa de los
+//! agentes y exportador del plugin.
 
 use std::sync::Arc;
 
+use crate::agents::control::AgentsControl;
 use crate::engine::EngineSupervisorHandle;
 use crate::secrets::SecretBroker;
 use crate::vault::VaultService;
@@ -17,8 +19,10 @@ pub struct AppState {
     pub engine: EngineSupervisorHandle,
     /// Bóveda de claves de IA (llavero del SO).
     pub vault: VaultService,
-    /// Concesiones y solicitudes de secretos del motor (ADR 0010).
+    /// Concesiones y solicitudes de secretos del motor (ADR 0010 y 0014).
     pub secrets: Arc<SecretBroker>,
+    /// Pausa global de los agentes (ADR 0014 §2).
+    pub agents: Arc<AgentsControl>,
     /// Zip del plugin de WordPress.
     pub plugin: PluginExporter,
 }
@@ -28,12 +32,14 @@ impl AppState {
         engine: EngineSupervisorHandle,
         vault: VaultService,
         secrets: Arc<SecretBroker>,
+        agents: Arc<AgentsControl>,
         plugin: PluginExporter,
     ) -> Self {
         Self {
             engine,
             vault,
             secrets,
+            agents,
             plugin,
         }
     }

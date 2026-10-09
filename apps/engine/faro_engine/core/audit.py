@@ -9,8 +9,9 @@ Dos orígenes, una tabla:
        "action":"secret.used","secret_ref":"wp/<uuid>/token","run_id":"<uuid>",
        "result":"ok","details":{"operation":"checkSiteConnection","op":"get"}}
 
-  Acciones `secret.*` y, desde F1b (spec §5.1), `agents.paused`, `agents.resumed` y
-  `agent.grant_*`. `secret_ref`, `run_id` y `details` pueden ser `null` u
+  Acciones `secret.*` y, desde F1b (spec §5.1), `agents.paused`, `agents.resumed`,
+  `agent.grant_*` y `audit.dropped` (eventos que el búfer del núcleo tuvo que descartar;
+  segunda revisión de seguridad de T5). `secret_ref`, `run_id` y `details` pueden ser `null` u
   omitirse. Un evento inválido se descarta con un aviso en el log que dice qué campo
   falló, nunca su contenido.
 - **Motor** (`AuditLog.record`): acciones `site.*` de los casos de uso (F1a T9) y, desde
@@ -20,26 +21,37 @@ Dos orígenes, una tabla:
 Validación común: `actor` ∈ `user`, `agent`, `system`; `result` ∈ `ok`, `denied`,
 `error`; `secret_ref` con la gramática del llavero; `run_id` UUID; `details` solo con
 las claves `site_id`, `operation`, `provider`, `op`, `reason`, `error_code` (F1a) y
-`agent_kind` (F1b) en cualquier acción, más las de `ACTION_DETAIL_KEYS` solo en su acción
+`agent_kind` (F1b) en cualquier acción; `count` solo en las acciones agregables del
+núcleo (`CORE_ACTION_DETAIL_KEYS`: `secret.denied`, `agent.grant_denied`,
+`agent.grant_released` y `audit.dropped`); y las de `ACTION_DETAIL_KEYS` solo en su acción
 del motor (`level` en `autonomy.changed`; `approval_id` en `approval.*`; `decision` en
 `approval.decided`), nunca en un evento del núcleo. Valores de texto de 1 a 64
 caracteres `[A-Za-z0-9._:/-]` que no tengan forma de secreto (filtro de ADR 0013) y, para
 esas claves, su forma exacta (`DETAIL_VALUE_PATTERNS`: `decision` ∈ `approve`, `reject`;
-`level` de `0` a `3`; `approval_id` UUID). Nunca se guarda un valor de un secreto ni
-`last4`.
+`level` de `0` a `3`; `approval_id` UUID; `count` entero positivo en decimal). Nunca se
+guarda un valor de un secreto ni `last4`.
 
 La fila guarda `occurred_at` normalizado a UTC con milisegundos (`…T12:00:00.123Z`),
 `id` = UUID v7 nuevo y `details` como JSON compacto con las claves ordenadas.
+
+**Fuera del hilo de stdin** (pendiente F1a §12.2-3, spec F1b T5): el hilo `faro-protocol`
+solo reparte. Valida el evento del núcleo (rápido, sin base) y lo deja en la cola de
+`AuditWriter`, cuyo hilo `faro-audit` hace las inserciones. Así una inserción lenta no
+retrasa `secret_response`, `run_grant_response` ni `agents_control`. La cola guarda hasta
+`AUDIT_QUEUE_MAX` eventos; si se llena, el evento se descarta con un aviso (sin
+contenido). Al apagar, `close` inserta lo pendiente (con un plazo) antes de cerrar la base.
 """
 
 from __future__ import annotations
 
 import json
+import queue
 import re
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, Protocol
 
 import structlog
 from fastapi import Request
@@ -73,6 +85,8 @@ CORE_ACTIONS: Final = frozenset(
         "agent.grant_issued",
         "agent.grant_denied",
         "agent.grant_released",
+        # Eventos descartados por el búfer lleno del núcleo (segunda revisión de T5).
+        "audit.dropped",
     },
 )
 # Acciones que registra el propio motor (casos de uso de sitios y, desde F1b §6,
@@ -109,12 +123,24 @@ ACTION_DETAIL_KEYS: Final[Mapping[str, frozenset[str]]] = {
     "approval.decided": frozenset({"approval_id", "decision"}),
     "approval.executed": frozenset({"approval_id"}),
 }
+# Claves que solo admite una acción concreta del núcleo (revisiones de seguridad de T5):
+# `count` en los rechazos que el núcleo agrega y en `audit.dropped`.
+CORE_ACTION_DETAIL_KEYS: Final[Mapping[str, frozenset[str]]] = {
+    "secret.denied": frozenset({"count"}),
+    "agent.grant_denied": frozenset({"count"}),
+    "agent.grant_released": frozenset({"count"}),
+    "audit.dropped": frozenset({"count"}),
+}
 DETAIL_VALUE_PATTERN: Final = re.compile(r"[A-Za-z0-9._:/-]{1,64}")
 # Forma exacta del valor de las claves que la tienen.
 DETAIL_VALUE_PATTERNS: Final[Mapping[str, re.Pattern[str]]] = {
     "decision": re.compile(r"approve|reject"),
     "level": re.compile(r"[0-3]"),
     "approval_id": RUN_ID_PATTERN,
+    # Entero positivo de 1 a 18 dígitos sin ceros a la izquierda: de 1 a
+    # 999 999 999 999 999 999. El núcleo lo pone con valor ≥ 2 en un rechazo agregado y
+    # ≥ 1 en `audit.dropped`.
+    "count": re.compile(r"[1-9][0-9]{0,17}"),
 }
 # RFC 3339 en UTC con `Z` y de 0 a 9 decimales.
 OCCURRED_AT_PATTERN: Final = re.compile(
@@ -157,12 +183,17 @@ def parse_occurred_at(value: object) -> str:
 
 
 def validate_details(details: object, action: str) -> dict[str, str]:
-    """Claves comunes más las propias de `action` (`ACTION_DETAIL_KEYS`)."""
+    """Claves comunes más las propias de `action` (`ACTION_DETAIL_KEYS` del motor y
+    `CORE_ACTION_DETAIL_KEYS` del núcleo; las dos listas de acciones no se cruzan)."""
     if details is None:
         return {}
     if not isinstance(details, Mapping):
         raise InvalidAuditEventError("details")
-    allowed = DETAIL_KEYS | ACTION_DETAIL_KEYS.get(action, frozenset())
+    allowed = (
+        DETAIL_KEYS
+        | ACTION_DETAIL_KEYS.get(action, frozenset())
+        | CORE_ACTION_DETAIL_KEYS.get(action, frozenset())
+    )
     clean: dict[str, str] = {}
     for key, value in details.items():
         if key not in allowed:
@@ -315,6 +346,10 @@ class AuditLog:
             return False
         return True
 
+    def insert_sync(self, event: AuditEvent) -> bool:
+        """Inserta un evento ya validado (desde el hilo `faro-audit`)."""
+        return self._insert_sync(event)
+
     def _insert_sync(self, event: AuditEvent) -> bool:
         try:
             self._database.run_sync(lambda conn: insert_event(conn, event))
@@ -329,6 +364,77 @@ class AuditLog:
             log.warning("audit.dropped", action=event.action, error_code=exc.code)
         else:
             log.error("audit.insert_failed", action=event.action, error_type=type(exc).__name__)
+
+
+class CoreAuditSink(Protocol):
+    """Quien recibe los eventos `audit` del núcleo desde el hilo de stdin."""
+
+    def record_core_event(self, data: dict[str, Any]) -> bool: ...
+
+
+AUDIT_QUEUE_MAX: Final = 1000
+AUDIT_CLOSE_SECONDS: Final = 5.0
+
+
+class AuditWriter:
+    """Hilo `faro-audit`: inserta los eventos del núcleo fuera del hilo de stdin."""
+
+    def __init__(self, audit: AuditLog, *, max_pending: int = AUDIT_QUEUE_MAX) -> None:
+        self._audit = audit
+        self._queue: queue.Queue[AuditEvent | None] = queue.Queue(maxsize=max_pending)
+        self._thread = threading.Thread(target=self._run, name="faro-audit", daemon=True)
+        self._closed = False
+        self._lock = threading.Lock()
+
+    def start(self) -> None:
+        self._thread.start()
+
+    @property
+    def pending(self) -> int:
+        return self._queue.qsize()
+
+    def record_core_event(self, data: dict[str, Any]) -> bool:
+        """Desde el hilo de stdin: valida y encola, sin tocar la base. Vacía `data`."""
+        try:
+            event = parse_core_event(data)
+        except InvalidAuditEventError as exc:
+            log.warning("audit.invalid_event", source="core", field=exc.field)
+            return False
+        finally:
+            data.clear()
+        with self._lock:
+            if self._closed:
+                log.warning("audit.dropped", action=event.action, reason="closed")
+                return False
+            try:
+                self._queue.put_nowait(event)
+            except queue.Full:
+                log.warning("audit.dropped", action=event.action, reason="queue_full")
+                return False
+        return True
+
+    def close(self, timeout: float = AUDIT_CLOSE_SECONDS) -> bool:
+        """Deja de aceptar eventos e inserta lo pendiente. `False` si no terminó a tiempo."""
+        with self._lock:
+            if self._closed:
+                return not self._thread.is_alive()
+            self._closed = True
+        if not self._thread.is_alive():
+            return True
+        try:
+            self._queue.put(None, timeout=timeout)
+        except queue.Full:
+            log.warning("audit.close_timeout", pending=self._queue.qsize())
+            return False
+        self._thread.join(timeout)
+        if self._thread.is_alive():
+            log.warning("audit.close_timeout", pending=self._queue.qsize())
+            return False
+        return True
+
+    def _run(self) -> None:
+        while (event := self._queue.get()) is not None:
+            self._audit.insert_sync(event)
 
 
 def get_audit(request: Request) -> AuditLog:

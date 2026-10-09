@@ -77,3 +77,17 @@ El resto del protocolo (token, `db_key`, `ready`, `shutdown`, `secret_request`/`
 - La pausa vive en el núcleo y sobrevive a reinicios de la app y del motor. Reanudar es siempre una acción explícita del usuario.
 - Una tarea en curso al pausar puede terminar su llamada al LLM ya enviada: la pausa es inmediata para todo lo nuevo y, como mucho, tarda lo que tarde esa llamada (≤ 60 s) en quedar quieta.
 - Riesgo aceptado: el motor es quien informa del estado de cada tarea; si mintiera, el feed mostraría datos falsos, pero no podría obtener secretos fuera de su concesión ni saltarse la pausa.
+
+## Actualización (2026-10-08, revisión de seguridad de T5)
+
+Notas del agente `tauri-rust` para que `arquitecto` las ratifique:
+
+- **§2, orden de la pausa.** El núcleo revoca primero en memoria y guarda después: borra las concesiones de ejecución y rechaza las nuevas con `agents.paused` → avisa al motor → guarda `agents-control.json` → audita `agents.paused`. Así la pausa nunca espera al disco. Si el archivo no se puede guardar, la pausa en memoria ya está aplicada y el comando devuelve `agents.control_unavailable` (igual que antes). Reanudar no cambia: si no se puede guardar, no reanuda.
+- **§3, `agent` de la tabla.** Además del esquema, el núcleo descarta una línea `agent_activity` cuyo `agent` no esté en `agent-grants.json`. La interfaz (T10) traduce `status`, `step` y `error_code` siempre por catálogo, nunca en crudo.
+- **stdin atascado.** Si el motor deja de leer su stdin más de 10 s, el núcleo lo trata como no sano y lo reinicia (cuenta para el límite de reinicios). La cola de auditoría del núcleo está acotada a 500 eventos; las auditorías repetidas de solicitudes malformadas y de liberaciones de concesiones que no existen se agregan con `details.count` (ADR 0010, actualización 2026-10-08). La liberación de una concesión que no existe se audita como `denied`.
+
+## Actualización (2026-10-08, segunda revisión de seguridad de T5)
+
+- Todo rechazo de `run_grant_request` (cualquier motivo, también `agents.paused`) y toda liberación rechazada (`not_active`, `not_run_grant` y la malformada, que ahora también se audita) se agregan por (acción, motivo): 10 seguidos y luego uno por minuto van uno a uno al log y a la auditoría; el resto, en un evento con `details.count` cada minuto (ADR 0010, actualización de la segunda revisión). La respuesta al motor no cambia.
+- Las concesiones emitidas y liberadas, la pausa, la reanudación y el ciclo de vida del motor se registran como decisiones del núcleo (target `faro_lib::decision`), con reserva en el tope diario del log.
+- No se reinicia un motor por el volumen de rechazos: con la agregación no crece ni el log ni la auditoría, y reiniciar por volumen daría al motor una forma de llegar al límite de reinicios.

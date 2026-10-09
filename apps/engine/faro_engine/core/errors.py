@@ -46,6 +46,12 @@ VAULT_INVALID_INPUT: Final = "vault.invalid_input"
 VAULT_SECRET_TIMEOUT: Final = "vault.secret_timeout"  # noqa: S105
 ENGINE_SECRETS_UNAVAILABLE: Final = "engine.secrets_unavailable"
 
+# Concesiones por ejecución de los agentes (ADR 0014 §1, spec F1b §5.1 y §5.5). Los envía
+# el núcleo en `run_grant_response`; el motor también usa `agent.grant_denied` si no hay
+# respuesta a tiempo o el canal está cerrado (falla cerrado).
+AGENTS_PAUSED: Final = "agents.paused"
+AGENT_GRANT_DENIED: Final = "agent.grant_denied"
+
 _CREDENTIAL_UNUSABLE_MESSAGE: Final = (
     "Faro no pudo usar una credencial guardada. Reinicia Faro e intenta de nuevo."
 )
@@ -85,6 +91,10 @@ _BASE_MESSAGES: Final[Mapping[str, str]] = {
     ),
     ENGINE_SECRETS_UNAVAILABLE: (
         "Esta acción no está disponible en el modo de desarrollo externo."
+    ),
+    AGENTS_PAUSED: "Los agentes están en pausa. Reanúdalos para empezar.",
+    AGENT_GRANT_DENIED: (
+        "El agente no obtuvo permiso para usar tus claves. Reinicia Faro e intenta de nuevo."
     ),
 }
 

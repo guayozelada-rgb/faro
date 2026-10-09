@@ -7,6 +7,7 @@
 //!
 //! `build.rs` hace fallar la compilación si los pasos 2 y 3 no coinciden.
 
+pub mod agents;
 pub mod engine;
 pub mod vault;
 pub mod wp_plugin;

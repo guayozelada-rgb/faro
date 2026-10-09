@@ -9,6 +9,9 @@ from faro_engine.core.audit import AuditLog
 from faro_engine.core.config import Settings
 from faro_engine.core.db.database import Database
 from faro_engine.core.errors import DB_UNAVAILABLE, install_error_handlers
+from faro_engine.core.jobs.activity import ActivityEmitter
+from faro_engine.core.jobs.control import AgentsControlState
+from faro_engine.core.jobs.grants import RunGrantClient
 from faro_engine.core.logging import RequestLoggingMiddleware
 from faro_engine.core.operations import validate_app_operations
 from faro_engine.core.routes import health, sites
@@ -32,6 +35,9 @@ def create_app(
     secrets: SecretBroker | None = None,
     audit: AuditLog | None = None,
     net: NetSettings | None = None,
+    control: AgentsControlState | None = None,
+    grants: RunGrantClient | None = None,
+    activity: ActivityEmitter | None = None,
 ) -> FastAPI:
     """App con seguridad Host + Bearer en todas las rutas.
 
@@ -41,6 +47,9 @@ def create_app(
     solicitud falla con `engine.secrets_unavailable`. `audit` escribe en `audit_log` de
     `database` (se crea si no se pasa). `net` es la red saliente (ADR 0012); por defecto,
     la real con la política de `settings` (sitios locales solo con `allow_local_sites`).
+    `control`, `grants` y `activity` son la pausa global, el cliente de concesiones por
+    ejecución y el emisor de actividad de los agentes (ADR 0014); sin ellos (pruebas), los
+    agentes quedan en pausa, toda concesión se deniega y no se emite actividad.
 
     Sin `/docs`, `/redoc` ni `/openapi.json` por HTTP (tampoco en `--dev`): el esquema
     se exporta con `python -m faro_engine.export_openapi`.
@@ -58,6 +67,9 @@ def create_app(
     app.state.secrets = secrets if secrets is not None else SecretBroker.unavailable()
     app.state.audit = audit if audit is not None else AuditLog(app.state.database)
     app.state.net = net if net is not None else default_net_settings(settings)
+    app.state.agents_control = control if control is not None else AgentsControlState()
+    app.state.run_grants = grants if grants is not None else RunGrantClient.unavailable()
+    app.state.activity = activity if activity is not None else ActivityEmitter(None)
     install_error_handlers(app)
     app.include_router(health.router)
     app.include_router(sites.router)

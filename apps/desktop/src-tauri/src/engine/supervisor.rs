@@ -23,11 +23,26 @@
 //!     base disponible (si no, se guarda); en modo externo solo va al log. En `ready` se
 //!     publica el [`EngineLink`] que usa `engine_call`; al salir de `ready` se retira y
 //!     las concesiones desaparecen.
+//! 11. Agentes (ADR 0014, F1b T5), solo con [`EngineSupervisor::spawn_with_agents`]:
+//!     `run_grant_request` y `run_grant_release` van a la misma tarea de
+//!     [`SecretBroker`] que `secret_request`; justo después de `ready` se envía
+//!     `agents_control` (y en cada cambio, mientras el proceso viva); `agent_activity` se
+//!     valida y se retransmite como `engine://agents` (antes de `ready` se ignora).
 //!
 //! **Escritor de stdin único**: todo lo que va al stdin del motor (token, `db_key`,
-//! `shutdown`, `secret_response` y `audit`) pasa por una sola tarea
+//! `shutdown`, `secret_response`, `run_grant_response`, `agents_control` y `audit`) pasa
+//! por una sola tarea
 //! ([`StdinWriter`]) que escribe cada línea completa y la vacía antes de la siguiente,
 //! así las líneas nunca se intercalan.
+//!
+//! **stdin atascado** (revisión de seguridad de T5): si una línea tarda más de
+//! `stdin_stall_timeout` (10 s) en escribirse, el motor dejó de leer su stdin. El escritor
+//! deja de aceptar líneas (cada `send` pendiente devuelve `false` enseguida, así nada
+//! espera sin plazo) y el supervisor trata al motor como no sano: lo mata y lo reinicia
+//! (cuenta para `max_restarts`). 10 s es la espera del motor para un secreto: una
+//! respuesta que llega más tarde ya no sirve, y un motor sano vacía su stdin en
+//! milisegundos (un hilo propio que solo lee y reparte). Es más corto que la detección
+//! por `/health` (3 × 15 s), que un motor que inunda stdout puede seguir pasando.
 //!
 //! Modo externo (solo debug): sin proceso ni reinicios; `max_health_failures` fallos →
 //! `error` con `engine.dev_unreachable`.
@@ -43,16 +58,23 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{self, Instant, MissedTickBehavior};
 use zeroize::{Zeroize as _, Zeroizing};
 
+use crate::agents::AgentsLink;
 use crate::engine::client::{EngineClient, HealthError};
 use crate::engine::launcher::{EngineLauncher, EngineProcess, ProcessControl, REAP_TIMEOUT};
 use crate::engine::protocol::{self, StdoutLine, MAX_LINE_BYTES, SHUTDOWN_LINE};
 use crate::engine::{EngineLink, EngineMode, EngineStatus};
 use crate::error::AppError;
+use crate::logging::sample::LogSampler;
+use crate::logging::DECISION_TARGET;
 use crate::profile::{DbKeyMessage, DbKeyProvider};
 use crate::secrets::SecretBroker;
 
 /// Mensaje que se registra (sin contenido) ante una línea de stdout no reconocida.
 pub const LOG_UNRECOGNIZED_LINE: &str = "línea de protocolo no reconocida";
+/// Mensaje cuando el motor deja de leer su stdin.
+pub const LOG_STDIN_STALLED: &str = "el motor no lee su stdin: se considera atascado";
+/// Plazo por defecto para escribir una línea en el stdin del motor.
+pub const STDIN_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Tiempos y límites del supervisor. Inyectable para pruebas.
 #[derive(Debug, Clone)]
@@ -73,6 +95,9 @@ pub struct SupervisorConfig {
     pub shutdown_grace: Duration,
     /// Pausa entre intentos de `/health` mientras arranca.
     pub startup_health_retry: Duration,
+    /// Plazo para escribir una línea en el stdin del motor; si se supera, el motor se
+    /// considera atascado y se reinicia (10 s, ver arriba).
+    pub stdin_stall_timeout: Duration,
 }
 
 impl Default for SupervisorConfig {
@@ -86,6 +111,7 @@ impl Default for SupervisorConfig {
             restart_window: Duration::from_secs(10 * 60),
             shutdown_grace: Duration::from_secs(10),
             startup_health_retry: Duration::from_millis(200),
+            stdin_stall_timeout: STDIN_STALL_TIMEOUT,
         }
     }
 }
@@ -178,12 +204,26 @@ impl EngineSupervisorHandle {
 pub struct EngineSupervisor;
 
 impl EngineSupervisor {
+    /// Supervisor sin agentes: no envía `agents_control` (el motor no ejecuta ninguna
+    /// tarea) e ignora `agent_activity`.
     pub fn spawn(
         runtime: &tokio::runtime::Handle,
         config: SupervisorConfig,
         mode: EngineMode,
         sink: StatusSink,
         secrets: Arc<SecretBroker>,
+    ) -> EngineSupervisorHandle {
+        Self::spawn_with_agents(runtime, config, mode, sink, secrets, None)
+    }
+
+    /// Supervisor con la pausa global y el relevo de actividad de los agentes.
+    pub fn spawn_with_agents(
+        runtime: &tokio::runtime::Handle,
+        config: SupervisorConfig,
+        mode: EngineMode,
+        sink: StatusSink,
+        secrets: Arc<SecretBroker>,
+        agents: Option<AgentsLink>,
     ) -> EngineSupervisorHandle {
         let (status_tx, status_rx) = watch::channel(EngineStatus::starting());
         let (link_tx, link_rx) = watch::channel(None);
@@ -203,6 +243,8 @@ impl EngineSupervisor {
             secrets,
             generation: 0,
             link_tx,
+            agents,
+            samples: Samples::default(),
         };
         runtime.spawn(async move {
             actor.run().await;
@@ -227,36 +269,82 @@ struct StdinLine {
 
 /// Único escritor del stdin del motor: una tarea dueña de la tubería recibe las líneas
 /// por un canal y las escribe completas, en orden, con `flush` tras cada una. Al soltar
-/// todos los handles la tarea termina y cierra stdin. Tras un error de escritura deja
-/// de aceptar líneas (`send` devuelve `false`).
+/// todos los handles la tarea termina y cierra stdin. Tras un error de escritura, o si una
+/// línea tarda más que el plazo de atasco, deja de aceptar líneas (`send` devuelve
+/// `false`) y, en el segundo caso, avisa por [`StdinWriter::stalled`].
 #[derive(Clone)]
 pub(crate) struct StdinWriter {
     tx: mpsc::Sender<StdinLine>,
+    stalled: watch::Receiver<bool>,
+    /// Espera máxima de un `send` (segunda defensa: el escritor se cierra antes, al
+    /// superar el plazo de atasco la línea en curso).
+    send_timeout: Duration,
 }
 
 impl StdinWriter {
-    pub(crate) fn spawn(mut stdin: Box<dyn AsyncWrite + Send + Unpin>) -> Self {
+    /// Escritor con el plazo de atasco por defecto ([`STDIN_STALL_TIMEOUT`]).
+    #[cfg(test)]
+    pub(crate) fn spawn(stdin: Box<dyn AsyncWrite + Send + Unpin>) -> Self {
+        Self::spawn_with_stall(stdin, STDIN_STALL_TIMEOUT)
+    }
+
+    pub(crate) fn spawn_with_stall(
+        mut stdin: Box<dyn AsyncWrite + Send + Unpin>,
+        stall: Duration,
+    ) -> Self {
         let (tx, mut rx) = mpsc::channel::<StdinLine>(32);
+        let (stalled_tx, stalled) = watch::channel(false);
         tokio::spawn(async move {
             while let Some(line) = rx.recv().await {
-                let ok = stdin.write_all(&line.bytes).await.is_ok() && stdin.flush().await.is_ok();
+                let write = async {
+                    stdin.write_all(&line.bytes).await.is_ok() && stdin.flush().await.is_ok()
+                };
+                let ok = match time::timeout(stall, write).await {
+                    Ok(ok) => ok,
+                    Err(_) => {
+                        tracing::error!(target: DECISION_TARGET, segundos = stall.as_secs_f64(), "{}", LOG_STDIN_STALLED);
+                        stalled_tx.send_replace(true);
+                        false
+                    }
+                };
                 drop(line.bytes);
                 let _ = line.ack.send(ok);
                 if !ok {
                     break;
                 }
             }
+            // Al soltar `rx`, las líneas en cola y los `send` que esperan sitio fallan.
         });
-        Self { tx }
+        Self {
+            tx,
+            stalled,
+            send_timeout: stall.saturating_mul(2),
+        }
     }
 
-    /// Encola una línea (debe terminar en `\n`) y espera a que se escriba.
+    /// Encola una línea (debe terminar en `\n`) y espera a que se escriba. `false` si no
+    /// se escribió (tubería cerrada, motor atascado o plazo agotado).
     pub(crate) async fn send(&self, bytes: Zeroizing<Vec<u8>>) -> bool {
         let (ack, done) = oneshot::channel();
-        if self.tx.send(StdinLine { bytes, ack }).await.is_err() {
-            return false;
+        let sent = async {
+            if self.tx.send(StdinLine { bytes, ack }).await.is_err() {
+                return false;
+            }
+            done.await.unwrap_or(false)
+        };
+        time::timeout(self.send_timeout, sent)
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Vuelve cuando el motor lleva más que el plazo de atasco sin leer stdin. Si el
+    /// escritor terminó por otro motivo (tubería cerrada) no vuelve nunca: de eso se
+    /// encarga la detección de salida del proceso.
+    pub(crate) async fn stalled(&self) {
+        let mut rx = self.stalled.clone();
+        if rx.wait_for(|stalled| *stalled).await.is_err() {
+            std::future::pending::<()>().await;
         }
-        done.await.unwrap_or(false)
     }
 }
 
@@ -292,16 +380,41 @@ struct Proc {
     /// `None` cuando stdout se cerró.
     lines: Option<mpsc::Receiver<Zeroizing<String>>>,
     control: Box<dyn ProcessControl>,
-    /// Solicitudes de secretos hacia la tarea de [`SecretBroker`] de este proceso.
+    /// Solicitudes de secretos y concesiones hacia la tarea de [`SecretBroker`] de este
+    /// proceso.
     secrets: mpsc::Sender<Zeroizing<String>>,
 }
 
 impl Proc {
-    /// Entrega una línea `secret_request` a su tarea. Si hay demasiadas pendientes se
-    /// descarta (el motor agota su espera). Nunca se registra su contenido.
-    fn secret_request(&self, line: Zeroizing<String>) {
-        if self.secrets.try_send(line).is_err() {
-            tracing::warn!("demasiadas solicitudes de secretos pendientes: se descarta una");
+    /// Entrega una línea `secret_request`, `run_grant_request` o `run_grant_release` a su
+    /// tarea. Si hay demasiadas pendientes se descarta (el motor agota su espera) y lo
+    /// registra muestreado. Nunca se registra su contenido.
+    fn to_broker(&self, line: Zeroizing<String>, samples: &Samples) {
+        if self.secrets.try_send(line).is_err() && samples.broker_full.hit() {
+            tracing::warn!(
+                total = samples.broker_full.total(),
+                "demasiadas solicitudes de secretos pendientes: se descarta una"
+            );
+        }
+    }
+}
+
+/// Avisos que el motor puede provocar sin límite: se muestrean (el primero y uno de cada
+/// 100; revisión de seguridad de T5).
+#[derive(Debug, Default)]
+struct Samples {
+    unrecognized: LogSampler,
+    broker_full: LogSampler,
+}
+
+impl Samples {
+    fn unrecognized(&self) {
+        if self.unrecognized.hit() {
+            tracing::warn!(
+                total = self.unrecognized.total(),
+                "{}",
+                LOG_UNRECOGNIZED_LINE
+            );
         }
     }
 }
@@ -331,6 +444,8 @@ enum ErrorOutcome {
 enum SuperviseEvent {
     Shutdown,
     Exited(Option<i32>),
+    /// El motor dejó de leer su stdin.
+    Stalled,
     Line(Option<Zeroizing<String>>),
     Tick,
     Cmd(Command),
@@ -349,6 +464,9 @@ struct Actor {
     /// Número del proceso (o conexión externa) actual; cambia en cada arranque.
     generation: u64,
     link_tx: watch::Sender<Option<EngineLink>>,
+    /// Pausa y actividad de los agentes (`None`: el motor nunca recibe `agents_control`).
+    agents: Option<AgentsLink>,
+    samples: Samples,
 }
 
 impl Actor {
@@ -399,7 +517,7 @@ impl Actor {
                                 self.set(EngineStatus::restarting());
                                 continue;
                             } else {
-                                tracing::error!("el motor superó el límite de reinicios");
+                                tracing::error!(target: DECISION_TARGET, "el motor superó el límite de reinicios");
                                 self.set(EngineStatus::error(AppError::engine_restart_limit()));
                             }
                         }
@@ -412,7 +530,7 @@ impl Actor {
             }
         }
         self.set_diagnostics(EngineDiagnostics::default());
-        tracing::info!("supervisor del motor detenido");
+        tracing::info!(target: DECISION_TARGET, "supervisor del motor detenido");
     }
 
     /// Motor `ready`: publica la conexión para `engine_call` y activa la auditoría.
@@ -441,6 +559,9 @@ impl Actor {
         self.link_tx.send_replace(None);
         self.secrets.engine_stopped();
         self.secrets.audit().detach();
+        if let Some(agents) = &self.agents {
+            agents.control.detach();
+        }
     }
 
     fn set(&self, status: EngineStatus) {
@@ -451,7 +572,7 @@ impl Actor {
             .and_then(|e| e.details.get("reason"))
             .and_then(|r| r.as_str())
             .map(str::to_owned);
-        tracing::info!(state = ?status.state, code, reason, "estado del motor");
+        tracing::info!(target: DECISION_TARGET, state = ?status.state, code, reason, "estado del motor");
         self.status_tx.send_replace(status.clone());
         (self.sink)(&status);
     }
@@ -495,7 +616,7 @@ impl Actor {
             _ = wait_shutdown(&mut self.shutdown_rx) => ErrorOutcome::Shutdown,
             Some(cmd) = self.cmd_rx.recv() => match cmd {
                 Command::Restart(reply) => {
-                    tracing::info!("reinicio manual del motor");
+                    tracing::info!(target: DECISION_TARGET, "reinicio manual del motor");
                     self.restarts.clear();
                     let status = EngineStatus::starting();
                     self.set(status.clone());
@@ -528,9 +649,9 @@ impl Actor {
         self.generation += 1;
         self.secrets
             .engine_started(self.generation, Some(&profile_id));
-        let stdin = StdinWriter::spawn(stdin);
+        let stdin = StdinWriter::spawn_with_stall(stdin, self.config.stdin_stall_timeout);
         let mut proc = Proc {
-            secrets: self.secrets.spawn_worker(stdin.clone()),
+            secrets: self.secrets.spawn_worker(stdin.clone(), self.generation),
             stdin,
             lines: Some(spawn_line_reader(stdout)),
             control,
@@ -540,7 +661,7 @@ impl Actor {
             launcher_pid,
             ..EngineDiagnostics::default()
         });
-        tracing::info!(pid = launcher_pid, "proceso del motor lanzado");
+        tracing::info!(target: DECISION_TARGET, pid = launcher_pid, "proceso del motor lanzado");
 
         let deadline = Instant::now() + self.config.ready_timeout;
 
@@ -574,11 +695,13 @@ impl Actor {
                     Some(line) => match protocol::parse_stdout_line(&line) {
                         StdoutLine::Ready(ready) => break Ok(ready),
                         StdoutLine::BadReady => break Err("bad_ready"),
-                        StdoutLine::SecretRequest => proc.secret_request(line),
-                        StdoutLine::OtherEvent => {
+                        StdoutLine::SecretRequest
+                        | StdoutLine::RunGrantRequest
+                        | StdoutLine::RunGrantRelease => proc.to_broker(line, &self.samples),
+                        StdoutLine::AgentActivity | StdoutLine::OtherEvent => {
                             tracing::debug!("evento del motor ignorado antes de ready");
                         }
-                        StdoutLine::Unrecognized => tracing::warn!("{}", LOG_UNRECOGNIZED_LINE),
+                        StdoutLine::Unrecognized => self.samples.unrecognized(),
                     },
                 },
                 Some(cmd) = self.cmd_rx.recv() => self.reply_current(cmd),
@@ -591,6 +714,11 @@ impl Actor {
                 return Err(StartError::Failed(AppError::engine_start_failed(reason)));
             }
         };
+        // ADR 0014 §2: `agents_control` justo después de `ready`. Hasta recibirlo, el motor
+        // no ejecuta ninguna tarea.
+        if let Some(agents) = &self.agents {
+            agents.control.attach(proc.stdin.clone());
+        }
 
         let client = match EngineClient::new(
             format!("http://127.0.0.1:{}", ready.port),
@@ -642,6 +770,7 @@ impl Actor {
 
         let tree_pids = proc.control.tree_pids();
         tracing::info!(
+            target: DECISION_TARGET,
             pid = launcher_pid,
             engine_pid = ready.pid,
             tree_pids = ?tree_pids,
@@ -713,14 +842,19 @@ impl Actor {
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut failures: u32 = 0;
         loop {
-            let (control, lines) = match running.proc.as_mut() {
-                Some(proc) => (Some(&mut proc.control), proc.lines.as_mut()),
-                None => (None, None),
+            let (control, lines, stdin) = match running.proc.as_mut() {
+                Some(proc) => (
+                    Some(&mut proc.control),
+                    proc.lines.as_mut(),
+                    Some(&proc.stdin),
+                ),
+                None => (None, None, None),
             };
             let event = tokio::select! {
                 biased;
                 _ = wait_shutdown(&mut self.shutdown_rx) => SuperviseEvent::Shutdown,
                 code = wait_control(control) => SuperviseEvent::Exited(code),
+                () = wait_stalled(stdin) => SuperviseEvent::Stalled,
                 line = next_line(lines) => SuperviseEvent::Line(line),
                 _ = ticker.tick() => SuperviseEvent::Tick,
                 Some(cmd) = self.cmd_rx.recv() => SuperviseEvent::Cmd(cmd),
@@ -733,7 +867,14 @@ impl Actor {
                     return RunOutcome::Shutdown;
                 }
                 SuperviseEvent::Exited(code) => {
-                    tracing::warn!(code, "el motor terminó inesperadamente");
+                    tracing::warn!(target: DECISION_TARGET, code, "el motor terminó inesperadamente");
+                    if let Some(mut proc) = running.proc.take() {
+                        terminate(&mut proc).await;
+                    }
+                    return RunOutcome::Failed;
+                }
+                SuperviseEvent::Stalled => {
+                    tracing::error!(target: DECISION_TARGET, "motor no sano (stdin atascado): se reinicia");
                     if let Some(mut proc) = running.proc.take() {
                         terminate(&mut proc).await;
                     }
@@ -745,12 +886,20 @@ impl Actor {
                     }
                 }
                 SuperviseEvent::Line(Some(line)) => match protocol::parse_stdout_line(&line) {
-                    StdoutLine::Unrecognized => tracing::warn!("{}", LOG_UNRECOGNIZED_LINE),
-                    StdoutLine::SecretRequest => {
+                    StdoutLine::Unrecognized => self.samples.unrecognized(),
+                    StdoutLine::SecretRequest
+                    | StdoutLine::RunGrantRequest
+                    | StdoutLine::RunGrantRelease => {
                         if let Some(proc) = running.proc.as_ref() {
-                            proc.secret_request(line);
+                            proc.to_broker(line, &self.samples);
                         }
                     }
+                    StdoutLine::AgentActivity => match &self.agents {
+                        Some(agents) => {
+                            agents.activity.relay(&line);
+                        }
+                        None => tracing::debug!("actividad de agente ignorada (sin relevo)"),
+                    },
                     StdoutLine::Ready(_) | StdoutLine::BadReady | StdoutLine::OtherEvent => {
                         tracing::debug!("evento del motor ignorado");
                     }
@@ -758,7 +907,7 @@ impl Actor {
                 SuperviseEvent::Tick => match running.client.health().await {
                     Ok(ok) => {
                         if failures > 0 {
-                            tracing::info!("el motor vuelve a responder a /health");
+                            tracing::info!(target: DECISION_TARGET, "el motor vuelve a responder a /health");
                         }
                         failures = 0;
                         if ok.database_error != running.database_error {
@@ -773,7 +922,7 @@ impl Actor {
                     }
                     Err(err) => {
                         failures += 1;
-                        tracing::warn!(motivo = ?err, failures, "fallo de /health del motor");
+                        tracing::warn!(target: DECISION_TARGET, motivo = ?err, failures, "fallo de /health del motor");
                         if failures >= self.config.max_health_failures {
                             if let Some(mut proc) = running.proc.take() {
                                 terminate(&mut proc).await;
@@ -796,6 +945,13 @@ async fn wait_shutdown(rx: &mut watch::Receiver<bool>) {
 async fn wait_control(control: Option<&mut Box<dyn ProcessControl>>) -> Option<i32> {
     match control {
         Some(control) => control.wait().await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn wait_stalled(stdin: Option<&StdinWriter>) {
+    match stdin {
+        Some(stdin) => stdin.stalled().await,
         None => std::future::pending().await,
     }
 }
@@ -827,7 +983,7 @@ async fn terminate(proc: &mut Proc) {
         .await
         .is_err()
     {
-        tracing::warn!("el proceso del motor no terminó tras matarlo");
+        tracing::warn!(target: DECISION_TARGET, "el proceso del motor no terminó tras matarlo");
     }
 }
 
@@ -844,8 +1000,10 @@ async fn graceful_stop(mut proc: Proc, config: &SupervisorConfig) {
         tracing::debug!("no se pudo enviar shutdown al motor");
     }
     match time::timeout_at(deadline, proc.control.wait()).await {
-        Ok(code) => tracing::info!(code, "motor apagado"),
-        Err(_) => tracing::warn!("el motor no se apagó a tiempo; se termina"),
+        Ok(code) => tracing::info!(target: DECISION_TARGET, code, "motor apagado"),
+        Err(_) => {
+            tracing::warn!(target: DECISION_TARGET, "el motor no se apagó a tiempo; se termina")
+        }
     }
     drop(proc.stdin);
     proc.control.kill();

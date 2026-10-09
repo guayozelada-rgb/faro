@@ -213,6 +213,73 @@ pub fn venv_python(engine_dir: &Path) -> PathBuf {
     }
 }
 
+/// Variables del entorno del núcleo que hereda el motor (condición 11 de la revisión de
+/// T2): lo mínimo para que el intérprete arranque y encuentre sus carpetas. Todo lo demás
+/// se quita con `env_clear()`, entre otras: `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`,
+/// proxies (`HTTP(S)_PROXY`, `ALL_PROXY`, `NO_PROXY`), `SSL_*`, `SSLKEYLOGFILE`,
+/// `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `LITELLM_*`, `OPENAI_*`, `ANTHROPIC_*`,
+/// `GEMINI_*`, `GOOGLE_API_KEY`, `LANGSMITH_*` y `LANGCHAIN_*`. En Windows los nombres no
+/// distinguen mayúsculas.
+pub const ENGINE_ENV_ALLOWLIST: &[&str] = &[
+    // Windows
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "PROGRAMDATA",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "OS",
+    // Ambos
+    "PATH",
+    "TEMP",
+    "TMP",
+    // macOS y Linux
+    "HOME",
+    "TMPDIR",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+];
+
+/// Filtra el entorno con [`ENGINE_ENV_ALLOWLIST`] (sin distinguir mayúsculas).
+pub fn engine_env(
+    vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    vars.into_iter()
+        .filter(|(name, _)| {
+            name.to_str().is_some_and(|name| {
+                ENGINE_ENV_ALLOWLIST
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(name))
+            })
+        })
+        .collect()
+}
+
+/// Comando del motor con el entorno limpio (`env_clear()`), solo las variables de
+/// [`ENGINE_ENV_ALLOWLIST`] del núcleo y las fijas del intérprete. Todo lanzador del motor
+/// (también el de release, T11) debe partir de aquí; la prueba lanza un proceso real con
+/// este mismo comando para comprobar que no hereda nada más.
+pub fn engine_command(program: &Path) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(program);
+    command
+        .env_clear()
+        .envs(engine_env(std::env::vars_os()))
+        .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONIOENCODING", "utf-8");
+    command
+}
+
 /// Modo "gestionado" de desarrollo: lanza el Python de `apps/engine/.venv` (ADR 0004).
 #[cfg(debug_assertions)]
 #[derive(Debug, Clone)]
@@ -278,12 +345,8 @@ impl EngineLauncher for DevVenvLauncher {
             // Solo desarrollo (ADR 0012): `http` y loopback para wp-env.
             tracing::warn!("motor lanzado con --allow-local-sites (solo desarrollo)");
         }
-        let mut command = tokio::process::Command::new(&self.python);
-        command
-            .args(self.args())
-            .current_dir(&self.engine_dir)
-            .env("PYTHONUNBUFFERED", "1")
-            .env("PYTHONIOENCODING", "utf-8");
+        let mut command = engine_command(&self.python);
+        command.args(self.args()).current_dir(&self.engine_dir);
         ChildProcess::spawn(command)
     }
 }
@@ -332,6 +395,86 @@ mod tests {
             .with_allow_local_sites(true)
             .with_allow_local_sites(false);
         assert!(!off.args().iter().any(|a| a == "--allow-local-sites"));
+    }
+
+    #[test]
+    fn el_motor_solo_hereda_las_variables_permitidas() {
+        use std::ffi::OsString;
+        let vars = [
+            ("SystemRoot", "C:\\Windows"),
+            ("PATH", "C:\\bin"),
+            ("TEMP", "C:\\tmp"),
+            ("HOME", "/home/ana"),
+            ("PYTHONPATH", "C:\\malicioso"),
+            ("PYTHONHOME", "C:\\malicioso"),
+            ("PYTHONSTARTUP", "C:\\malicioso\\x.py"),
+            ("HTTPS_PROXY", "http://proxy"),
+            ("http_proxy", "http://proxy"),
+            ("SSL_CERT_FILE", "C:\\ca.pem"),
+            ("SSLKEYLOGFILE", "C:\\keys.log"),
+            ("REQUESTS_CA_BUNDLE", "C:\\ca.pem"),
+            ("OPENAI_API_KEY", "sk-test-ficticia"),
+            ("ANTHROPIC_BASE_URL", "http://otro"),
+            ("LITELLM_LOG", "DEBUG"),
+            ("LANGSMITH_TRACING", "true"),
+            ("FARO_ENGINE_DEV_TOKEN", "x"),
+        ]
+        .map(|(k, v)| (OsString::from(k), OsString::from(v)));
+        let kept: Vec<String> = engine_env(vars)
+            .into_iter()
+            .map(|(k, _)| k.into_string().unwrap())
+            .collect();
+        assert_eq!(kept, ["SystemRoot", "PATH", "TEMP", "HOME"]);
+    }
+
+    /// Revisión de seguridad de T5: el proceso lanzado **no** hereda el entorno del núcleo
+    /// (`env_clear()`), no solo que `engine_env` filtre. Un proceso real imprime su
+    /// entorno; una variable del padre fuera de la lista (la trampa) no debe aparecer.
+    #[tokio::test]
+    async fn el_proceso_lanzado_no_hereda_el_entorno_del_nucleo() {
+        let trap = std::env::vars_os()
+            .filter_map(|(name, _)| name.into_string().ok())
+            .find(|name| {
+                !name.is_empty()
+                    && !name.starts_with('=')
+                    && !ENGINE_ENV_ALLOWLIST
+                        .iter()
+                        .any(|allowed| allowed.eq_ignore_ascii_case(name))
+            })
+            .expect("el entorno de la prueba tiene alguna variable fuera de la lista");
+        let mut command = if cfg!(windows) {
+            let shell = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
+            let mut command = engine_command(Path::new(&shell));
+            command.args(["/d", "/c", "set"]);
+            command
+        } else {
+            engine_command(Path::new("/usr/bin/env"))
+        };
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000);
+        let output = command.output().await.unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8_lossy(&output.stdout);
+        let names: Vec<String> = text
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(name, _)| name.to_ascii_uppercase())
+            .collect();
+        assert!(
+            !names.contains(&trap.to_ascii_uppercase()),
+            "{trap} se heredó: {names:?}"
+        );
+        assert!(names.contains(&"PATH".to_owned()), "{names:?}");
+        assert!(names.contains(&"PYTHONUNBUFFERED".to_owned()), "{names:?}");
+        for name in &names {
+            assert!(
+                ENGINE_ENV_ALLOWLIST
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(name))
+                    || ["PYTHONUNBUFFERED", "PYTHONIOENCODING", "PROMPT"].contains(&name.as_str()),
+                "variable inesperada en el motor: {name}"
+            );
+        }
     }
 
     #[test]

@@ -22,6 +22,9 @@ const COMMANDS: &[&str] = &[
     "vault_test_key",
     "vault_delete_key",
     "wp_plugin_export",
+    "agents_pause_all",
+    "agents_resume_all",
+    "agents_control_state",
 ];
 
 /// Únicos permisos que no son de Faro que la capability `main` puede conceder: la

@@ -21,7 +21,10 @@ pub async fn vault_add_key(
     state: State<'_, AppState>,
     input: AddKeyInput,
 ) -> Result<KeySummary, AppError> {
-    state.vault.add(input).await
+    let summary = state.vault.add(input).await?;
+    // El motor recibe la lista nueva de proveedores con clave (ADR 0014 §2).
+    state.agents.providers_changed();
+    Ok(summary)
 }
 
 /// Prueba la clave guardada. Un rechazo del proveedor devuelve `status: "invalid"`.
@@ -39,5 +42,7 @@ pub async fn vault_delete_key(
     state: State<'_, AppState>,
     input: ProviderInput,
 ) -> Result<(), AppError> {
-    state.vault.delete(input.provider).await
+    state.vault.delete(input.provider).await?;
+    state.agents.providers_changed();
+    Ok(())
 }

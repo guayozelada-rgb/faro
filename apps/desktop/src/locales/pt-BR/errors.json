@@ -69,5 +69,12 @@
   },
   "internal": {
     "unexpected": "[TODO] Algo salió mal. Intenta de nuevo; si se repite, reinicia Faro."
+  },
+  "agents": {
+    "paused": "[TODO] Los agentes están en pausa. Reanúdalos para empezar.",
+    "control_unavailable": "[TODO] No pudimos guardar el estado de los agentes. Reinicia Faro; si se repite, escríbenos."
+  },
+  "agent": {
+    "grant_denied": "[TODO] El agente no obtuvo permiso para usar tus claves. Reinicia Faro e intenta de nuevo."
   }
 }

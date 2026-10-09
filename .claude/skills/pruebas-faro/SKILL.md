@@ -55,7 +55,7 @@ assert!(!logs.text().contains(FAKE_SECRET), "{}", logs.text());
 - Un error real se reporta; no se ajusta la prueba para que pase.
 - Cada error corregido lleva una prueba que lo reproduce.
 - Cobertura mínima de líneas en CI: 80 % en motor y núcleo, 70 % en interfaz.
-  - Núcleo (por líneas, `scripts/check-rust-coverage.mjs`): 95 % en `src/vault/`, `src/secrets/`, `src/profile/` y `src/engine/protocol.rs`. Un prefijo sin archivos en el informe es un error. En local: `npm run coverage:core` (requiere `cargo-llvm-cov` 0.9.1 y `llvm-tools-preview`).
+  - Núcleo (por líneas, `scripts/check-rust-coverage.mjs`): 95 % en `src/vault/`, `src/secrets/`, `src/profile/`, `src/engine/protocol.rs` y `src/agents/`. Un prefijo sin archivos en el informe es un error. En local: `npm run coverage:core` (requiere `cargo-llvm-cov` 0.9.1 y `llvm-tools-preview`).
   - Motor: 95 % en los `strict_modules` de `apps/engine/pyproject.toml` (protocolo, secretos, auditoría, redacción, red, firma, base…). Añade ahí todo módulo nuevo de seguridad.
   - Cambiar un umbral o un prefijo es un cambio de spec (`arquitecto`).
 - Pruebas lentas (más de 2 s) se marcan `@pytest.mark.slow` / `describe.skipIf` y corren solo en CI nocturno.

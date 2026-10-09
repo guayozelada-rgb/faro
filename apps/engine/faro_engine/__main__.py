@@ -16,12 +16,18 @@ Protocolo (spec F0 §4.4, skill `tauri-sidecar-python`, ADR 0004):
    (`serve_loop_factory`, también en Windows), con `LimitedH11Protocol` (`core/server.py`):
    como mucho `MAX_CONNECTIONS` conexiones entrantes y `REQUEST_READ_TIMEOUT_SECONDS` para
    recibir cada petición. Si el bucle falla, registra `engine.loop_failed`, cierra la base
-   y sale con código 3. Mientras sirve, el hilo de stdin
-   reparte `secret_response` (al cliente del canal de secretos) y `audit` (a `audit_log`),
-   y las rutas escriben `secret_request` en stdout por el mismo `ProtocolWriter` que
-   `ready` (ADR 0010). En `--dev` no hay canal: `engine.secrets_unavailable`.
+   y sale con código 3. Mientras sirve, el hilo de stdin solo reparte: `secret_response`
+   (al cliente del canal de secretos), `run_grant_response` (al cliente de concesiones de
+   agentes), `agents_control` (al estado de la pausa) y `audit` (validado y encolado para
+   el hilo `faro-audit`, que lo inserta en `audit_log`). Las rutas y los agentes escriben
+   `secret_request`, `run_grant_request`, `run_grant_release` y `agent_activity` en stdout
+   por el mismo `ProtocolWriter` que `ready` (ADR 0010 y 0014). En `--dev` no hay canal:
+   `engine.secrets_unavailable`, las concesiones de agentes se deniegan y, sin
+   `agents_control`, ningún agente corre.
 7. `{"event":"shutdown"}` o EOF en stdin → salida ordenada; 10 s máx., luego `os._exit`.
-   Las solicitudes de secretos pendientes fallan con `vault.secret_timeout`.
+   Las solicitudes de secretos pendientes fallan con `vault.secret_timeout` y las de
+   concesiones con `agent.grant_denied`; la auditoría pendiente se inserta antes de cerrar
+   la base.
    Con `--dev` el EOF se ignora (no hay núcleo que supervise por stdin); se detiene con
    Ctrl+C / SIGINT / SIGTERM / CTRL_BREAK. En ambos modos esas señales salen con código 0.
 
@@ -55,6 +61,7 @@ import socket
 import sys
 import threading
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
 from typing import BinaryIO
@@ -65,7 +72,7 @@ import uvicorn
 from faro_engine import __version__
 from faro_engine.core import protocol
 from faro_engine.core.app import create_app
-from faro_engine.core.audit import AuditLog
+from faro_engine.core.audit import AuditLog, AuditWriter, CoreAuditSink
 from faro_engine.core.config import (
     DB_KEY_TIMEOUT_SECONDS,
     HOST,
@@ -80,6 +87,9 @@ from faro_engine.core.config import (
 from faro_engine.core.db.database import Database, open_profile_database
 from faro_engine.core.db.profile import dev_data_dir
 from faro_engine.core.errors import DB_KEY_MISSING, DB_UNAVAILABLE
+from faro_engine.core.jobs.activity import ActivityEmitter
+from faro_engine.core.jobs.control import EVENT_AGENTS_CONTROL, AgentsControlState
+from faro_engine.core.jobs.grants import EVENT_RUN_GRANT_RESPONSE, RunGrantClient
 from faro_engine.core.logging import configure_logging
 from faro_engine.core.secrets import SecretBroker
 from faro_engine.core.server import LimitedH11Protocol
@@ -174,7 +184,17 @@ class ShutdownController:
         self._force_exit(EXIT_OK)
 
 
-def _dispatch(line: bytearray, secrets: SecretBroker | None, audit: AuditLog | None) -> str | None:
+@dataclass(frozen=True, slots=True)
+class StdinHandlers:
+    """Quién recibe cada evento de stdin. Ninguno bloquea el hilo que reparte."""
+
+    secrets: SecretBroker | None = None
+    audit: CoreAuditSink | None = None
+    control: AgentsControlState | None = None
+    grants: RunGrantClient | None = None
+
+
+def _dispatch(line: bytearray, handlers: StdinHandlers) -> str | None:
     """Reparte una línea de stdin. Devuelve el nombre del evento reconocido o `None`."""
     data = protocol.parse_message(line)
     if data is None:
@@ -183,11 +203,17 @@ def _dispatch(line: bytearray, secrets: SecretBroker | None, audit: AuditLog | N
     if event == protocol.EVENT_SHUTDOWN:
         data.clear()
         return event
-    if event == protocol.EVENT_SECRET_RESPONSE and secrets is not None:
-        secrets.handle_response(data)  # vacía `data`
+    if event == protocol.EVENT_SECRET_RESPONSE and handlers.secrets is not None:
+        handlers.secrets.handle_response(data)  # vacía `data`
         return event
-    if event == protocol.EVENT_AUDIT and audit is not None:
-        audit.record_core_event(data)  # vacía `data`
+    if event == EVENT_RUN_GRANT_RESPONSE and handlers.grants is not None:
+        handlers.grants.handle_response(data)  # vacía `data`
+        return event
+    if event == EVENT_AGENTS_CONTROL and handlers.control is not None:
+        handlers.control.handle_message(data)  # vacía `data`
+        return event
+    if event == protocol.EVENT_AUDIT and handlers.audit is not None:
+        handlers.audit.record_core_event(data)  # vacía `data` (solo encola)
         return event
     data.clear()
     return None
@@ -199,16 +225,20 @@ def watch_stdin(
     *,
     exit_on_eof: bool = True,
     secrets: SecretBroker | None = None,
-    audit: AuditLog | None = None,
+    audit: CoreAuditSink | None = None,
+    control: AgentsControlState | None = None,
+    grants: RunGrantClient | None = None,
 ) -> None:
     """Consume eventos de stdin hasta `shutdown` o EOF. Nunca registra el contenido.
 
-    Reparte `secret_response` y `audit`; cada línea se sobrescribe tras procesarla. Al
-    terminar (EOF o `shutdown`) cierra el canal de secretos.
+    Reparte `secret_response`, `run_grant_response`, `agents_control` y `audit`; cada
+    línea se sobrescribe tras procesarla. Al terminar (EOF o `shutdown`) cierra el canal
+    de secretos y el de concesiones.
 
     Con `exit_on_eof=False` (modo `--dev`, sin núcleo que supervise por stdin) el EOF no
     apaga el motor: se detiene con Ctrl+C / SIGINT / SIGTERM / CTRL_BREAK.
     """
+    handlers = StdinHandlers(secrets=secrets, audit=audit, control=control, grants=grants)
     try:
         while True:
             line = reader.get()
@@ -219,7 +249,7 @@ def watch_stdin(
                     log.info("engine.dev_stdin_eof_ignored", stop_with="ctrl_c")
                 return
             try:
-                event = _dispatch(line, secrets, audit)
+                event = _dispatch(line, handlers)
             finally:
                 protocol.wipe_line(line)
             if event == protocol.EVENT_SHUTDOWN:
@@ -230,6 +260,8 @@ def watch_stdin(
     finally:
         if secrets is not None:
             secrets.close()
+        if grants is not None:
+            grants.close()
 
 
 def _stop_signals() -> list[signal.Signals]:
@@ -426,10 +458,24 @@ def run(
         log.warning("net.local_sites_enabled", engine_port=real_port)
     # En `--dev` (modo externo) no hay núcleo al otro lado de stdout (ADR 0010 §5).
     secrets = SecretBroker.unavailable() if args.dev else SecretBroker(writer)
+    grants = RunGrantClient.unavailable() if args.dev else RunGrantClient(writer)
+    activity = ActivityEmitter(None if args.dev else writer)
+    # Pausado hasta el primer `agents_control` del núcleo (ADR 0014 §2).
+    control = AgentsControlState()
     audit = AuditLog(database)
+    audit_writer = AuditWriter(audit)
+    audit_writer.start()
     server = uvicorn.Server(
         uvicorn.Config(
-            create_app(settings, database, secrets=secrets, audit=audit),
+            create_app(
+                settings,
+                database,
+                secrets=secrets,
+                audit=audit,
+                control=control,
+                grants=grants,
+                activity=activity,
+            ),
             log_config=None,
             access_log=False,
             server_header=False,
@@ -444,7 +490,13 @@ def run(
     threading.Thread(
         target=watch_stdin,
         args=(reader, controller),
-        kwargs={"exit_on_eof": not args.dev, "secrets": secrets, "audit": audit},
+        kwargs={
+            "exit_on_eof": not args.dev,
+            "secrets": secrets,
+            "audit": audit_writer,
+            "control": control,
+            "grants": grants,
+        },
         name="faro-protocol",
         daemon=True,
     ).start()
@@ -462,6 +514,7 @@ def run(
     finally:
         controller.cancel()
         sock.close()
+        audit_writer.close()
         database.close()
     log.info("engine.stopped", exit_code=code)
     return code

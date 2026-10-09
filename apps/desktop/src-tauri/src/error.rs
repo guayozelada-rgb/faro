@@ -121,6 +121,17 @@ impl AppError {
         )
     }
 
+    // --- agentes (spec F1b §5.3 y §5.5) ---
+
+    /// No se pudo guardar `agents-control.json`. Al pausar, la pausa en memoria sí se
+    /// aplica; al reanudar, no se reanuda.
+    pub fn agents_control_unavailable() -> Self {
+        Self::new(
+            "agents.control_unavailable",
+            "No pudimos guardar el estado de los agentes. Reinicia Faro; si se repite, escríbenos.",
+        )
+    }
+
     // --- plugin de WordPress (spec F1a §5.4) ---
 
     pub fn plugin_package_missing() -> Self {
@@ -391,6 +402,13 @@ mod tests {
         let mut err = AppError::internal_unexpected();
         err.details = Value::Null;
         let value = serde_json::to_value(&err).unwrap();
+        assert_eq!(value["details"], json!({}));
+    }
+
+    #[test]
+    fn error_de_control_de_agentes() {
+        let value = serde_json::to_value(AppError::agents_control_unavailable()).unwrap();
+        assert_eq!(value["code"], "agents.control_unavailable");
         assert_eq!(value["details"], json!({}));
     }
 

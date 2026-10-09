@@ -1267,7 +1267,7 @@ async fn la_tarea_del_motor_responde_por_stdin_en_orden() {
     s.put(&wp(SITE), &wp_value(TOKEN));
     let guard = s.grant("checkSiteConnection", site_path(SITE));
     let (core, engine) = tokio::io::duplex(64 * 1024);
-    let tx = s.broker.spawn_worker(StdinWriter::spawn(Box::new(core)));
+    let tx = s.broker.spawn_worker(StdinWriter::spawn(Box::new(core)), 1);
     let mut reader = BufReader::new(engine);
     for secret_ref in [wp(SITE), wp(SITE_2)] {
         tx.send(zeroize::Zeroizing::new(request_line(
@@ -1444,7 +1444,7 @@ async fn la_tarea_sigue_si_no_puede_responder() {
     let s = setup().await;
     let (core, engine) = tokio::io::duplex(64);
     drop(engine);
-    let tx = s.broker.spawn_worker(StdinWriter::spawn(Box::new(core)));
+    let tx = s.broker.spawn_worker(StdinWriter::spawn(Box::new(core)), 1);
     tx.send(zeroize::Zeroizing::new(request_line(
         "0192f0a0-9999-7abc-8def-000000000000",
         "get",
@@ -1461,4 +1461,140 @@ async fn la_tarea_sigue_si_no_puede_responder() {
         assert!(tokio::time::Instant::now() < deadline, "sin aviso");
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+}
+
+/// Concesión de ejecución (ADR 0014 §1): si los agentes se pausan mientras la solicitud
+/// espera el candado del llavero, al tomarlo se revalida y se rechaza sin leer el secreto.
+#[tokio::test]
+async fn concesion_de_ejecucion_se_revalida_tras_el_candado_del_llavero() {
+    let (s, watched) = setup_watched(true).await;
+    let (entered, release) = watched.take_gate();
+    s.put(&wp(SITE), &wp_value(TOKEN));
+    s.put("llm/anthropic/default", LLM_KEY);
+    // Una operación ocupa el llavero (su `set` queda detenido).
+    let guard = s.grant("reconnectSite", site_path(SITE));
+    let broker = Arc::clone(&s.broker);
+    let set_line = request_line(guard.run_id(), "set", &wp(SITE), Some(&wp_value(TOKEN_2)));
+    let set = tokio::spawn(async move { broker.handle_line(&set_line).await });
+    tokio::task::spawn_blocking(move || entered.recv_timeout(Duration::from_secs(5)))
+        .await
+        .unwrap()
+        .unwrap();
+    // La ejecución pide su clave y queda esperando el candado.
+    let run = "0192f0a0-5555-7abc-8def-000000000001";
+    s.broker.resume_agents();
+    s.broker.insert_test_run_grant(
+        run,
+        "site_summary",
+        vec![("llm/anthropic/default".to_owned(), vec![Op::Get])],
+    );
+    let broker = Arc::clone(&s.broker);
+    let get_line = request_line(run, "get", "llm/anthropic/default", None);
+    let get = tokio::spawn(async move { broker.handle_line(&get_line).await });
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!get.is_finished(), "la lectura espera el llavero");
+    let calls_before = watched.calls();
+    // Pausa: la concesión de ejecución desaparece mientras espera.
+    assert_eq!(s.broker.pause_agents(), 1);
+    release.send(()).unwrap();
+    let set: Value = serde_json::from_str(&set.await.unwrap().unwrap()).unwrap();
+    assert_eq!(
+        set["ok"], true,
+        "la operación de engine_call no se toca: {set}"
+    );
+    let get: Value = serde_json::from_str(&get.await.unwrap().unwrap()).unwrap();
+    assert_eq!(get["error"], "vault.secret_not_allowed", "{get}");
+    assert_eq!(
+        watched.calls(),
+        calls_before,
+        "la lectura no tocó el llavero"
+    );
+    drop(guard);
+}
+
+/// Revisión de seguridad de T5: una solicitud del motor viejo, ya comprobada, espera el
+/// candado; el motor se reinicia y el nuevo recibe una concesión con el **mismo** `run_id`.
+/// Tras el candado, la solicitud vieja se rechaza (otro número de serie) sin tocar el
+/// llavero, aunque la concesión nueva incluya la misma referencia y operación.
+#[tokio::test]
+async fn la_operacion_del_motor_viejo_no_usa_la_concesion_del_nuevo_con_el_mismo_run_id() {
+    let (s, watched) = setup_watched(true).await;
+    let (entered, release) = watched.take_gate();
+    s.put(&wp(SITE), &wp_value(TOKEN));
+    s.put("llm/anthropic/default", LLM_KEY);
+    // Una operación ocupa el llavero (su `set` queda detenido).
+    let guard = s.grant("reconnectSite", site_path(SITE));
+    let broker = Arc::clone(&s.broker);
+    let set_line = request_line(guard.run_id(), "set", &wp(SITE), Some(&wp_value(TOKEN_2)));
+    let set = tokio::spawn(async move { broker.handle_line(&set_line).await });
+    tokio::task::spawn_blocking(move || entered.recv_timeout(Duration::from_secs(5)))
+        .await
+        .unwrap()
+        .unwrap();
+    // Motor viejo (generación 1): su lectura pasa la comprobación y espera el candado.
+    let run = "0192f0a0-5555-7abc-8def-000000000009";
+    let grant = || vec![("llm/anthropic/default".to_owned(), vec![Op::Get])];
+    s.broker.resume_agents();
+    s.broker.insert_test_run_grant(run, "site_summary", grant());
+    let broker = Arc::clone(&s.broker);
+    let get_line = request_line(run, "get", "llm/anthropic/default", None);
+    let old_get = tokio::spawn(async move { broker.handle_line(&get_line).await });
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!old_get.is_finished(), "la lectura espera el llavero");
+    let calls_before = watched.calls();
+    // Reinicio: generación 2 y una concesión nueva con el mismo `run_id`.
+    s.broker.engine_started(2, Some(PROFILE));
+    s.broker.insert_test_run_grant(run, "site_summary", grant());
+    release.send(()).unwrap();
+    let _ = set.await.unwrap();
+    let old: Value = serde_json::from_str(&old_get.await.unwrap().unwrap()).unwrap();
+    assert_eq!(old["error"], "vault.secret_not_allowed", "{old}");
+    assert_eq!(watched.calls(), calls_before, "no tocó el llavero");
+    // La concesión nueva sí sirve para una solicitud nueva.
+    let line = request_line(run, "get", "llm/anthropic/default", None);
+    let new: Value = serde_json::from_str(&s.broker.handle_line(&line).await.unwrap()).unwrap();
+    assert_eq!(new["value"], LLM_KEY, "{new}");
+    drop(guard);
+}
+
+/// `prepare` vuelve a comprobar referencia y operación: si la concesión (la misma) ya no
+/// las incluye al tomar el candado, se rechaza.
+#[test]
+fn prepare_exige_la_misma_concesion_con_la_referencia_y_la_operacion() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let audit = runtime.block_on(async { AuditQueue::spawn(&tokio::runtime::Handle::current()) });
+    let broker = SecretBroker::new(Arc::new(MemoryStore::new()), dir.path(), audit);
+    broker.engine_started(1, Some(PROFILE));
+    let run = "0192f0a0-5555-7abc-8def-00000000000a";
+    broker.insert_test_grant(
+        run,
+        vec![("llm/anthropic/default".to_owned(), vec![Op::Get])],
+    );
+    let serial = broker.lock().grants[run].serial;
+    let context = |serial| Context {
+        secret_ref: "llm/anthropic/default",
+        run_id: run,
+        op: Op::Get,
+        serial,
+        origin: None,
+        site_id: None,
+    };
+    assert!(matches!(
+        broker.prepare(&context(serial), Permit::Plain),
+        Ok(Step::Run(_))
+    ));
+    let other = broker.prepare(&context(serial + 1), Permit::Plain);
+    assert_eq!(other.err().map(|d| d.reason), Some("run_inactive"));
+    // La misma concesión, pero ya sin esa referencia.
+    broker.lock().grants.get_mut(run).unwrap().refs.clear();
+    let gone = broker.prepare(&context(serial), Permit::Plain);
+    assert_eq!(gone.err().map(|d| d.reason), Some("not_granted"));
 }

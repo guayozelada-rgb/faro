@@ -21,6 +21,9 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use faro_lib::agents::activity::{ActivityRelay, ActivitySink, AgentActivity};
+use faro_lib::agents::control::{AgentsControl, ProviderSource};
+use faro_lib::agents::AgentsLink;
 use faro_lib::engine::client::{EngineClient, HealthError};
 use faro_lib::engine::launcher::{DevVenvLauncher, EngineLauncher, EngineProcess};
 use faro_lib::engine::protocol::{self, StdoutLine};
@@ -252,6 +255,11 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
     let valid =
         AuditEvent::new(Actor::User, Action::Tested, Outcome::Ok).secret_ref("llm/openai/default");
     stdin.write_all(&valid.to_line()).await.unwrap();
+    // Segunda revisión de seguridad de T5: el motor acepta `audit.dropped` con `count`.
+    stdin
+        .write_all(&AuditEvent::dropped(3).to_line())
+        .await
+        .unwrap();
     stdin
         .write_all(
             b"{\"event\":\"audit\",\"occurred_at\":\"ayer\",\"actor\":\"user\",\"action\":\"secret.tested\",\"result\":\"ok\"}
@@ -266,6 +274,16 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
         )
         .await
         .unwrap();
+    // Protocolo v3 (F1b T5, ADR 0014): un `agents_control` válido, uno inválido a
+    // propósito (falla cerrado) y una `run_grant_response` que el motor no espera.
+    for line in [
+        r#"{"event":"agents_control","paused":false,"llm_providers":["openai"]}"#,
+        r#"{"event":"agents_control","paused":1,"llm_providers":[]}"#,
+        r#"{"event":"run_grant_response","id":"0192f0a0-0000-7abc-8def-00000000000b","ok":true,"expires_in_seconds":900}"#,
+    ] {
+        stdin.write_all(line.as_bytes()).await.unwrap();
+        stdin.write_all(b"\n").await.unwrap();
+    }
     stdin.flush().await.unwrap();
 
     // El intérprete real (pid de `ready`) está dentro del Job Object.
@@ -318,12 +336,143 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
         stderr_text.contains("secrets.response_ignored"),
         "la respuesta con id desconocido debe ignorarse"
     );
+    assert!(
+        stderr_text.contains("\"agents.control\""),
+        "el motor no recibió agents_control: {stderr_text}"
+    );
+    assert_eq!(
+        stderr_text.matches("agents.control_invalid").count(),
+        1,
+        "solo el agents_control inválido a propósito debe rechazarse"
+    );
+    assert!(
+        stderr_text.contains("agents.grant_response_ignored"),
+        "la respuesta de concesión con id desconocido debe ignorarse"
+    );
     assert!(!stderr_text.contains("protocol.unknown_line"));
     control.kill();
     let mut all = tree.clone();
     all.push(ready.pid);
     wait_all_gone(&all).await;
     assert_encrypted_db(dir.path(), TEST_PROFILE);
+}
+
+/// Conexiones entrantes como máximo del motor (`MAX_CONNECTIONS` de `core/server.py`).
+const ENGINE_MAX_CONNECTIONS: usize = 64;
+
+/// Segunda revisión de seguridad de T5 (prueba de extremo a extremo del reintento del
+/// PR #39): otro proceso local abre 64 conexiones inactivas contra el motor real. La
+/// conexión del cliente del núcleo que estaba en su pool es la más antigua y el motor la
+/// expulsa; `/health` del núcleo sigue respondiendo porque reintenta una vez con una
+/// conexión nueva, para la que el motor expulsa la inactiva más antigua.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requiere apps/engine/.venv (uv sync)"]
+async fn engine_real_health_responde_con_64_conexiones_inactivas() {
+    let dir = data_dir();
+    let launcher = DevVenvLauncher::new(dir.path().to_path_buf());
+    let EngineProcess {
+        mut stdin,
+        stdout,
+        stderr,
+        mut control,
+    } = launcher
+        .launch()
+        .expect("no se pudo lanzar el motor; ¿existe apps/engine/.venv?");
+    // Se vacía el stderr para que el motor nunca se bloquee al registrar.
+    let stderr_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(_)) = lines.next_line().await {}
+    });
+    let token = protocol::generate_token().unwrap();
+    stdin
+        .write_all(format!("{}\n", token.expose_secret()).as_bytes())
+        .await
+        .unwrap();
+    stdin
+        .write_all(
+            format!(
+                "{{\"event\":\"db_key\",\"profile\":\"{TEST_PROFILE}\",\"key\":\"{TEST_DB_KEY}\"}}\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    stdin.flush().await.unwrap();
+    let mut lines = BufReader::new(stdout).lines();
+    let ready = timeout(READY_WAIT, async {
+        loop {
+            let line = lines
+                .next_line()
+                .await
+                .unwrap()
+                .expect("stdout cerrado sin ready");
+            if let StdoutLine::Ready(ready) = protocol::parse_stdout_line(&line) {
+                return ready;
+            }
+        }
+    })
+    .await
+    .expect("sin ready en 30 s");
+
+    let client = EngineClient::new(
+        format!("http://127.0.0.1:{}", ready.port),
+        token.clone(),
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    // La conexión de esta llamada queda en el pool del cliente: es la más antigua.
+    client
+        .health()
+        .await
+        .expect("/health antes de las conexiones");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // 64 conexiones inactivas (sin enviar nada), una tras otra.
+    let mut idle = Vec::new();
+    for _ in 0..ENGINE_MAX_CONNECTIONS {
+        idle.push(
+            tokio::net::TcpStream::connect(("127.0.0.1", ready.port))
+                .await
+                .expect("conexión inactiva"),
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Varias veces seguidas: cada una expulsa la inactiva más antigua.
+    for attempt in 0..5 {
+        let health = client.health().await;
+        assert!(
+            health.is_ok(),
+            "/health falló en el intento {attempt}: {health:?}"
+        );
+    }
+    // La inactiva más antigua fue expulsada: el motor la cerró.
+    let mut buf = [0u8; 16];
+    let closed = timeout(Duration::from_secs(5), async {
+        use tokio::io::AsyncReadExt;
+        matches!(idle[0].read(&mut buf).await, Ok(0) | Err(_))
+    })
+    .await
+    .unwrap_or(false);
+    assert!(
+        closed,
+        "el motor no expulsó la conexión inactiva más antigua"
+    );
+    drop(idle);
+
+    stdin.write_all(protocol::SHUTDOWN_LINE).await.unwrap();
+    stdin.flush().await.unwrap();
+    let code = timeout(SHUTDOWN_WAIT, control.wait())
+        .await
+        .expect("el motor no salió en 20 s");
+    assert_eq!(code, Some(0));
+    let tree = control.tree_pids();
+    control.kill();
+    let _ = timeout(Duration::from_secs(5), stderr_task).await;
+    let mut all = tree;
+    all.push(ready.pid);
+    wait_all_gone(&all).await;
 }
 
 struct Statuses(mpsc::UnboundedReceiver<EngineStatus>);
@@ -362,20 +511,40 @@ async fn engine_real_supervisor_reinicia_y_apaga_sin_huerfanos() {
         launcher: Arc::new(DevVenvLauncher::new(dir.path().to_path_buf())),
         db_key: Arc::new(ProfileKeys::new(dir.path().to_path_buf(), store.clone())),
     };
-    let handle = EngineSupervisor::spawn(
+    let broker = Arc::new(SecretBroker::new(
+        store.clone(),
+        dir.path(),
+        AuditQueue::spawn(&tokio::runtime::Handle::current()),
+    ));
+    // Pausa y actividad de los agentes (F1b T5): el motor real recibe `agents_control`
+    // tras cada `ready` y en cada cambio.
+    let providers: ProviderSource = Arc::new(Vec::new);
+    let control = AgentsControl::load(
+        &tokio::runtime::Handle::current(),
+        dir.path(),
+        Arc::clone(&broker),
+        providers,
+    );
+    let activity_sink: ActivitySink = Arc::new(|_: &AgentActivity| {});
+    let agent_table = broker.agent_table();
+    let handle = EngineSupervisor::spawn_with_agents(
         &tokio::runtime::Handle::current(),
         SupervisorConfig::default(),
         mode,
         sink,
-        Arc::new(SecretBroker::new(
-            store.clone(),
-            dir.path(),
-            AuditQueue::spawn(&tokio::runtime::Handle::current()),
-        )),
+        broker,
+        Some(AgentsLink {
+            control: Arc::clone(&control),
+            activity: Arc::new(ActivityRelay::new(activity_sink, agent_table)),
+        }),
     );
     let mut statuses = Statuses(rx);
 
     let ready = statuses.expect(EngineState::Ready).await;
+    // Pausar y reanudar con el motor real en marcha: se guarda y el motor sigue sano.
+    assert!(control.pause().await.unwrap().paused);
+    assert!(!control.resume().await.unwrap().paused);
+    assert!(dir.path().join("agents-control.json").is_file());
     assert!(ready.version.is_some());
     // El núcleo creó perfil y llave y el motor abrió la base con ella.
     assert_eq!(ready.database_error, None, "{:?}", ready.database_error);

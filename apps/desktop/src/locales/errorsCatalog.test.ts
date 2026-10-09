@@ -34,9 +34,9 @@ function engineCodes(): string[] {
 function coreCodes(): string[] {
   const source = readFileSync(join(ROOT, "apps/desktop/src-tauri/src/error.rs"), "utf8");
   const body = source.split("#[cfg(test)]")[0] ?? "";
-  return [...body.matchAll(/^\s+"((?:engine|vault|db|plugin|internal)\.[a-z_]+)",\r?$/gm)].map(
-    (match) => match[1] ?? "",
-  );
+  return [
+    ...body.matchAll(/^\s+"((?:engine|vault|db|plugin|internal|agents|agent)\.[a-z_]+)",\r?$/gm),
+  ].map((match) => match[1] ?? "");
 }
 
 describe("catálogo de errores", () => {
@@ -46,6 +46,9 @@ describe("catálogo de errores", () => {
     expect(codes).toContain("site.moved");
     expect(codes).toContain("engine.timeout");
     expect(codes).toContain("plugin.export_failed");
+    expect(codes).toContain("agents.control_unavailable");
+    expect(codes).toContain("agents.paused");
+    expect(codes).toContain("agent.grant_denied");
     expect(codes.length).toBeGreaterThan(40);
   });
 

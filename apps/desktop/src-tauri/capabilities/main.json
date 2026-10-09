@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Permisos de la ventana principal: motor (permissions/engine.toml), Bóveda (permissions/vault.toml), plugin de WordPress (permissions/wp_plugin.toml) y solo escuchar/dejar de escuchar eventos del núcleo (engine://status). Sin core:default (spec F1a §4.3, §5.5). Prohibidos: shell:*, fs:*, http:*, opener:*, updater:*, notification:*.",
+  "description": "Permisos de la ventana principal: motor (permissions/engine.toml), Bóveda (permissions/vault.toml), plugin de WordPress (permissions/wp_plugin.toml), pausa de los agentes (permissions/agents.toml) y solo escuchar/dejar de escuchar eventos del núcleo (engine://status, engine://agents); la interfaz no puede emitir eventos. Sin core:default (spec F1a §4.3, §5.5). Prohibidos: shell:*, fs:*, http:*, opener:*, updater:*, notification:*.",
   "windows": ["main"],
   "permissions": [
     "core:event:allow-listen",
@@ -13,6 +13,9 @@
     "allow-vault-add-key",
     "allow-vault-test-key",
     "allow-vault-delete-key",
-    "allow-wp-plugin-export"
+    "allow-wp-plugin-export",
+    "allow-agents-pause-all",
+    "allow-agents-resume-all",
+    "allow-agents-control-state"
   ]
 }

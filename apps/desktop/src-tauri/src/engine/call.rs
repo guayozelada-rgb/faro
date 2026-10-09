@@ -244,6 +244,7 @@ pub async fn execute(
             query: &call.query,
             body: call.body.as_ref(),
             run_id: grant.as_ref().map(|g| g.run_id()),
+            idempotency_key: None,
             timeout: call.timeout,
         })
         .await;

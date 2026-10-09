@@ -25,6 +25,12 @@ pub trait SecretStore: Send + Sync {
     fn set(&self, secret_ref: &str, secret: &SecretString) -> Result<(), AppError>;
     /// Borra el secreto. Borrar algo inexistente no es error.
     fn delete(&self, secret_ref: &str) -> Result<(), AppError>;
+    /// ¿Existe el secreto? Para saberlo sin necesitar el valor (p. ej. qué proveedores
+    /// tienen clave). La implementación por defecto lo lee y lo suelta enseguida; las
+    /// que usan el llavero del SO la sobrescriben para no traer el valor a memoria.
+    fn exists(&self, secret_ref: &str) -> Result<bool, AppError> {
+        Ok(self.get(secret_ref)?.is_some())
+    }
 }
 
 /// Llavero del SO mediante el crate `keyring` v3.
@@ -134,6 +140,25 @@ impl SecretStore for KeyringStore {
             Err(err) => Err(unavailable("delete", &err)),
         }
     }
+
+    /// Windows: `get_attributes` (`CredReadW`; `keyring` borra el valor del búfer del SO
+    /// antes de liberarlo y nunca lo copia a memoria de Rust). En macOS `keyring` 3.6 no
+    /// lee atributos sin el valor: se lee en memoria que se borra al soltarse
+    /// (`Zeroizing`) y nunca sale de aquí.
+    fn exists(&self, secret_ref: &str) -> Result<bool, AppError> {
+        let entry = self.entry(secret_ref, "exists")?;
+        #[cfg(windows)]
+        let found = entry.get_attributes().map(drop);
+        #[cfg(not(windows))]
+        let found = entry
+            .get_secret()
+            .map(|bytes| drop(zeroize::Zeroizing::new(bytes)));
+        match found {
+            Ok(()) => Ok(true),
+            Err(keyring::Error::NoEntry) => Ok(false),
+            Err(err) => Err(unavailable("exists", &err)),
+        }
+    }
 }
 
 /// Almacén en memoria para pruebas. Puede simular un llavero que no responde.
@@ -208,6 +233,10 @@ impl SecretStore for MemoryStore {
     fn delete(&self, secret_ref: &str) -> Result<(), AppError> {
         self.lock()?.remove(secret_ref);
         Ok(())
+    }
+
+    fn exists(&self, secret_ref: &str) -> Result<bool, AppError> {
+        Ok(self.lock()?.contains_key(secret_ref))
     }
 }
 

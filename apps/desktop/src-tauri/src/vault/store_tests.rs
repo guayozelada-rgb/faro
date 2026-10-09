@@ -89,7 +89,7 @@ fn memory_store_no_disponible_en_todas_las_operaciones() {
 const REF: &str = "llm/anthropic/default";
 
 #[derive(Debug)]
-struct SharedMock(Arc<MockCredential>);
+struct SharedMock(Arc<MockCredential>, Arc<std::sync::atomic::AtomicUsize>);
 
 impl CredentialApi for SharedMock {
     fn set_password(&self, password: &str) -> keyring::Result<()> {
@@ -99,10 +99,16 @@ impl CredentialApi for SharedMock {
         self.0.set_secret(secret)
     }
     fn get_password(&self) -> keyring::Result<String> {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.0.get_password()
     }
     fn get_secret(&self) -> keyring::Result<Vec<u8>> {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.0.get_secret()
+    }
+    /// Como en Windows: atributos sin entregar el valor (no cuenta como lectura).
+    fn get_attributes(&self) -> keyring::Result<HashMap<String, String>> {
+        self.0.get_attributes()
     }
     fn delete_credential(&self) -> keyring::Result<()> {
         self.0.delete_credential()
@@ -119,6 +125,8 @@ struct MockBackend {
     build_error: Mutex<Option<keyring::Error>>,
     /// Servicios con los que se pidieron entradas.
     services: Mutex<Vec<String>>,
+    /// Lecturas del valor (`get_password`/`get_secret`).
+    reads: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl MockBackend {
@@ -159,7 +167,10 @@ impl CredentialBuilderApi for MockBackend {
         if let Some(err) = self.build_error.lock().unwrap().take() {
             return Err(err);
         }
-        Ok(Box::new(SharedMock(self.credential(user))))
+        Ok(Box::new(SharedMock(
+            self.credential(user),
+            Arc::clone(&self.reads),
+        )))
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -180,6 +191,31 @@ fn secret(value: &str) -> SecretString {
 /// Un error de plataforma cuyo texto lleva un secreto: nunca debe salir del almacén.
 fn platform_failure() -> keyring::Error {
     keyring::Error::PlatformFailure(format!("fallo del SO con {SECRET}").into())
+}
+
+#[test]
+fn exists_no_lee_el_valor_en_windows() {
+    let (store, backend) = mock_store();
+    assert!(!store.exists(REF).unwrap());
+    store.set(REF, &secret(SECRET)).unwrap();
+    let reads = || backend.reads.load(std::sync::atomic::Ordering::SeqCst);
+    let before = reads();
+    assert!(store.exists(REF).unwrap());
+    if cfg!(windows) {
+        assert_eq!(reads(), before, "exists no lee el valor");
+    }
+    backend.fail_next(REF, platform_failure());
+    assert_eq!(
+        store.exists(REF).unwrap_err().code,
+        "vault.keyring_unavailable"
+    );
+    // `MemoryStore` y la implementación por defecto también responden.
+    let memory = MemoryStore::new();
+    assert!(!memory.exists(REF).unwrap());
+    memory.set(REF, &secret(SECRET)).unwrap();
+    assert!(memory.exists(REF).unwrap());
+    memory.set_unavailable(true);
+    assert!(memory.exists(REF).is_err());
 }
 
 #[test]

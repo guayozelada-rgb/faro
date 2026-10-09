@@ -12,7 +12,7 @@ use tauri::test::{get_ipc_response, mock_builder, MockRuntime, INVOKE_KEY};
 use tauri::webview::InvokeRequest;
 use tauri::{App, Manager, WebviewWindow, WebviewWindowBuilder};
 
-const COMMANDS: [&str; 8] = [
+const COMMANDS: [&str; 11] = [
     "engine_status",
     "engine_restart",
     "engine_call",
@@ -21,6 +21,9 @@ const COMMANDS: [&str; 8] = [
     "vault_test_key",
     "vault_delete_key",
     "wp_plugin_export",
+    "agents_pause_all",
+    "agents_resume_all",
+    "agents_control_state",
 ];
 
 /// Origen local en desarrollo (`build.devUrl`); las pruebas no activan `custom-protocol`.
@@ -232,6 +235,85 @@ fn permisos_de_core_no_concedidos_son_rechazados() {
         assert!(
             rejected_by_acl(&result),
             "`{cmd}` no debería pasar el ACL: {result:?}"
+        );
+    }
+}
+
+/// `engine://agents` (ADR 0014 §3): la interfaz lo escucha, pero no puede emitirlo (ni a
+/// todas las ventanas ni a `main`), así que no puede falsear la actividad de un agente.
+#[test]
+fn la_interfaz_escucha_pero_no_puede_emitir_engine_agents() {
+    let app = real_app();
+    let main = window(&app, "main");
+    let listened = invoke_with(
+        &main,
+        "plugin:event|listen",
+        LOCAL_URL,
+        serde_json::json!({
+            "event": "engine://agents",
+            "target": { "kind": "WebviewWindow", "label": "main" },
+            "handler": 9
+        }),
+    );
+    assert!(listened.is_ok(), "listen debería funcionar: {listened:?}");
+    let payload = serde_json::json!({
+        "run_id": "0192f0a0-0000-7abc-8def-000000000001",
+        "seq": 1,
+        "occurred_at": "2026-10-08T12:00:00Z",
+        "kind": "run_status",
+        "agent": "site_summary",
+        "site_id": null,
+        "status": "succeeded",
+        "step": null,
+        "step_cost_micros": 0,
+        "run_cost_micros": 0,
+        "run_tokens": 0,
+        "error_code": null
+    });
+    for (cmd, body) in [
+        (
+            "plugin:event|emit",
+            serde_json::json!({ "event": "engine://agents", "payload": payload }),
+        ),
+        (
+            "plugin:event|emit_to",
+            serde_json::json!({
+                "target": { "kind": "WebviewWindow", "label": "main" },
+                "event": "engine://agents",
+                "payload": payload
+            }),
+        ),
+    ] {
+        let result = invoke_with(&main, cmd, LOCAL_URL, body);
+        assert!(
+            rejected_by_acl(&result),
+            "`{cmd}` no debería pasar el ACL: {result:?}"
+        );
+    }
+}
+
+/// Los comandos de la pausa pasan el ACL desde `main` y se rechazan desde otra ventana o
+/// un origen remoto (además del recorrido general de `COMMANDS`).
+#[test]
+fn comandos_de_pausa_solo_desde_main() {
+    let app = real_app();
+    let main = window(&app, "main");
+    let other = window(&app, "otra");
+    for cmd in [
+        "agents_pause_all",
+        "agents_resume_all",
+        "agents_control_state",
+    ] {
+        let result = invoke(&main, cmd, LOCAL_URL);
+        assert!(!rejected_by_acl(&result), "`{cmd}`: {result:?}");
+        assert!(
+            result.is_err(),
+            "`{cmd}` no debería ejecutarse sin AppState"
+        );
+        assert!(rejected_by_acl(&invoke(&other, cmd, LOCAL_URL)), "`{cmd}`");
+        assert!(
+            rejected_by_acl(&invoke(&main, cmd, "https://ejemplo-malicioso.com/")),
+            "`{cmd}`"
         );
     }
 }
