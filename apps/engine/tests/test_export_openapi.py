@@ -25,6 +25,9 @@ def test_export_writes_openapi_json() -> None:
         "checkSiteConnection",
         "listSiteContent",
         "removeSite",
+        "getLlmUsage",
+        "setLlmDailyLimit",
+        "setLlmPreferences",
     ]
     assert {"ErrorOut", "HealthOut", "SiteOut", "SiteContentPage"} <= set(
         schema["components"]["schemas"]

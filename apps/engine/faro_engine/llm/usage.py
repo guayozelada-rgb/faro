@@ -151,9 +151,7 @@ def preferred_provider(conn: Connection) -> Provider | None:
     return None
 
 
-def usage_overview(
-    conn: Connection, usage_date: str, with_key: Collection[str]
-) -> UsageOverview:
+def usage_overview(conn: Connection, usage_date: str, with_key: Collection[str]) -> UsageOverview:
     by_ref: Mapping[str, credentials.CredentialUsage] = {
         item.secret_ref: item for item in credentials.list_usage_for_date(conn, usage_date)
     }

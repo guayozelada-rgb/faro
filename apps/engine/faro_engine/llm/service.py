@@ -1,14 +1,14 @@
 """`LlmService.call`: la única puerta para llamar a un modelo (spec F1b §4.1).
 
-Orden de comprobaciones (skill `capa-llm` §5). Los rechazos 1–5 ocurren **sin pedir la
+Orden de comprobaciones (skill `capa-llm` §5). Los rechazos 1-5 ocurren **sin pedir la
 clave** (hay una prueba de cada uno):
 
 1. **Pausa**: sin un `agents_control` válido o con los agentes pausados → `agents.paused`.
 2. **Clave disponible**: el proveedor de la tarea (o, si no tiene, la preferencia del
    usuario o el primero con clave) está en `llm_providers` del último `agents_control`
    → si no, `llm.no_key`. Sin cambio automático a otro proveedor.
-3. **Máximo de la llamada** = `ceil(caracteres / 3)` × precio de entrada +
-   `max_output_tokens` × precio de salida (`pricing.max_call_cost`).
+3. **Máximo de la llamada** = `ceil(caracteres / 3)` x precio de entrada +
+   `max_output_tokens` x precio de salida (`pricing.max_call_cost`).
 4. **Presupuesto de la tarea** (leído de la base): `cost_micros + máximo ≤ max_cost_micros`
    y `tokens + tokens máximos ≤ token_budget` → si no, `agent.budget_exhausted`.
 5. **Tope diario de la clave**: `gastado hoy + reservado + máximo ≤ límite` → si no,
@@ -24,7 +24,7 @@ clave** (hay una prueba de cada uno):
 8. **Registro** de cada intento en una transacción (`usage.record_attempt`): paso
    (`attempts`, tokens, costo, `provider`, `model`, `tier`, `secret_ref`, prompt),
    acumulados de la tarea y `credential_usage` del **día local en que se registra**. El
-   costo real = tokens informados × precios del catálogo. Al final se suelta la reserva.
+   costo real = tokens informados x precios del catálogo. Al final se suelta la reserva.
    - Un intento sin respuesta que el proveedor pudo procesar (tiempo agotado, red) cuenta
      su **máximo** como gastado (`cost_estimated = 1`), conservador.
    - Una respuesta sin `usage` también cuenta el máximo con `cost_estimated = 1`.
@@ -258,7 +258,9 @@ class LlmService:
             model, request.prompt_chars, request.max_output_tokens, self.today()
         )
         # 4. Presupuesto de la tarea.
-        await self._check_budget(run.run_id, provider, max_cost, max_input + request.max_output_tokens)
+        await self._check_budget(
+            run.run_id, provider, max_cost, max_input + request.max_output_tokens
+        )
         # 5. Tope diario y reserva.
         reservation = await self._reserve(provider, max_cost)
         try:
@@ -273,7 +275,7 @@ class LlmService:
                 max_cost=max_cost,
                 max_input_tokens=max_input,
             )
-            # 6. Clave (una petición por llamada lógica) y 7–10.
+            # 6. Clave (una petición por llamada lógica) y 7-10.
             if not self.client.requires_key:
                 return await self._run(call, None)
             max_wait = deadline.remaining() if deadline is not None else None

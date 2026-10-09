@@ -141,6 +141,162 @@
         "title": "HealthOut",
         "type": "object"
       },
+      "LlmDailyLimitIn": {
+        "additionalProperties": false,
+        "properties": {
+          "daily_limit_micros": {
+            "description": "Tope diario en micros de USD, de 500 000 (US$0,50) a 500 000 000 (US$500).",
+            "examples": [
+              5000000
+            ],
+            "title": "Daily Limit Micros",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "daily_limit_micros"
+        ],
+        "title": "LlmDailyLimitIn",
+        "type": "object"
+      },
+      "LlmPreferencesIn": {
+        "additionalProperties": false,
+        "properties": {
+          "preferred_provider": {
+            "anyOf": [
+              {
+                "enum": [
+                  "anthropic",
+                  "openai",
+                  "gemini"
+                ],
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Proveedor de la clave que usan los agentes; `null` = automático.",
+            "title": "Preferred Provider"
+          }
+        },
+        "required": [
+          "preferred_provider"
+        ],
+        "title": "LlmPreferencesIn",
+        "type": "object"
+      },
+      "LlmProviderUsageOut": {
+        "additionalProperties": false,
+        "description": "Gasto de hoy y tope de la clave de un proveedor. Nunca la clave ni su `last4`.",
+        "properties": {
+          "daily_limit_micros": {
+            "minimum": 0,
+            "title": "Daily Limit Micros",
+            "type": "integer"
+          },
+          "has_key": {
+            "description": "Hay clave en la Bóveda (según el último aviso del núcleo).",
+            "title": "Has Key",
+            "type": "boolean"
+          },
+          "limit_reached": {
+            "title": "Limit Reached",
+            "type": "boolean"
+          },
+          "provider": {
+            "enum": [
+              "anthropic",
+              "openai",
+              "gemini"
+            ],
+            "title": "Provider",
+            "type": "string"
+          },
+          "requests_today": {
+            "minimum": 0,
+            "title": "Requests Today",
+            "type": "integer"
+          },
+          "spent_today_micros": {
+            "minimum": 0,
+            "title": "Spent Today Micros",
+            "type": "integer"
+          },
+          "tokens_today": {
+            "minimum": 0,
+            "title": "Tokens Today",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "provider",
+          "has_key",
+          "spent_today_micros",
+          "daily_limit_micros",
+          "requests_today",
+          "tokens_today",
+          "limit_reached"
+        ],
+        "title": "LlmProviderUsageOut",
+        "type": "object"
+      },
+      "LlmUsageOut": {
+        "additionalProperties": false,
+        "properties": {
+          "currency": {
+            "const": "USD",
+            "default": "USD",
+            "title": "Currency",
+            "type": "string"
+          },
+          "preferred_provider": {
+            "anyOf": [
+              {
+                "enum": [
+                  "anthropic",
+                  "openai",
+                  "gemini"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferred Provider"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/LlmProviderUsageOut"
+            },
+            "title": "Providers",
+            "type": "array"
+          },
+          "total_today_micros": {
+            "minimum": 0,
+            "title": "Total Today Micros",
+            "type": "integer"
+          },
+          "usage_date": {
+            "description": "Día local AAAA-MM-DD.",
+            "examples": [
+              "2026-10-09"
+            ],
+            "title": "Usage Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "usage_date",
+          "preferred_provider",
+          "total_today_micros",
+          "providers"
+        ],
+        "title": "LlmUsageOut",
+        "type": "object"
+      },
       "ReconnectSiteIn": {
         "additionalProperties": false,
         "description": "Cuerpo de `reconnectSite`.",
@@ -632,6 +788,244 @@
         "summary": "Estado del motor",
         "tags": [
           "health"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      }
+    },
+    "/llm/limits/{provider}": {
+      "put": {
+        "operationId": "setLlmDailyLimit",
+        "parameters": [
+          {
+            "description": "Proveedor de IA.",
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "description": "Proveedor de IA.",
+              "enum": [
+                "anthropic",
+                "openai",
+                "gemini"
+              ],
+              "pattern": "^[A-Za-z0-9_-]{1,64}$",
+              "title": "Provider",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LlmDailyLimitIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmUsageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`llm.no_key`: no hay clave de ese proveedor."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`llm.invalid_provider` o `llm.invalid_limit`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Cambiar el tope diario de gasto de una clave de IA",
+        "tags": [
+          "llm"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      }
+    },
+    "/llm/preferences": {
+      "put": {
+        "operationId": "setLlmPreferences",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LlmPreferencesIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmUsageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`llm.no_key`: no hay clave de ese proveedor."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`llm.invalid_provider` o `llm.invalid_limit`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Elegir la clave de IA que usan los agentes",
+        "tags": [
+          "llm"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      }
+    },
+    "/llm/usage": {
+      "get": {
+        "operationId": "getLlmUsage",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlmUsageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Gasto de hoy y tope de cada clave de IA",
+        "tags": [
+          "llm"
         ],
         "x-faro-secrets": [],
         "x-faro-timeout-seconds": 10

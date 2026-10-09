@@ -15,7 +15,7 @@ máximo como gastado antes de soltar la reserva (`LlmService`); tras un cierre b
 proceso a mitad de una llamada, esa llamada no queda contada (riesgo residual, a lo sumo
 el máximo de una llamada).
 
-Tope por defecto: US$5/día (5 000 000 micros, decisión del usuario); rango 0,50–500 USD.
+Tope por defecto: US$5/día (5 000 000 micros, decisión del usuario); rango 0,50-500 USD.
 """
 
 from __future__ import annotations

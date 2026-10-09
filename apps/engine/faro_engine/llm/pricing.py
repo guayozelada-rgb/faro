@@ -1,12 +1,12 @@
 """Costo en micros de USD, solo con enteros y redondeo hacia arriba (skill `capa-llm` §7).
 
-- `cost_micros(tokens, precio)`: `ceil(tokens × precio / 1 000 000)`.
-- `call_cost`: costo real de una respuesta = tokens que informa el proveedor × precios del
+- `cost_micros(tokens, precio)`: `ceil(tokens x precio / 1 000 000)`.
+- `call_cost`: costo real de una respuesta = tokens que informa el proveedor x precios del
   catálogo del día. Si el prompt pasa del umbral de contexto largo del modelo
   (`long_context.above_input_tokens`), toda la petición va con esos precios (así cobran
   Anthropic y OpenAI).
-- `max_call_cost`: **máximo** antes de llamar = `ceil(caracteres / 3)` × precio de entrada
-  + `max_output_tokens` × precio de salida. Para elegir los precios de contexto largo se
+- `max_call_cost`: **máximo** antes de llamar = `ceil(caracteres / 3)` x precio de entrada
+  + `max_output_tokens` x precio de salida. Para elegir los precios de contexto largo se
   toma el peor caso (un token por carácter): el máximo no se queda corto por el umbral.
 
 Nunca `float` ni `Decimal`.

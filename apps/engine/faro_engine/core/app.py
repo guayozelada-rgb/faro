@@ -14,7 +14,8 @@ from faro_engine.core.jobs.control import AgentsControlState
 from faro_engine.core.jobs.grants import RunGrantClient
 from faro_engine.core.logging import RequestLoggingMiddleware
 from faro_engine.core.operations import validate_app_operations
-from faro_engine.core.routes import health, llm, sites
+from faro_engine.core.routes import health, sites
+from faro_engine.core.routes import llm as llm_routes
 from faro_engine.core.run_id import RunIdMiddleware
 from faro_engine.core.secrets import SecretBroker
 from faro_engine.core.security import SecurityMiddleware
@@ -108,7 +109,7 @@ def create_app(
     install_error_handlers(app)
     app.include_router(health.router)
     app.include_router(sites.router)
-    app.include_router(llm.router)
+    app.include_router(llm_routes.router)
     # Toda operación declara timeout y secretos (ADR 0010 §3); si no, el motor no arranca.
     validate_app_operations(app)
     # La tabla de concesiones de los agentes cumple ADR 0014 §1; si no, tampoco arranca.

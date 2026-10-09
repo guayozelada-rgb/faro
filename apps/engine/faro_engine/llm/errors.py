@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import email.utils
 import json
+import math
 import re
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
@@ -293,7 +294,7 @@ def parse_retry_after(value: object, *, now: datetime | None = None) -> float | 
         if moment.tzinfo is None:
             moment = moment.replace(tzinfo=UTC)
         seconds = (moment - (now or datetime.now(UTC))).total_seconds()
-    if seconds != seconds or seconds < 0 or seconds > 86_400:  # NaN o fuera de rango
+    if math.isnan(seconds) or seconds < 0 or seconds > 86_400:
         return None
     return seconds
 

@@ -97,7 +97,7 @@ async def drop_client_cache() -> None:
     """Vacía la caché de clientes de LiteLLM (`in_memory_llm_clients_cache`): con OpenAI
     guarda un `AsyncOpenAI` con la clave y la clave en claro dentro de su clave de caché."""
     await close_litellm_async_clients()  # type: ignore[no-untyped-call]
-    litellm.in_memory_llm_clients_cache.flush_cache()
+    litellm.in_memory_llm_clients_cache.flush_cache()  # type: ignore[no-untyped-call]
 
 
 class LiteLlmClient:

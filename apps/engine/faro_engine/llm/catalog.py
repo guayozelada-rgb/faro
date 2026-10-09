@@ -5,7 +5,7 @@ motor, igual que con la tabla de concesiones):
 
 - forma cerrada y tipos estrictos (sin campos de más, sin claves repetidas, enteros de
   verdad: ni `1e6` ni `"1000000"` ni `true`), `version = 1` y `currency = "USD"`;
-- exactamente **un** modelo por (`provider`, `tier`): 3 proveedores × 2 niveles;
+- exactamente **un** modelo por (`provider`, `tier`): 3 proveedores x 2 niveles;
 - `litellm_model` = `<provider>/<model>`: Gemini solo con `gemini/` (AI Studio), nunca
   `vertex_ai/` ni otro prefijo;
 - precios enteros > 0 en micros de USD por millón de tokens; el precio de contexto largo

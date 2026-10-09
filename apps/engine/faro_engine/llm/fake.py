@@ -110,8 +110,8 @@ class FakeLLM:
         if isinstance(step, FakeFailure):
             raise LlmCallError(step.kind, retry_after=step.retry_after)
         text = step.text
-        tokens_in = step.tokens_in if step.tokens_in is not None else count_tokens(
-            _prompt_text(call)
+        tokens_in = (
+            step.tokens_in if step.tokens_in is not None else count_tokens(_prompt_text(call))
         )
         produced = (text or "") + "".join(name + args for name, args in step.tool_calls)
         tokens_out = step.tokens_out if step.tokens_out is not None else count_tokens(produced)
