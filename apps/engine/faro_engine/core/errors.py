@@ -52,6 +52,22 @@ ENGINE_SECRETS_UNAVAILABLE: Final = "engine.secrets_unavailable"
 AGENTS_PAUSED: Final = "agents.paused"
 AGENT_GRANT_DENIED: Final = "agent.grant_denied"
 
+# Capa de IA (spec F1b §4.1 y §5.5). Sus mensajes, con el nombre del proveedor, y su
+# estado HTTP están en `faro_engine/llm/errors.py` (`llm_error`).
+AGENT_BUDGET_EXHAUSTED: Final = "agent.budget_exhausted"
+LLM_NO_KEY: Final = "llm.no_key"
+LLM_INVALID_KEY: Final = "llm.invalid_key"
+LLM_INSUFFICIENT_QUOTA: Final = "llm.insufficient_quota"
+LLM_RATE_LIMITED: Final = "llm.rate_limited"
+LLM_PROVIDER_ERROR: Final = "llm.provider_error"
+LLM_UNREACHABLE: Final = "llm.unreachable"
+LLM_TIMEOUT: Final = "llm.timeout"
+LLM_DAILY_LIMIT_REACHED: Final = "llm.daily_limit_reached"
+LLM_CONTENT_BLOCKED: Final = "llm.content_blocked"
+LLM_BAD_OUTPUT: Final = "llm.bad_output"
+LLM_INVALID_LIMIT: Final = "llm.invalid_limit"
+LLM_INVALID_PROVIDER: Final = "llm.invalid_provider"
+
 _CREDENTIAL_UNUSABLE_MESSAGE: Final = (
     "Faro no pudo usar una credencial guardada. Reinicia Faro e intenta de nuevo."
 )
