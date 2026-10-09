@@ -601,7 +601,11 @@ async fn la_liberacion_solo_borra_su_concesion_de_ejecucion() {
         7,
     );
     assert_eq!(s.broker.active_run_grants(), 1);
-    assert!(logs.text().contains("malformada"), "{}", logs.text());
+    assert!(
+        logs.text().contains("reason=\"malformed\""),
+        "{}",
+        logs.text()
+    );
     for status in [
         "succeeded",
         "failed",
@@ -882,13 +886,14 @@ async fn las_concesiones_de_engine_call_no_dependen_de_la_pausa() {
 
 // ---------- Inundación desde el motor (revisión de seguridad de T5) ----------
 
-/// Liberaciones de concesiones inexistentes y solicitudes sin `id`, repetidas: el log las
-/// muestrea (la 1.ª, la 100.ª y la 200.ª) y la auditoría las agrega con `details.count`.
+/// Liberaciones de concesiones inexistentes, solicitudes sin `id` y liberaciones
+/// malformadas, repetidas sin motor enganchado: el log registra las 10 primeras de cada
+/// grupo y un agregado, y la auditoría guarda un solo evento por grupo con `count`.
 #[tokio::test(flavor = "current_thread")]
-async fn lo_que_el_motor_repite_se_muestrea_en_el_log_y_se_agrega_en_la_auditoria() {
+async fn lo_que_el_motor_repite_se_agrega_en_el_log_y_en_la_auditoria() {
     let (logs, _guard) = crate::test_logs::capture();
     let s = setup().await;
-    // Sin motor que lea: la auditoría espera en el búfer (ahí se agrega).
+    // Sin motor que lea: la auditoría espera en el búfer (ahí también se agrega).
     s.audit.detach();
     assert_eq!(s.audit.sync().await, 0);
     for n in 0..250 {
@@ -905,9 +910,10 @@ async fn lo_que_el_motor_repite_se_muestrea_en_el_log_y_se_agrega_en_la_auditori
         s.broker
             .handle_run_release_line(r#"{"event":"run_grant_release"}"#, 1);
     }
-    assert_eq!(s.audit.sync().await, 3);
-    let events = s.audit.snapshot();
-    let lines: Vec<Value> = events
+    assert_eq!(s.audit.sync().await, 4);
+    let lines: Vec<Value> = s
+        .audit
+        .snapshot()
         .iter()
         .map(|e| serde_json::from_slice(&e.to_line()).unwrap())
         .collect();
@@ -924,17 +930,168 @@ async fn lo_que_el_motor_repite_se_muestrea_en_el_log_y_se_agrega_en_la_auditori
     assert_eq!(lines[2]["action"], "secret.denied");
     assert_eq!(lines[2]["details"]["reason"], "malformed");
     assert_eq!(lines[2]["details"]["count"], "250");
+    assert_eq!(lines[3]["action"], "agent.grant_released");
+    assert_eq!(
+        lines[3]["details"],
+        json!({"reason": "malformed", "count": "250"})
+    );
 
     let text = logs.text();
-    for message in [
-        "liberación de una concesión de agente que no existe",
-        "solicitud de concesión de agente sin id válido",
-        "concesión de agente denegada",
-        "solicitud de secreto sin id válido",
-        "solicitud de secreto rechazada",
-        "liberación de concesión de agente malformada",
+    let burst = usize::try_from(crate::secrets::audit::AGGREGATE_BURST).unwrap();
+    for (message, groups) in [
+        ("liberación de concesión de agente rechazada", 2),
+        ("concesión de agente denegada", 1),
+        ("solicitud de secreto rechazada", 1),
     ] {
-        assert_eq!(text.matches(message).count(), 3, "{message}: {text}");
+        assert_eq!(
+            text.matches(message).count(),
+            groups * (burst + 1),
+            "{message}: {text}"
+        );
     }
-    assert!(text.contains("total=200"), "{text}");
+    assert!(text.contains("total=250"), "{text}");
+}
+
+/// Segunda revisión de seguridad de T5: un motor que sí lee stdin inunda con rechazos
+/// **bien formados** (`run_id` aleatorios, agentes desconocidos, agentes en pausa): el log
+/// y la auditoría quedan acotados por (acción, motivo) y la cuenta no se pierde.
+#[tokio::test(flavor = "current_thread")]
+async fn una_inundacion_de_rechazos_bien_formados_queda_acotada() {
+    let (logs, _guard) = crate::test_logs::capture();
+    let mut s = setup().await;
+    const FLOOD: u32 = 3_000;
+    for n in 0..FLOOD {
+        let run = run_id(n);
+        let site = format!("0192f0a0-{:04x}-7abc-8def-0123456789ab", n % 65_536);
+        let response = s.secret(&run, "get", &format!("wp/{site}/token")).await;
+        assert_eq!(response["error"], "vault.secret_not_allowed");
+        assert_eq!(
+            s.ask(&run, "desconocido", Some(SITE), Some("anthropic"))["error"],
+            GRANT_DENIED
+        );
+    }
+    s.broker.pause_agents();
+    for n in 0..FLOOD {
+        assert_eq!(
+            s.ask(&run_id(n), "site_summary", Some(SITE), Some("anthropic"))["error"],
+            AGENTS_PAUSED
+        );
+    }
+    assert_eq!(s.audit.sync().await, 0);
+    let mut lines = Vec::new();
+    loop {
+        let mut line = String::new();
+        match tokio::time::timeout(
+            Duration::from_millis(200),
+            s.audit_lines.read_line(&mut line),
+        )
+        .await
+        {
+            Ok(Ok(n)) if n > 0 => lines.push(serde_json::from_str::<Value>(&line).unwrap()),
+            _ => break,
+        }
+    }
+    let burst = usize::try_from(crate::secrets::audit::AGGREGATE_BURST).unwrap();
+    assert_eq!(lines.len(), 3 * (burst + 1), "{lines:?}");
+    let mut by_reason: BTreeMap<String, u64> = BTreeMap::new();
+    for line in &lines {
+        let reason = line["details"]["reason"].as_str().unwrap().to_owned();
+        let count = line["details"]["count"]
+            .as_str()
+            .map_or(1, |c| c.parse().unwrap());
+        *by_reason.entry(reason).or_default() += count;
+    }
+    let flood = u64::from(FLOOD);
+    assert_eq!(
+        by_reason,
+        BTreeMap::from([
+            ("paused".to_owned(), flood),
+            ("run_inactive".to_owned(), flood),
+            ("unknown_agent".to_owned(), flood),
+        ])
+    );
+    let text = logs.text();
+    assert_eq!(
+        text.matches("solicitud de secreto rechazada").count(),
+        burst + 1
+    );
+    assert_eq!(
+        text.matches("concesión de agente denegada").count(),
+        2 * (burst + 1)
+    );
+}
+
+/// Segunda revisión de seguridad de T5: tras una inundación que agota la parte general
+/// del tope diario del log, las decisiones del núcleo (concesión emitida y `secret.used`)
+/// siguen apareciendo gracias a la reserva.
+#[tokio::test(flavor = "current_thread")]
+async fn tras_agotar_el_tope_general_las_decisiones_siguen_en_el_log() {
+    use crate::logging::capped::{CapLimits, CappedWriter, LOG_CAP_NOTICE};
+
+    let sink = crate::test_logs::LogBuffer::default();
+    let today = chrono::Utc::now().date_naive();
+    let capped = CappedWriter::with_clock(
+        sink.clone(),
+        CapLimits {
+            total: 12 * 1024,
+            reserve: 6 * 1024,
+        },
+        Box::new(move || today),
+        0,
+    );
+    let subscriber = crate::logging::subscriber(
+        std::sync::Mutex::new(capped),
+        None::<fn() -> std::io::Sink>,
+        tracing_subscriber::EnvFilter::new("info"),
+    );
+    crate::test_logs::ensure_global();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    tracing::callsite::rebuild_interest_cache();
+
+    let s = setup().await;
+    // Inundación: rechazos bien formados con `run_id` distintos y ruido general.
+    for n in 0..2_000 {
+        let run = run_id(n);
+        s.secret(&run, "get", &format!("wp/{SITE}/token")).await;
+        s.ask(&run, "desconocido", Some(SITE), Some("anthropic"));
+    }
+    s.audit.sync().await;
+    for n in 0..50 {
+        tracing::warn!(n, "ruido general del núcleo para agotar la parte general");
+    }
+    let flooded = sink.text();
+    assert!(flooded.contains(LOG_CAP_NOTICE), "{flooded}");
+    tracing::warn!("aviso general tras el tope");
+
+    // Decisiones legítimas después de la inundación.
+    granted(
+        &s.ask(RUN, "site_summary", Some(SITE), Some("anthropic")),
+        900,
+    );
+    assert_eq!(
+        s.secret(RUN, "get", "llm/anthropic/default").await["value"],
+        ANTHROPIC_KEY
+    );
+    let text = sink.text();
+    let decisions: Vec<Value> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["target"] == crate::logging::DECISION_TARGET)
+        .collect();
+    let messages: Vec<&str> = decisions
+        .iter()
+        .map(|v| v["fields"]["message"].as_str().unwrap())
+        .collect();
+    assert!(
+        messages.contains(&"concesión de agente emitida"),
+        "{messages:?}"
+    );
+    let used = decisions
+        .iter()
+        .find(|v| v["fields"]["message"] == "solicitud de secreto del motor")
+        .expect("secret.used no está en el log");
+    assert_eq!(used["fields"]["result"], "ok");
+    assert_eq!(used["fields"]["op"], "get");
+    assert!(!text.contains("aviso general tras el tope"), "{text}");
+    assert!(!text.contains(ANTHROPIC_KEY), "el valor nunca va al log");
 }

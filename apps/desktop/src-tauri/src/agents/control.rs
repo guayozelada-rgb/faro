@@ -32,6 +32,7 @@ use zeroize::Zeroizing;
 
 use crate::engine::supervisor::StdinWriter;
 use crate::error::AppError;
+use crate::logging::DECISION_TARGET;
 use crate::secrets::audit::{now_utc, Action, Actor, AuditEvent, AuditQueue, DetailKey, Outcome};
 use crate::secrets::SecretBroker;
 use crate::vault::Provider;
@@ -181,7 +182,7 @@ impl AgentsControl {
         let initial = read_state(&path);
         if initial.paused {
             broker.pause_agents();
-            tracing::info!("agentes en pausa al arrancar");
+            tracing::info!(target: DECISION_TARGET, "agentes en pausa al arrancar");
         } else {
             broker.resume_agents();
         }
@@ -240,7 +241,7 @@ impl AgentsControl {
                 .detail(DetailKey::ErrorCode, "agents.control_unavailable");
         }
         self.audit.record(event);
-        tracing::info!(revoked, saved, "agentes en pausa");
+        tracing::info!(target: DECISION_TARGET, revoked, saved, "agentes en pausa");
         if saved {
             Ok(state)
         } else {
@@ -272,7 +273,7 @@ impl AgentsControl {
             Action::AgentsResumed,
             Outcome::Ok,
         ));
-        tracing::info!("agentes reanudados");
+        tracing::info!(target: DECISION_TARGET, "agentes reanudados");
         Ok(state)
     }
 

@@ -65,6 +65,7 @@ use crate::engine::protocol::{self, StdoutLine, MAX_LINE_BYTES, SHUTDOWN_LINE};
 use crate::engine::{EngineLink, EngineMode, EngineStatus};
 use crate::error::AppError;
 use crate::logging::sample::LogSampler;
+use crate::logging::DECISION_TARGET;
 use crate::profile::{DbKeyMessage, DbKeyProvider};
 use crate::secrets::SecretBroker;
 
@@ -301,7 +302,7 @@ impl StdinWriter {
                 let ok = match time::timeout(stall, write).await {
                     Ok(ok) => ok,
                     Err(_) => {
-                        tracing::error!(segundos = stall.as_secs_f64(), "{}", LOG_STDIN_STALLED);
+                        tracing::error!(target: DECISION_TARGET, segundos = stall.as_secs_f64(), "{}", LOG_STDIN_STALLED);
                         stalled_tx.send_replace(true);
                         false
                     }
@@ -516,7 +517,7 @@ impl Actor {
                                 self.set(EngineStatus::restarting());
                                 continue;
                             } else {
-                                tracing::error!("el motor superó el límite de reinicios");
+                                tracing::error!(target: DECISION_TARGET, "el motor superó el límite de reinicios");
                                 self.set(EngineStatus::error(AppError::engine_restart_limit()));
                             }
                         }
@@ -529,7 +530,7 @@ impl Actor {
             }
         }
         self.set_diagnostics(EngineDiagnostics::default());
-        tracing::info!("supervisor del motor detenido");
+        tracing::info!(target: DECISION_TARGET, "supervisor del motor detenido");
     }
 
     /// Motor `ready`: publica la conexión para `engine_call` y activa la auditoría.
@@ -571,7 +572,7 @@ impl Actor {
             .and_then(|e| e.details.get("reason"))
             .and_then(|r| r.as_str())
             .map(str::to_owned);
-        tracing::info!(state = ?status.state, code, reason, "estado del motor");
+        tracing::info!(target: DECISION_TARGET, state = ?status.state, code, reason, "estado del motor");
         self.status_tx.send_replace(status.clone());
         (self.sink)(&status);
     }
@@ -615,7 +616,7 @@ impl Actor {
             _ = wait_shutdown(&mut self.shutdown_rx) => ErrorOutcome::Shutdown,
             Some(cmd) = self.cmd_rx.recv() => match cmd {
                 Command::Restart(reply) => {
-                    tracing::info!("reinicio manual del motor");
+                    tracing::info!(target: DECISION_TARGET, "reinicio manual del motor");
                     self.restarts.clear();
                     let status = EngineStatus::starting();
                     self.set(status.clone());
@@ -660,7 +661,7 @@ impl Actor {
             launcher_pid,
             ..EngineDiagnostics::default()
         });
-        tracing::info!(pid = launcher_pid, "proceso del motor lanzado");
+        tracing::info!(target: DECISION_TARGET, pid = launcher_pid, "proceso del motor lanzado");
 
         let deadline = Instant::now() + self.config.ready_timeout;
 
@@ -769,6 +770,7 @@ impl Actor {
 
         let tree_pids = proc.control.tree_pids();
         tracing::info!(
+            target: DECISION_TARGET,
             pid = launcher_pid,
             engine_pid = ready.pid,
             tree_pids = ?tree_pids,
@@ -865,14 +867,14 @@ impl Actor {
                     return RunOutcome::Shutdown;
                 }
                 SuperviseEvent::Exited(code) => {
-                    tracing::warn!(code, "el motor terminó inesperadamente");
+                    tracing::warn!(target: DECISION_TARGET, code, "el motor terminó inesperadamente");
                     if let Some(mut proc) = running.proc.take() {
                         terminate(&mut proc).await;
                     }
                     return RunOutcome::Failed;
                 }
                 SuperviseEvent::Stalled => {
-                    tracing::error!("motor no sano (stdin atascado): se reinicia");
+                    tracing::error!(target: DECISION_TARGET, "motor no sano (stdin atascado): se reinicia");
                     if let Some(mut proc) = running.proc.take() {
                         terminate(&mut proc).await;
                     }
@@ -905,7 +907,7 @@ impl Actor {
                 SuperviseEvent::Tick => match running.client.health().await {
                     Ok(ok) => {
                         if failures > 0 {
-                            tracing::info!("el motor vuelve a responder a /health");
+                            tracing::info!(target: DECISION_TARGET, "el motor vuelve a responder a /health");
                         }
                         failures = 0;
                         if ok.database_error != running.database_error {
@@ -920,7 +922,7 @@ impl Actor {
                     }
                     Err(err) => {
                         failures += 1;
-                        tracing::warn!(motivo = ?err, failures, "fallo de /health del motor");
+                        tracing::warn!(target: DECISION_TARGET, motivo = ?err, failures, "fallo de /health del motor");
                         if failures >= self.config.max_health_failures {
                             if let Some(mut proc) = running.proc.take() {
                                 terminate(&mut proc).await;
@@ -981,7 +983,7 @@ async fn terminate(proc: &mut Proc) {
         .await
         .is_err()
     {
-        tracing::warn!("el proceso del motor no terminó tras matarlo");
+        tracing::warn!(target: DECISION_TARGET, "el proceso del motor no terminó tras matarlo");
     }
 }
 
@@ -998,8 +1000,10 @@ async fn graceful_stop(mut proc: Proc, config: &SupervisorConfig) {
         tracing::debug!("no se pudo enviar shutdown al motor");
     }
     match time::timeout_at(deadline, proc.control.wait()).await {
-        Ok(code) => tracing::info!(code, "motor apagado"),
-        Err(_) => tracing::warn!("el motor no se apagó a tiempo; se termina"),
+        Ok(code) => tracing::info!(target: DECISION_TARGET, code, "motor apagado"),
+        Err(_) => {
+            tracing::warn!(target: DECISION_TARGET, "el motor no se apagó a tiempo; se termina")
+        }
     }
     drop(proc.stdin);
     proc.control.kill();

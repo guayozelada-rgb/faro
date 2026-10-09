@@ -16,6 +16,7 @@ from fastapi import Request
 from faro_engine.core.app import create_app
 from faro_engine.core.audit import (
     ACTION_DETAIL_KEYS,
+    CORE_ACTION_DETAIL_KEYS,
     CORE_ACTIONS,
     DETAIL_KEYS,
     ENGINE_ACTIONS,
@@ -394,4 +395,63 @@ def test_core_aggregated_event_with_count_is_inserted(db: Database) -> None:
 @pytest.mark.parametrize("value", ["0", "01", "-1", "1.5", "x", "1" * 19, ""])
 def test_count_must_be_a_positive_integer(value: str) -> None:
     with pytest.raises(InvalidAuditEventError):
-        parse_core_event(core_event(details={"count": value}))
+        parse_core_event(core_event(action="secret.denied", details={"count": value}))
+
+
+@pytest.mark.parametrize("value", ["1", "2", "9" * 18])
+def test_count_accepts_the_whole_range(value: str) -> None:
+    event = parse_core_event(core_event(action="secret.denied", details={"count": value}))
+    assert event.details["count"] == value
+
+
+# --- `count` solo en las acciones agregables del núcleo (segunda revisión de T5) -------
+
+
+def test_core_action_detail_keys_belong_to_core_actions_only() -> None:
+    assert set(CORE_ACTION_DETAIL_KEYS) <= CORE_ACTIONS
+    assert not set(CORE_ACTION_DETAIL_KEYS) & ENGINE_ACTIONS
+    assert set(CORE_ACTION_DETAIL_KEYS) == {
+        "secret.denied",
+        "agent.grant_denied",
+        "agent.grant_released",
+        "audit.dropped",
+    }
+    assert set().union(*CORE_ACTION_DETAIL_KEYS.values()) == {"count"}
+    assert "count" not in DETAIL_KEYS
+
+
+@pytest.mark.parametrize(
+    "action",
+    sorted(
+        CORE_ACTIONS
+        - {"secret.denied", "agent.grant_denied", "agent.grant_released", "audit.dropped"}
+    ),
+)
+def test_count_is_rejected_in_other_core_actions(action: str) -> None:
+    with pytest.raises(InvalidAuditEventError) as excinfo:
+        parse_core_event(core_event(action=action, details={"count": "2"}))
+    assert excinfo.value.field == "details"
+
+
+async def test_engine_actions_cannot_carry_count(db: Database) -> None:
+    with pytest.raises(InvalidAuditEventError):
+        await AuditLog(db).record(action="site.connected", result="ok", details={"count": "2"})
+
+
+def test_audit_dropped_from_the_core_is_inserted(db: Database) -> None:
+    event = core_event(
+        action="audit.dropped",
+        secret_ref=None,
+        run_id=None,
+        result="error",
+        details={"reason": "buffer_full", "count": "1"},
+    )
+    assert AuditLog(db).record_core_event(event)
+    [row] = _rows(db)
+    assert row[3] == "audit.dropped"
+    assert json.loads(row[7]) == {"count": "1", "reason": "buffer_full"}
+
+
+async def test_engine_cannot_record_audit_dropped(db: Database) -> None:
+    with pytest.raises(InvalidAuditEventError):
+        await AuditLog(db).record(action="audit.dropped", result="error")

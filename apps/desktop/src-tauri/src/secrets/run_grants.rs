@@ -34,10 +34,12 @@
 //! solo va al log y a la auditoría. `run_grant_release` solo borra la concesión de
 //! ejecución de su `run_id` (nunca una de operación) y no tiene respuesta.
 //!
-//! Lo que un motor puede repetir sin límite (solicitudes malformadas o sin `id`,
-//! liberaciones malformadas o de concesiones que no existen) se registra muestreado (el
-//! primero y uno de cada 100) y se audita agregado (`details.count`); la liberación de
-//! una concesión que no existe se audita como `denied` (`not_active`).
+//! Todo rechazo, que un motor puede repetir sin límite (cualquier motivo de denegación,
+//! solicitudes malformadas o sin `id`, liberaciones malformadas, de concesiones que no
+//! existen o de una concesión de operación), se agrega por (acción, motivo) en el log y en
+//! la auditoría (`details.count`; ver [`super::audit`]). La liberación de una concesión
+//! que no existe se audita como `denied` (`not_active`). Las concesiones emitidas y las
+//! liberadas quedan en el log como decisiones del núcleo (target [`DECISION_TARGET`]).
 
 use serde::Deserialize;
 
@@ -216,12 +218,7 @@ impl SecretBroker {
                 return Some(error_response(&id, GRANT_DENIED));
             }
             Parsed::Unanswerable => {
-                if self.samples.grant_unanswerable.hit() {
-                    tracing::warn!(
-                        total = self.samples.grant_unanswerable.total(),
-                        "solicitud de concesión de agente sin id válido: se ignora"
-                    );
-                }
+                // Sin `id` válido no se puede responder; queda como `malformed`.
                 self.record_run_denial(&Facts::none(), deny(GRANT_DENIED, "malformed"));
                 return None;
             }
@@ -361,12 +358,10 @@ impl SecretBroker {
         let release = match serde_json::from_str::<RawRelease>(line.trim()) {
             Ok(raw) if raw.event == "run_grant_release" && is_canonical_uuid(&raw.run_id) => raw,
             _ => {
-                if self.samples.release_malformed.hit() {
-                    tracing::warn!(
-                        total = self.samples.release_malformed.total(),
-                        "liberación de concesión de agente malformada: se ignora"
-                    );
-                }
+                let event = AuditEvent::new(Actor::System, Action::GrantReleased, Outcome::Denied)
+                    .detail(DetailKey::Reason, "malformed")
+                    .aggregated();
+                self.audit.record(event);
                 return;
             }
         };
@@ -385,11 +380,11 @@ impl SecretBroker {
                 (true, Some(false)) => {
                     // Una concesión de operación nunca se libera desde el motor.
                     drop(state);
-                    tracing::warn!("el motor intentó liberar una concesión de operación");
                     let event =
                         AuditEvent::new(Actor::System, Action::GrantReleased, Outcome::Denied)
                             .run_id(&release.run_id)
-                            .detail(DetailKey::Reason, "not_run_grant");
+                            .detail(DetailKey::Reason, "not_run_grant")
+                            .aggregated();
                     self.audit.record(event);
                     return;
                 }
@@ -399,8 +394,9 @@ impl SecretBroker {
         let status = release.status.as_str();
         let event = match &removed {
             Some(origin) => {
-                // Cada una corresponde a una concesión emitida: no hace falta muestrear.
+                // Cada una corresponde a una concesión emitida: no hace falta agregar.
                 tracing::info!(
+                    target: DECISION_TARGET,
                     run_id = release.run_id.as_str(),
                     status,
                     "concesión de agente liberada"
@@ -411,14 +407,6 @@ impl SecretBroker {
             }
             None => {
                 // Caducada, ya liberada o inventada: el motor puede repetirla sin límite.
-                if self.samples.release_not_active.hit() {
-                    tracing::info!(
-                        run_id = release.run_id.as_str(),
-                        status,
-                        total = self.samples.release_not_active.total(),
-                        "liberación de una concesión de agente que no existe"
-                    );
-                }
                 AuditEvent::new(Actor::System, Action::GrantReleased, Outcome::Denied)
                     .run_id(&release.run_id)
                     .detail(DetailKey::Reason, "not_active")
@@ -430,6 +418,7 @@ impl SecretBroker {
 
     fn record_issued(&self, facts: &Facts<'_>, issued: &Issued) {
         tracing::info!(
+            target: DECISION_TARGET,
             run_id = facts.run_id,
             agent = facts.agent,
             trigger = facts.trigger.map(Trigger::as_str),
@@ -447,26 +436,13 @@ impl SecretBroker {
         self.audit.record(event);
     }
 
-    /// Log y auditoría de un rechazo: el motivo solo aquí, nunca en la respuesta.
+    /// Log y auditoría de un rechazo (agregados por motivo): el motivo solo aquí, nunca
+    /// en la respuesta.
     fn record_run_denial(&self, facts: &Facts<'_>, denial: Denial) {
-        let malformed = denial.reason == "malformed";
-        if !malformed || self.samples.grant_malformed.hit() {
-            tracing::warn!(
-                run_id = facts.run_id,
-                agent = facts.agent,
-                trigger = facts.trigger.map(Trigger::as_str),
-                error_code = denial.code,
-                reason = denial.reason,
-                total = malformed.then(|| self.samples.grant_malformed.total()),
-                "concesión de agente denegada"
-            );
-        }
         let mut event = AuditEvent::new(Actor::System, Action::GrantDenied, Outcome::Denied)
             .detail(DetailKey::ErrorCode, denial.code)
-            .detail(DetailKey::Reason, denial.reason);
-        if malformed {
-            event = event.aggregated();
-        }
+            .detail(DetailKey::Reason, denial.reason)
+            .aggregated();
         event = facts.apply(event);
         if let Some(provider) = facts.provider {
             event = event.detail(DetailKey::Provider, provider.as_str());

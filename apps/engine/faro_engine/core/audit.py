@@ -9,8 +9,9 @@ Dos orígenes, una tabla:
        "action":"secret.used","secret_ref":"wp/<uuid>/token","run_id":"<uuid>",
        "result":"ok","details":{"operation":"checkSiteConnection","op":"get"}}
 
-  Acciones `secret.*` y, desde F1b (spec §5.1), `agents.paused`, `agents.resumed` y
-  `agent.grant_*`. `secret_ref`, `run_id` y `details` pueden ser `null` u
+  Acciones `secret.*` y, desde F1b (spec §5.1), `agents.paused`, `agents.resumed`,
+  `agent.grant_*` y `audit.dropped` (eventos que el búfer del núcleo tuvo que descartar;
+  segunda revisión de seguridad de T5). `secret_ref`, `run_id` y `details` pueden ser `null` u
   omitirse. Un evento inválido se descarta con un aviso en el log que dice qué campo
   falló, nunca su contenido.
 - **Motor** (`AuditLog.record`): acciones `site.*` de los casos de uso (F1a T9) y, desde
@@ -19,9 +20,10 @@ Dos orígenes, una tabla:
 
 Validación común: `actor` ∈ `user`, `agent`, `system`; `result` ∈ `ok`, `denied`,
 `error`; `secret_ref` con la gramática del llavero; `run_id` UUID; `details` solo con
-las claves `site_id`, `operation`, `provider`, `op`, `reason`, `error_code` (F1a),
-`agent_kind` (F1b) y `count` (eventos agregados del núcleo, revisión de seguridad de T5)
-en cualquier acción, más las de `ACTION_DETAIL_KEYS` solo en su acción
+las claves `site_id`, `operation`, `provider`, `op`, `reason`, `error_code` (F1a) y
+`agent_kind` (F1b) en cualquier acción; `count` solo en las acciones agregables del
+núcleo (`CORE_ACTION_DETAIL_KEYS`: `secret.denied`, `agent.grant_denied`,
+`agent.grant_released` y `audit.dropped`); y las de `ACTION_DETAIL_KEYS` solo en su acción
 del motor (`level` en `autonomy.changed`; `approval_id` en `approval.*`; `decision` en
 `approval.decided`), nunca en un evento del núcleo. Valores de texto de 1 a 64
 caracteres `[A-Za-z0-9._:/-]` que no tengan forma de secreto (filtro de ADR 0013) y, para
@@ -83,6 +85,8 @@ CORE_ACTIONS: Final = frozenset(
         "agent.grant_issued",
         "agent.grant_denied",
         "agent.grant_released",
+        # Eventos descartados por el búfer lleno del núcleo (segunda revisión de T5).
+        "audit.dropped",
     },
 )
 # Acciones que registra el propio motor (casos de uso de sitios y, desde F1b §6,
@@ -111,8 +115,6 @@ DETAIL_KEYS: Final = frozenset(
         "error_code",
         # F1b §6.
         "agent_kind",
-        # Revisión de seguridad de T5: repeticiones de un evento agregado del núcleo.
-        "count",
     },
 )
 # Claves que solo admite una acción concreta del motor (F1b §6); nunca llegan del núcleo.
@@ -121,13 +123,23 @@ ACTION_DETAIL_KEYS: Final[Mapping[str, frozenset[str]]] = {
     "approval.decided": frozenset({"approval_id", "decision"}),
     "approval.executed": frozenset({"approval_id"}),
 }
+# Claves que solo admite una acción concreta del núcleo (revisiones de seguridad de T5):
+# `count` en los rechazos que el núcleo agrega y en `audit.dropped`.
+CORE_ACTION_DETAIL_KEYS: Final[Mapping[str, frozenset[str]]] = {
+    "secret.denied": frozenset({"count"}),
+    "agent.grant_denied": frozenset({"count"}),
+    "agent.grant_released": frozenset({"count"}),
+    "audit.dropped": frozenset({"count"}),
+}
 DETAIL_VALUE_PATTERN: Final = re.compile(r"[A-Za-z0-9._:/-]{1,64}")
 # Forma exacta del valor de las claves que la tienen.
 DETAIL_VALUE_PATTERNS: Final[Mapping[str, re.Pattern[str]]] = {
     "decision": re.compile(r"approve|reject"),
     "level": re.compile(r"[0-3]"),
     "approval_id": RUN_ID_PATTERN,
-    # Entero de 2 a 18 dígitos sin ceros a la izquierda (el núcleo solo lo pone si es ≥ 2).
+    # Entero positivo de 1 a 18 dígitos sin ceros a la izquierda: de 1 a
+    # 999 999 999 999 999 999. El núcleo lo pone con valor ≥ 2 en un rechazo agregado y
+    # ≥ 1 en `audit.dropped`.
     "count": re.compile(r"[1-9][0-9]{0,17}"),
 }
 # RFC 3339 en UTC con `Z` y de 0 a 9 decimales.
@@ -171,12 +183,17 @@ def parse_occurred_at(value: object) -> str:
 
 
 def validate_details(details: object, action: str) -> dict[str, str]:
-    """Claves comunes más las propias de `action` (`ACTION_DETAIL_KEYS`)."""
+    """Claves comunes más las propias de `action` (`ACTION_DETAIL_KEYS` del motor y
+    `CORE_ACTION_DETAIL_KEYS` del núcleo; las dos listas de acciones no se cruzan)."""
     if details is None:
         return {}
     if not isinstance(details, Mapping):
         raise InvalidAuditEventError("details")
-    allowed = DETAIL_KEYS | ACTION_DETAIL_KEYS.get(action, frozenset())
+    allowed = (
+        DETAIL_KEYS
+        | ACTION_DETAIL_KEYS.get(action, frozenset())
+        | CORE_ACTION_DETAIL_KEYS.get(action, frozenset())
+    )
     clean: dict[str, str] = {}
     for key, value in details.items():
         if key not in allowed:

@@ -331,9 +331,11 @@ impl Harness {
 }
 
 /// Revisión de seguridad de T5: un motor comprometido inunda stdout con liberaciones
-/// inventadas y solicitudes sin `id`, y no lee su stdin. La cola de auditoría queda
-/// acotada, el núcleo sigue respondiendo y, cuando stdin lleva el plazo atascado, el
-/// supervisor reinicia el motor; el nuevo recibe la auditoría agregada.
+/// inventadas, solicitudes sin `id` y solicitudes bien formadas con `run_id` aleatorios
+/// (que sí tienen respuesta), y no lee su stdin. La cola de auditoría queda acotada (los
+/// rechazos se agregan y casi no escriben en stdin), el núcleo sigue respondiendo y,
+/// cuando las respuestas llenan stdin y lleva el plazo atascado, el supervisor reinicia
+/// el motor; el nuevo recibe la auditoría agregada.
 #[tokio::test(flavor = "current_thread")]
 async fn motor_que_inunda_y_no_lee_stdin_queda_acotado_y_se_reinicia() {
     use tokio::io::AsyncWriteExt;
@@ -348,13 +350,19 @@ async fn motor_que_inunda_y_no_lee_stdin_queda_acotado_y_se_reinicia() {
     let flood = tokio::spawn(async move {
         // Hasta que el núcleo lo mate (se cierra su stdout); tope por si acaso.
         for n in 0..2_000_000u32 {
-            let line = match n % 3 {
+            let line = match n % 4 {
                 0 => json!({"event": "run_grant_release",
                             "run_id": format!("0192f0a0-3333-7abc-8def-{n:012}"),
                             "status": "succeeded"})
                 .to_string(),
                 1 => r#"{"event":"run_grant_request"}"#.to_owned(),
-                _ => r#"{"event":"secret_request","id":"x"}"#.to_owned(),
+                2 => r#"{"event":"secret_request","id":"x"}"#.to_owned(),
+                _ => json!({"event": "secret_request",
+                            "id": format!("0192f0a0-4444-7abc-8def-{n:012}"),
+                            "run_id": format!("0192f0a0-5555-7abc-8def-{n:012}"),
+                            "op": "get",
+                            "ref": format!("wp/0192f0a0-6666-7abc-8def-{n:012}/token")})
+                .to_string(),
             };
             if proc
                 .stdout

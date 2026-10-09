@@ -21,7 +21,10 @@
 //!
 //! Fallo del llavero → `vault.keyring_unavailable`. Las operaciones del llavero van en
 //! `spawn_blocking` y en serie. Cada solicitud, aceptada o no, deja un evento de
-//! auditoría sin el valor ([`audit`]).
+//! auditoría sin el valor ([`audit`]). Los rechazos, que un motor puede provocar sin
+//! límite, se agregan por (acción, motivo) en el log y en la auditoría
+//! ([`audit::AuditQueue::record`]); lo que sí ejecuta el llavero queda en el log como
+//! decisión del núcleo (target [`DECISION_TARGET`], con reserva en el tope diario).
 //!
 //! `wp/{site_id}/token` solo se concede si el sitio es del perfil activo
 //! ([`sites::SiteRegistry`]). El valor de un secreto solo existe en `SecretString` o
@@ -58,7 +61,7 @@ use crate::agents::manifest::{self, AgentTable};
 use crate::engine::protocol::{parse_stdout_line, StdoutLine};
 use crate::engine::supervisor::StdinWriter;
 use crate::error::AppError;
-use crate::logging::sample::LogSampler;
+use crate::logging::DECISION_TARGET;
 use crate::profile::{new_uuid_v7, NIL_PROFILE_ID};
 use crate::secrets::audit::{Action, Actor, AuditEvent, AuditQueue, DetailKey, Outcome};
 use crate::secrets::operations::{OperationSpec, TemplateKind};
@@ -266,24 +269,6 @@ impl Drop for GrantGuard {
     }
 }
 
-/// Avisos del log que un motor puede repetir sin límite: se muestrean (el primero y uno
-/// de cada 100; revisión de seguridad de T5).
-#[derive(Debug, Default)]
-struct Samples {
-    /// `secret_request` sin `id` válido.
-    secret_unanswerable: LogSampler,
-    /// `secret_request` malformada (con o sin `id`).
-    secret_malformed: LogSampler,
-    /// `run_grant_request` sin `id` válido.
-    grant_unanswerable: LogSampler,
-    /// `run_grant_request` malformada (con o sin `id`).
-    grant_malformed: LogSampler,
-    /// `run_grant_release` malformada.
-    release_malformed: LogSampler,
-    /// `run_grant_release` de una concesión que no existe.
-    release_not_active: LogSampler,
-}
-
 /// Canal de secretos del núcleo. Uno por app (`AppState`), compartido con el supervisor.
 pub struct SecretBroker {
     store: Arc<dyn SecretStore>,
@@ -294,7 +279,6 @@ pub struct SecretBroker {
     state: Mutex<BrokerState>,
     /// Serializa las operaciones del llavero de todas las solicitudes.
     keyring: tokio::sync::Mutex<()>,
-    samples: Samples,
 }
 
 impl fmt::Debug for SecretBroker {
@@ -312,7 +296,6 @@ impl SecretBroker {
             agents: manifest::embedded(),
             state: Mutex::new(BrokerState::default()),
             keyring: tokio::sync::Mutex::new(()),
-            samples: Samples::default(),
         }
     }
 
@@ -609,12 +592,7 @@ impl SecretBroker {
                 return Some(error_line(&id, NOT_ALLOWED));
             }
             ParsedRequest::Unanswerable => {
-                if self.samples.secret_unanswerable.hit() {
-                    tracing::warn!(
-                        total = self.samples.secret_unanswerable.total(),
-                        "solicitud de secreto sin id válido: se ignora"
-                    );
-                }
+                // Sin `id` válido no se puede responder; queda como `malformed`.
                 self.record_denial(None, None, None, None, deny(NOT_ALLOWED, "malformed"));
                 return None;
             }
@@ -874,6 +852,7 @@ impl SecretBroker {
             ),
         };
         tracing::info!(
+            target: DECISION_TARGET,
             op = context.op.as_str(),
             secret_ref = context.secret_ref,
             operation = context.origin.as_ref().map(|o| &*o.label),
@@ -917,7 +896,9 @@ impl SecretBroker {
         error_line(id, denial.code)
     }
 
-    /// Registra (log y auditoría) una solicitud rechazada, sin ningún valor.
+    /// Registra una solicitud rechazada, sin ningún valor. El motor puede provocar
+    /// cualquier rechazo sin límite: el evento se agrega por (acción, motivo) y la cola
+    /// lo lleva al log y a la auditoría ([`audit::AuditQueue::record`]).
     fn record_denial(
         &self,
         secret_ref: Option<&str>,
@@ -928,26 +909,10 @@ impl SecretBroker {
     ) {
         // Solo se registra la referencia si cumple la gramática (nunca texto arbitrario).
         let valid_ref = secret_ref.filter(|r| parse_ref(r).is_some());
-        // Las malformadas, que el motor puede repetir sin límite, se muestrean en el log y
-        // se agregan en la auditoría.
-        let malformed = denial.reason == "malformed";
-        if !malformed || self.samples.secret_malformed.hit() {
-            tracing::warn!(
-                op,
-                secret_ref = valid_ref,
-                operation = origin.map(|o| &*o.label),
-                error_code = denial.code,
-                reason = denial.reason,
-                total = malformed.then(|| self.samples.secret_malformed.total()),
-                "solicitud de secreto rechazada"
-            );
-        }
         let mut event = AuditEvent::new(Actor::System, Action::Denied, Outcome::Denied)
             .detail(DetailKey::ErrorCode, denial.code)
-            .detail(DetailKey::Reason, denial.reason);
-        if malformed {
-            event = event.aggregated();
-        }
+            .detail(DetailKey::Reason, denial.reason)
+            .aggregated();
         if let Some(secret_ref) = valid_ref {
             event = event.secret_ref(secret_ref);
             if let Some(RefKind::Wp { site_id }) = parse_ref(secret_ref) {
