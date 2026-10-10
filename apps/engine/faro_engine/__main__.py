@@ -389,6 +389,19 @@ def read_startup(
     return token, args.port, key_line, bool(args.allow_local_sites), bool(args.fake_llm)
 
 
+def _rejects_dev_flags(args: argparse.Namespace) -> bool:
+    """En un build empaquetado (`sys.frozen`), los modos de desarrollo salen con código 2."""
+    for enabled, event in (
+        (args.dev, "config.dev_rejected"),
+        (args.allow_local_sites, "config.local_sites_rejected"),
+        (args.fake_llm, "config.fake_llm_rejected"),
+    ):
+        if enabled:
+            log.error(event, reason="frozen_build")
+            return True
+    return False
+
+
 def run(
     argv: Sequence[str] | None,
     *,
@@ -411,14 +424,7 @@ def run(
         return EXIT_USAGE
 
     is_frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
-    if args.dev and is_frozen:
-        log.error("config.dev_rejected", reason="frozen_build")
-        return EXIT_USAGE
-    if args.allow_local_sites and is_frozen:
-        log.error("config.local_sites_rejected", reason="frozen_build")
-        return EXIT_USAGE
-    if args.fake_llm and is_frozen:
-        log.error("config.fake_llm_rejected", reason="frozen_build")
+    if is_frozen and _rejects_dev_flags(args):
         return EXIT_USAGE
 
     data_dir: Path | None = args.data_dir

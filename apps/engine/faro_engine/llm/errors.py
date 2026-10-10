@@ -217,6 +217,16 @@ def _status(exc: BaseException) -> int | None:
     return None
 
 
+def _is_redirect(exc: BaseException) -> bool:
+    """Alguna excepción de la cadena lleva una respuesta 3xx: el cliente propio no sigue
+    redirecciones (LiteLLM la envuelve a veces en `APIConnectionError`)."""
+    for item in _chain(exc):
+        status = getattr(getattr(item, "response", None), "status_code", None)
+        if isinstance(status, int) and not isinstance(status, bool) and 300 <= status < 400:
+            return True
+    return False
+
+
 def _codes_from(value: object, found: set[str], depth: int = 0) -> None:
     """Códigos con forma de identificador en `error.code`, `error.type`, `error.status`,
     `error.details[].reason` y el `type` de primer nivel. Nada más del cuerpo."""
@@ -315,8 +325,6 @@ def retry_after_of(exc: BaseException) -> float | None:
 def _classify_status(status: int, codes: set[str], exc: BaseException) -> FailureKind:
     if codes & _QUOTA_CODES or status == 402:
         return "insufficient_quota"
-    if 300 <= status < 400:
-        return "redirect"
     if status == 401 or codes & _INVALID_KEY_CODES:
         return "invalid_key"
     if status == 403 or codes & _PERMISSION_CODES:
@@ -346,6 +354,8 @@ def classify_exception(exc: BaseException) -> LlmCallError:
         return LlmCallError("content_blocked")
     status = _status(exc)
     codes = _provider_codes(exc)
+    if _is_redirect(exc):
+        return LlmCallError("redirect")
     # LiteLLM pone `status_code = 500` en `APIConnectionError` y `408` en `Timeout`: la
     # clase decide antes que el estado.
     if names & _TIMEOUT_CLASSES:

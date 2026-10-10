@@ -778,6 +778,11 @@ def test_run_dev_reads_allow_local_sites(
 # --- Modo de IA simulada (spec F1b §4.1 y §9.1) ------------------------------------------
 
 
+def test_frozen_sin_modos_de_desarrollo_sigue() -> None:
+    args = entry.parse_args([])
+    assert entry._rejects_dev_flags(args) is False
+
+
 def test_run_rejects_fake_llm_when_frozen(capsys: pytest.CaptureFixture[str]) -> None:
     sink = io.BytesIO()
     code = entry.run(["--fake-llm"], stdin_fd=0, out=sink, frozen=True)

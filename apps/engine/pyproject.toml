@@ -146,6 +146,15 @@ strict_modules = [
     "faro_engine/core/jobs/grants.py",
     "faro_engine/core/jobs/control.py",
     "faro_engine/core/jobs/activity.py",
+    # Capa de IA: costo en micros, tope diario, orden de comprobaciones, mapeo de errores,
+    # catálogo y endurecimiento de LiteLLM (spec F1b T6, ADR 0015 §1).
+    "faro_engine/llm/pricing.py",
+    "faro_engine/llm/limits.py",
+    "faro_engine/llm/service.py",
+    "faro_engine/llm/errors.py",
+    "faro_engine/llm/catalog.py",
+    "faro_engine/llm/hardening.py",
+    "faro_engine/llm/litellm_client.py",
 ]
 strict_fail_under = 95
 

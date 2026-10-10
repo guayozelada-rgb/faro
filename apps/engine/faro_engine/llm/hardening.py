@@ -9,6 +9,7 @@ Condiciones del informe de T2 (§12) que cubre:
 
 1. Antes del import: `LITELLM_MODE=PRODUCTION` (sin `load_dotenv()` de un `.env` buscado
    hacia arriba), `LITELLM_LOCAL_MODEL_COST_MAP=True` (sin descargar el mapa de precios),
+   `LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS=True` (sin descargar la tabla de cabeceras beta),
    `CUSTOM_TIKTOKEN_CACHE_DIR` apuntando al `cl100k_base` incluido en el motor (SHA-256
    comprobado por `verify_tiktoken_file`) y fuera del entorno todo lo de
    `SCRUBBED_NAMES`/`SCRUBBED_PREFIXES` (comparando en mayúsculas: también `http_proxy`).
@@ -66,6 +67,11 @@ def required_env() -> dict[str, str]:
     return {
         "LITELLM_MODE": "PRODUCTION",
         "LITELLM_LOCAL_MODEL_COST_MAP": "True",
+        # Sin ella, la salida estructurada de Anthropic descarga con `httpx.get` (proxies del
+        # entorno, sin el cliente propio) la tabla de cabeceras beta de LiteLLM desde
+        # `raw.githubusercontent.com`: una configuración remota que cambia las cabeceras que
+        # acompañan a la clave. Se usa la copia incluida en el paquete (hallazgo de T6).
+        "LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS": "True",
         "CUSTOM_TIKTOKEN_CACHE_DIR": str(TIKTOKEN_DIR),
     }
 

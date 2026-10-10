@@ -27,9 +27,12 @@ Cada llamada (`LiteLlmClient.complete`):
    `http_client` propio y `max_retries=0`. Solo `acompletion` (nunca `completion`
    síncrono, `litellm.ssl_verify`, `aclient_session` ni clientes que LiteLLM construya).
 8. `api_base` fijo al host oficial y `api_key` explícita (condición 3); `num_retries=0`
-   (los reintentos son de Faro); modelo siempre del catálogo.
+   (los reintentos son de Faro); modelo siempre del catálogo. Sin herramientas (`tools`):
+   con ellas LiteLLM crea su propio cliente para `gpt-6*` y se saltaría el punto 7.
 9. En el `finally`, también con error o cancelación: se cierra el cliente y se vacía la
-   caché de clientes de LiteLLM (condición 6; con OpenAI guarda la clave en claro).
+   caché de clientes de LiteLLM (condición 6; con OpenAI guarda la clave en claro) y se
+   vuelven a vaciar los callbacks (LiteLLM añade el callback "cache" al cargar módulos
+   perezosos).
 
 La respuesta de LiteLLM no sale de aquí: `raw_from_response` copia texto, llamadas a
 herramientas, `finish_reason` y tokens. Las excepciones salen como `LlmCallError` (solo el
@@ -61,6 +64,14 @@ from litellm.llms.custom_httpx.async_client_cleanup import (  # noqa: E402
     close_litellm_async_clients,
 )
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler  # noqa: E402
+
+# Al importarse crea un `litellm.Cache` local (solo para calcular claves) que añade el
+# callback "cache" a `success_callback`, `_async_success_callback` e `input_callback`.
+# LiteLLM lo importa en la primera llamada de Gemini: se importa aquí, antes de vaciar los
+# callbacks, y `complete` los vuelve a vaciar tras cada llamada.
+from litellm.llms.vertex_ai.context_caching import (  # noqa: E402, F401
+    vertex_ai_context_caching,
+)
 
 hardening.drop_cwd_from_sys_path()
 hardening.clean_environment()
@@ -110,12 +121,18 @@ class LiteLlmClient:
     async def complete(self, call: ResolvedCall, api_key: str | None) -> RawCompletion:
         if not api_key:
             raise LlmCallError("invalid_key")
+        if call.tools:
+            # Con `tools`, LiteLLM 1.104 lleva los modelos `gpt-6*` por un camino que crea
+            # su propio cliente aiohttp (sin el cliente propio: proxies del entorno y
+            # redirecciones). En F1b ningún agente real ofrece herramientas al modelo (solo
+            # el agente de pruebas, con `FakeLLM`): el adaptador las rechaza sin enviar
+            # nada. Habilitarlas exige comprobar el camino de cada proveedor (T8/F2).
+            log.warning("llm.tools_not_supported", provider=call.provider)
+            raise LlmCallError("bad_request")
         api_base = hardening.official_api_base(call.provider)
         extra: dict[str, Any] = {}
         if call.response_format is not None:
             extra["response_format"] = dict(call.response_format)
-        if call.tools:
-            extra["tools"] = [dict(tool) for tool in call.tools]
         client = build_client(call.provider, api_key)
         failure: LlmCallError | None = None
         response: Any = None
@@ -138,6 +155,7 @@ class LiteLlmClient:
         finally:
             await client.close()
             await drop_client_cache()
+            hardening.apply_litellm_settings(litellm)
         if failure is not None:
             # Fuera del `except`: la excepción original (con el texto del proveedor) no queda
             # encadenada en `__context__`.
