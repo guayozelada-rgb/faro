@@ -288,6 +288,7 @@ pub struct DevVenvLauncher {
     python: PathBuf,
     data_dir: PathBuf,
     allow_local_sites: bool,
+    fake_llm: bool,
 }
 
 #[cfg(debug_assertions)]
@@ -301,6 +302,7 @@ impl DevVenvLauncher {
             python,
             data_dir,
             allow_local_sites: false,
+            fake_llm: false,
         }
     }
 
@@ -309,6 +311,14 @@ impl DevVenvLauncher {
     #[must_use]
     pub fn with_allow_local_sites(mut self, allow: bool) -> Self {
         self.allow_local_sites = allow;
+        self
+    }
+
+    /// Lanza el motor con `--fake-llm` (spec F1b §4.1). Quien lo llama decide con
+    /// [`crate::engine::fake_llm_allowed`]; este lanzador solo existe en debug.
+    #[must_use]
+    pub fn with_fake_llm(mut self, fake: bool) -> Self {
+        self.fake_llm = fake;
         self
     }
 
@@ -330,6 +340,9 @@ impl DevVenvLauncher {
         if self.allow_local_sites {
             args.push("--allow-local-sites".into());
         }
+        if self.fake_llm {
+            args.push("--fake-llm".into());
+        }
         args
     }
 }
@@ -344,6 +357,10 @@ impl EngineLauncher for DevVenvLauncher {
         if self.allow_local_sites {
             // Solo desarrollo (ADR 0012): `http` y loopback para wp-env.
             tracing::warn!("motor lanzado con --allow-local-sites (solo desarrollo)");
+        }
+        if self.fake_llm {
+            // Solo desarrollo (spec F1b §4.1): IA simulada, sin claves ni llamadas reales.
+            tracing::warn!("motor lanzado con --fake-llm (solo desarrollo)");
         }
         let mut command = engine_command(&self.python);
         command.args(self.args()).current_dir(&self.engine_dir);
@@ -395,6 +412,24 @@ mod tests {
             .with_allow_local_sites(true)
             .with_allow_local_sites(false);
         assert!(!off.args().iter().any(|a| a == "--allow-local-sites"));
+    }
+
+    #[test]
+    fn dev_venv_sin_ia_simulada_por_defecto_y_con_ella_al_final() {
+        let off = DevVenvLauncher::new(PathBuf::from("datos"));
+        assert!(!off.args().iter().any(|a| a == "--fake-llm"));
+        let on = DevVenvLauncher::new(PathBuf::from("datos"))
+            .with_allow_local_sites(true)
+            .with_fake_llm(true);
+        let args = on.args();
+        assert_eq!(
+            args.last().map(|a| a.as_os_str()),
+            Some("--fake-llm".as_ref())
+        );
+        assert_eq!(args.iter().filter(|a| *a == "--fake-llm").count(), 1);
+        assert!(args.iter().any(|a| a == "--allow-local-sites"));
+        let again_off = on.with_fake_llm(false);
+        assert!(!again_off.args().iter().any(|a| a == "--fake-llm"));
     }
 
     #[test]

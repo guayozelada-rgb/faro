@@ -75,6 +75,21 @@
     "control_unavailable": "[TODO] No pudimos guardar el estado de los agentes. Reinicia Faro; si se repite, escríbenos."
   },
   "agent": {
-    "grant_denied": "[TODO] El agente no obtuvo permiso para usar tus claves. Reinicia Faro e intenta de nuevo."
+    "grant_denied": "[TODO] El agente no obtuvo permiso para usar tus claves. Reinicia Faro e intenta de nuevo.",
+    "budget_exhausted": "[TODO] La tarea llegó a su límite de gasto y se detuvo. No se gastó nada más."
+  },
+  "llm": {
+    "no_key": "[TODO] Agrega una clave de IA en Configuración para que los agentes puedan trabajar.",
+    "invalid_key": "[TODO] Tu clave de {{provider}} dejó de funcionar. Reemplázala en Configuración → Claves de IA.",
+    "insufficient_quota": "[TODO] Tu cuenta de {{provider}} no tiene saldo. Recárgala o usa otra clave.",
+    "rate_limited": "[TODO] {{provider}} está recibiendo demasiadas solicitudes. Intenta de nuevo en unos minutos.",
+    "provider_error": "[TODO] {{provider}} tuvo un problema. Intenta de nuevo en unos minutos.",
+    "unreachable": "[TODO] No pudimos conectar con {{provider}}. Revisa tu conexión a internet.",
+    "timeout": "[TODO] {{provider}} tardó demasiado en responder. Intenta de nuevo.",
+    "daily_limit_reached": "[TODO] Llegaste al límite de gasto de hoy con {{provider}}. Súbelo en Configuración o espera a mañana.",
+    "content_blocked": "[TODO] {{provider}} no quiso responder a esta tarea.",
+    "bad_output": "[TODO] La IA respondió algo que no pudimos usar. Intenta de nuevo.",
+    "invalid_limit": "[TODO] El límite debe estar entre US$0,50 y US$500 por día.",
+    "invalid_provider": "[TODO] Ese proveedor de IA no está disponible en Faro."
   }
 }
