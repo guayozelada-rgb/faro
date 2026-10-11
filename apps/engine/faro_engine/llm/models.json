@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "currency": "USD",
+  "models": [
+    {
+      "provider": "anthropic",
+      "tier": "economy",
+      "model": "claude-haiku-5-5",
+      "litellm_model": "anthropic/claude-haiku-5-5",
+      "context_tokens": 1000000,
+      "max_output_tokens": 128000,
+      "input_micros_per_mtok": 100000,
+      "output_micros_per_mtok": 500000,
+      "long_context": {
+        "above_input_tokens": 100000,
+        "input_micros_per_mtok": 500000,
+        "output_micros_per_mtok": 2500000
+      },
+      "price_changes": [],
+      "verified_at": "2026-10-09",
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+    },
+    {
+      "provider": "anthropic",
+      "tier": "premium",
+      "model": "claude-opus-5-5",
+      "litellm_model": "anthropic/claude-opus-5-5",
+      "context_tokens": 1000000,
+      "max_output_tokens": 128000,
+      "input_micros_per_mtok": 4000000,
+      "output_micros_per_mtok": 20000000,
+      "long_context": null,
+      "price_changes": [],
+      "verified_at": "2026-10-09",
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+    },
+    {
+      "provider": "openai",
+      "tier": "economy",
+      "model": "gpt-6-luna",
+      "litellm_model": "openai/gpt-6-luna",
+      "context_tokens": 1050000,
+      "max_output_tokens": 128000,
+      "input_micros_per_mtok": 100000,
+      "output_micros_per_mtok": 500000,
+      "long_context": {
+        "above_input_tokens": 272000,
+        "input_micros_per_mtok": 200000,
+        "output_micros_per_mtok": 750000
+      },
+      "price_changes": [],
+      "verified_at": "2026-10-09",
+      "source": "https://developers.openai.com/api/docs/pricing"
+    },
+    {
+      "provider": "openai",
+      "tier": "premium",
+      "model": "gpt-6.1-sol",
+      "litellm_model": "openai/gpt-6.1-sol",
+      "context_tokens": 1050000,
+      "max_output_tokens": 128000,
+      "input_micros_per_mtok": 2000000,
+      "output_micros_per_mtok": 10000000,
+      "long_context": {
+        "above_input_tokens": 272000,
+        "input_micros_per_mtok": 4000000,
+        "output_micros_per_mtok": 15000000
+      },
+      "price_changes": [],
+      "verified_at": "2026-10-09",
+      "source": "https://developers.openai.com/api/docs/pricing"
+    },
+    {
+      "provider": "gemini",
+      "tier": "economy",
+      "model": "gemini-3.5-flash-lite",
+      "litellm_model": "gemini/gemini-3.5-flash-lite",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "input_micros_per_mtok": 300000,
+      "output_micros_per_mtok": 2500000,
+      "long_context": null,
+      "price_changes": [],
+      "verified_at": "2026-10-09",
+      "source": "https://ai.google.dev/gemini-api/docs/pricing"
+    },
+    {
+      "provider": "gemini",
+      "tier": "premium",
+      "model": "gemini-3.8-flash",
+      "litellm_model": "gemini/gemini-3.8-flash",
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "input_micros_per_mtok": 750000,
+      "output_micros_per_mtok": 3750000,
+      "long_context": null,
+      "price_changes": [
+        {
+          "effective_from": "2027-01-01",
+          "input_micros_per_mtok": 1500000,
+          "output_micros_per_mtok": 7500000
+        }
+      ],
+      "verified_at": "2026-10-09",
+      "source": "https://ai.google.dev/gemini-api/docs/pricing"
+    }
+  ]
+}

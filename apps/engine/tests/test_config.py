@@ -119,3 +119,21 @@ def test_load_dev_config_allow_local_sites(tmp_path: Path, line: str, expected: 
         _write(tmp_path, f"FARO_ENGINE_DEV_TOKEN={secrets.token_urlsafe(32)}\n{line}")
     )
     assert config.allow_local_sites is expected
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("FARO_FAKE_LLM=1\n", True),
+        ("FARO_FAKE_LLM= 1 \n", True),
+        ("FARO_FAKE_LLM=0\n", False),
+        ("FARO_FAKE_LLM=true\n", False),
+        ("", False),
+    ],
+)
+def test_load_dev_config_fake_llm(tmp_path: Path, line: str, expected: bool) -> None:
+    """Spec F1b §4.1: en `--dev`, solo el valor exacto `1` activa la IA simulada."""
+    config = load_dev_config(
+        _write(tmp_path, f"FARO_ENGINE_DEV_TOKEN={secrets.token_urlsafe(32)}\n{line}")
+    )
+    assert config.fake_llm is expected

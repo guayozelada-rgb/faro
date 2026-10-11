@@ -37,6 +37,8 @@ DEV_DB_KEY_VAR = "FARO_ENGINE_DEV_DB_KEY"
 DEV_PROFILE_ID_VAR = "FARO_ENGINE_DEV_PROFILE_ID"
 # Modo de sitios locales en `--dev` (ADR 0012). Solo el valor exacto `1` lo activa.
 ALLOW_LOCAL_SITES_VAR = "FARO_ALLOW_LOCAL_SITES"
+# Modo de LLM simulado en `--dev` (spec F1b §4.1). Solo el valor exacto `1` lo activa.
+FAKE_LLM_VAR = "FARO_FAKE_LLM"
 MIN_DEV_PORT = 1024
 MAX_PORT = 65535
 
@@ -61,6 +63,8 @@ class Settings:
     data_dir: Path | None = None
     # Modo de sitios locales (solo desarrollo, ADR 0012): `http` y loopback permitidos.
     allow_local_sites: bool = False
+    # Modo de LLM simulado (solo desarrollo, spec F1b §4.1): `FakeLLM`, sin claves.
+    fake_llm: bool = False
 
     @property
     def expected_host(self) -> str:
@@ -83,6 +87,7 @@ class DevConfig:
     db_key: bytearray | None = field(default=None, repr=False)
     profile_id: str | None = None
     allow_local_sites: bool = False
+    fake_llm: bool = False
 
 
 def parse_env_file(text: str) -> dict[str, str]:
@@ -146,4 +151,5 @@ def load_dev_config(env_file: Path) -> DevConfig:
         db_key=db_key,
         profile_id=profile_id,
         allow_local_sites=values.get(ALLOW_LOCAL_SITES_VAR, "").strip() == "1",
+        fake_llm=values.get(FAKE_LLM_VAR, "").strip() == "1",
     )

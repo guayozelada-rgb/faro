@@ -15,9 +15,14 @@ from faro_engine.core.jobs.grants import RunGrantClient
 from faro_engine.core.logging import RequestLoggingMiddleware
 from faro_engine.core.operations import validate_app_operations
 from faro_engine.core.routes import health, sites
+from faro_engine.core.routes import llm as llm_routes
 from faro_engine.core.run_id import RunIdMiddleware
 from faro_engine.core.secrets import SecretBroker
 from faro_engine.core.security import SecurityMiddleware
+from faro_engine.llm.catalog import default_catalog
+from faro_engine.llm.client import LlmClient
+from faro_engine.llm.fake import dev_fake_llm, fake_catalog
+from faro_engine.llm.service import LazyLiteLlmClient, LlmService
 from faro_engine.net.client import NetSettings
 from faro_engine.net.urls import NetPolicy
 
@@ -26,6 +31,27 @@ def default_net_settings(settings: Settings) -> NetSettings:
     """Red saliente real. En modo local, el puerto del propio motor sigue prohibido."""
     policy = NetPolicy(allow_local=settings.allow_local_sites, engine_port=settings.port)
     return NetSettings(policy=policy, user_agent=f"Faro/{settings.version}")
+
+
+def default_llm_service(
+    settings: Settings,
+    database: Database,
+    control: AgentsControlState,
+    secrets: SecretBroker,
+) -> LlmService:
+    """Capa de IA real o, con `--fake-llm` (solo desarrollo), `FakeLLM` con su catálogo.
+
+    El catálogo `models.json` se valida siempre: si no cumple, el motor no arranca. LiteLLM
+    no se importa aquí, sino en la primera llamada (`LazyLiteLlmClient`).
+    """
+    catalog = default_catalog()
+    client: LlmClient = LazyLiteLlmClient()
+    if settings.fake_llm:
+        client = dev_fake_llm()
+        catalog = fake_catalog()
+    return LlmService(
+        database=database, control=control, secrets=secrets, client=client, catalog=catalog
+    )
 
 
 def create_app(
@@ -38,6 +64,7 @@ def create_app(
     control: AgentsControlState | None = None,
     grants: RunGrantClient | None = None,
     activity: ActivityEmitter | None = None,
+    llm: LlmService | None = None,
 ) -> FastAPI:
     """App con seguridad Host + Bearer en todas las rutas.
 
@@ -49,7 +76,9 @@ def create_app(
     la real con la política de `settings` (sitios locales solo con `allow_local_sites`).
     `control`, `grants` y `activity` son la pausa global, el cliente de concesiones por
     ejecución y el emisor de actividad de los agentes (ADR 0014); sin ellos (pruebas), los
-    agentes quedan en pausa, toda concesión se deniega y no se emite actividad.
+    agentes quedan en pausa, toda concesión se deniega y no se emite actividad. `llm` es la
+    capa de IA (spec F1b §4.1); por defecto, `default_llm_service` (valida `models.json`:
+    si no cumple, el motor no arranca).
 
     Sin `/docs`, `/redoc` ni `/openapi.json` por HTTP (tampoco en `--dev`): el esquema
     se exporta con `python -m faro_engine.export_openapi`.
@@ -70,9 +99,17 @@ def create_app(
     app.state.agents_control = control if control is not None else AgentsControlState()
     app.state.run_grants = grants if grants is not None else RunGrantClient.unavailable()
     app.state.activity = activity if activity is not None else ActivityEmitter(None)
+    app.state.llm = (
+        llm
+        if llm is not None
+        else default_llm_service(
+            settings, app.state.database, app.state.agents_control, app.state.secrets
+        )
+    )
     install_error_handlers(app)
     app.include_router(health.router)
     app.include_router(sites.router)
+    app.include_router(llm_routes.router)
     # Toda operación declara timeout y secretos (ADR 0010 §3); si no, el motor no arranca.
     validate_app_operations(app)
     # La tabla de concesiones de los agentes cumple ADR 0014 §1; si no, tampoco arranca.

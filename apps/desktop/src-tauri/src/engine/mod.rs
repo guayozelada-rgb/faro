@@ -188,6 +188,23 @@ pub const ALLOW_LOCAL_SITES_VAR: &str = "FARO_ALLOW_LOCAL_SITES";
 /// cual sea el entorno: el argumento nunca llega al sidecar empaquetado (que además lo
 /// rechaza con código 2).
 pub fn local_sites_allowed(debug_build: bool, value: Option<&str>) -> bool {
+    dev_flag_enabled(debug_build, value)
+}
+
+/// Variable (entorno o `.env.local`) que activa la IA simulada del motor (spec F1b §4.1).
+pub const FAKE_LLM_VAR: &str = "FARO_FAKE_LLM";
+
+/// ¿Se lanza el motor con `--fake-llm`? (spec F1b §4.1 y §9.1).
+///
+/// La misma doble llave que [`local_sites_allowed`]: solo en un build de depuración **y**
+/// con el valor exactamente `1` (sin contar espacios alrededor). En release siempre
+/// `false`; el motor empaquetado además rechaza el argumento con código 2.
+pub fn fake_llm_allowed(debug_build: bool, value: Option<&str>) -> bool {
+    dev_flag_enabled(debug_build, value)
+}
+
+/// Doble llave de los modos de desarrollo: build de depuración y valor exacto `1`.
+fn dev_flag_enabled(debug_build: bool, value: Option<&str>) -> bool {
     debug_build && value.is_some_and(|v| v.trim() == "1")
 }
 
@@ -197,9 +214,11 @@ struct DevEnv {
     url: Option<String>,
     token: Option<String>,
     allow_local_sites: Option<String>,
+    fake_llm: Option<String>,
 }
 
-/// Lee `FARO_ENGINE_DEV_URL`, `FARO_ENGINE_DEV_TOKEN` y `FARO_ALLOW_LOCAL_SITES`: primero
+/// Lee `FARO_ENGINE_DEV_URL`, `FARO_ENGINE_DEV_TOKEN`, `FARO_ALLOW_LOCAL_SITES` y
+/// `FARO_FAKE_LLM`: primero
 /// de `process` (el entorno del proceso) y, si no están, de `env_file` (`.env.local`).
 /// No modifica el entorno del proceso. Un `.env.local` ausente o ilegible se ignora.
 #[cfg(any(debug_assertions, test))]
@@ -208,6 +227,7 @@ fn read_dev_env(process: impl Fn(&str) -> Option<String>, env_file: &std::path::
         url: process("FARO_ENGINE_DEV_URL"),
         token: process("FARO_ENGINE_DEV_TOKEN"),
         allow_local_sites: process(ALLOW_LOCAL_SITES_VAR),
+        fake_llm: process(FAKE_LLM_VAR),
     };
     if let Ok(iter) = dotenvy::from_path_iter(env_file) {
         for (key, value) in iter.flatten() {
@@ -215,6 +235,7 @@ fn read_dev_env(process: impl Fn(&str) -> Option<String>, env_file: &std::path::
                 "FARO_ENGINE_DEV_URL" => &mut env.url,
                 "FARO_ENGINE_DEV_TOKEN" => &mut env.token,
                 ALLOW_LOCAL_SITES_VAR => &mut env.allow_local_sites,
+                FAKE_LLM_VAR => &mut env.fake_llm,
                 _ => continue,
             };
             if slot.is_none() {
@@ -240,8 +261,10 @@ fn dev_env() -> DevEnv {
 ///
 /// - Debug: externo si `FARO_ENGINE_DEV_URL` está definida y no vacía; si no, gestionado
 ///   desde `apps/engine/.venv`, con `--allow-local-sites` si `FARO_ALLOW_LOCAL_SITES=1`
-///   ([`local_sites_allowed`]). En modo externo el motor `--dev` lee esa variable solo.
-/// - Release (F0): sin sidecar → `engine.start_failed`. Nunca `--allow-local-sites`.
+///   ([`local_sites_allowed`]) y `--fake-llm` si `FARO_FAKE_LLM=1` ([`fake_llm_allowed`]).
+///   En modo externo el motor `--dev` lee esas variables solo.
+/// - Release (F0): sin sidecar → `engine.start_failed`. Nunca `--allow-local-sites` ni
+///   `--fake-llm`.
 ///
 /// `db_key` solo se usa en modo gestionado.
 pub fn default_mode(data_dir: std::path::PathBuf, db_key: Arc<dyn DbKeyProvider>) -> EngineMode {
@@ -254,10 +277,20 @@ pub fn default_mode(data_dir: std::path::PathBuf, db_key: Arc<dyn DbKeyProvider>
         }
         let allow_local_sites =
             local_sites_allowed(cfg!(debug_assertions), env.allow_local_sites.as_deref());
+        let fake_llm = fake_llm_allowed(cfg!(debug_assertions), env.fake_llm.as_deref());
+        if fake_llm {
+            // Decisión del núcleo tomada una sola vez al arrancar (el motor no la repite).
+            tracing::warn!(
+                target: crate::logging::DECISION_TARGET,
+                "motor en modo de IA simulada (--fake-llm, solo desarrollo)"
+            );
+        }
         tracing::info!("motor en modo gestionado desde apps/engine/.venv");
         EngineMode::Managed {
             launcher: Arc::new(
-                launcher::DevVenvLauncher::new(data_dir).with_allow_local_sites(allow_local_sites),
+                launcher::DevVenvLauncher::new(data_dir)
+                    .with_allow_local_sites(allow_local_sites)
+                    .with_fake_llm(fake_llm),
             ),
             db_key,
         }
@@ -402,6 +435,43 @@ mod tests {
         for value in [None, Some("1"), Some(" 1 "), Some("0")] {
             assert!(!local_sites_allowed(false, value), "{value:?}");
         }
+    }
+
+    #[test]
+    fn ia_simulada_solo_en_debug_y_con_valor_exacto_1() {
+        assert!(fake_llm_allowed(true, Some("1")));
+        assert!(fake_llm_allowed(true, Some(" 1 ")));
+        for value in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("true"),
+            Some("yes"),
+            Some("11"),
+            Some("1 0"),
+        ] {
+            assert!(!fake_llm_allowed(true, value), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn ia_simulada_nunca_en_release() {
+        for value in [None, Some("1"), Some(" 1 "), Some("0")] {
+            assert!(!fake_llm_allowed(false, value), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn dev_env_lee_faro_fake_llm_del_entorno_y_de_env_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(".env.local");
+        std::fs::write(&file, "FARO_FAKE_LLM=1\n").unwrap();
+        assert_eq!(read_dev_env(|_| None, &file).fake_llm.as_deref(), Some("1"));
+        let env = read_dev_env(|name| (name == FAKE_LLM_VAR).then(|| "0".to_owned()), &file);
+        assert_eq!(env.fake_llm.as_deref(), Some("0"));
+        assert!(read_dev_env(|_| None, &dir.path().join("no-existe"))
+            .fake_llm
+            .is_none());
     }
 
     #[test]

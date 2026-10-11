@@ -775,6 +775,80 @@ def test_run_dev_reads_allow_local_sites(
     assert captured[0].allow_local_sites is expected
 
 
+# --- Modo de IA simulada (spec F1b §4.1 y §9.1) ------------------------------------------
+
+
+def test_frozen_sin_modos_de_desarrollo_sigue() -> None:
+    args = entry.parse_args([])
+    assert entry._rejects_dev_flags(args) is False
+
+
+def test_run_rejects_fake_llm_when_frozen(capsys: pytest.CaptureFixture[str]) -> None:
+    sink = io.BytesIO()
+    code = entry.run(["--fake-llm"], stdin_fd=0, out=sink, frozen=True)
+    assert code == entry.EXIT_USAGE == 2
+    assert sink.getvalue() == b""
+    assert "config.fake_llm_rejected" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("argv", "expected"), [(["--fake-llm"], True), ([], False)])
+def test_run_fake_llm_flag(  # noqa: PLR0917 - fixtures de pytest
+    pipe: Pipe,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    expected: bool,
+) -> None:
+    captured = _capture_settings(monkeypatch)
+    pipe.write(secrets.token_urlsafe(32).encode("ascii") + NL + db_key_line())
+    sink = ReadySink()
+    thread, result = _run_in_thread(
+        argv=[*argv, "--data-dir", str(tmp_path)], stdin_fd=pipe.read_fd, out=sink, frozen=False
+    )
+    assert sink.flushed.wait(WAIT)
+    pipe.write(b'{"event":"shutdown"}\n')
+    thread.join(WAIT)
+    assert result == [entry.EXIT_OK]
+    [settings] = captured
+    assert settings.fake_llm is expected
+    assert ("llm.fake_mode_enabled" in capsys.readouterr().err) is expected
+
+
+@pytest.mark.parametrize(
+    ("argv", "value", "expected"),
+    [([], "1", True), ([], "0", False), (["--fake-llm"], "0", True)],
+)
+def test_run_dev_reads_fake_llm(  # noqa: PLR0917 - fixtures de pytest
+    pipe: Pipe,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    value: str,
+    expected: bool,
+) -> None:
+    captured = _capture_settings(monkeypatch)
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        f"FARO_ENGINE_DEV_TOKEN={secrets.token_urlsafe(32)}\n"
+        f"FARO_ENGINE_DEV_PORT={_free_port()}\nFARO_FAKE_LLM={value}\n",
+        encoding="utf-8",
+    )
+    sink = ReadySink()
+    thread, result = _run_in_thread(
+        argv=["--dev", *argv, "--data-dir", str(tmp_path / "devdata")],
+        stdin_fd=pipe.read_fd,
+        out=sink,
+        env_file=env_file,
+        frozen=False,
+    )
+    assert sink.flushed.wait(WAIT)
+    pipe.write(b'{"event":"shutdown"}\n')
+    thread.join(WAIT)
+    assert result == [entry.EXIT_OK]
+    assert captured[0].fake_llm is expected
+
+
 def test_sslkeylogfile_fuera_del_entorno_antes_de_crear_contextos_tls(tmp_path: Path) -> None:
     """Revisión de seguridad de F1b T2 (hallazgo D): ningún contexto TLS escribe sus claves."""
     keylog = tmp_path / "keylog.txt"

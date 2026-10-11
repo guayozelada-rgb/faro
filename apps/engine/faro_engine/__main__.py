@@ -4,7 +4,10 @@ Protocolo (spec F0 §4.4, skill `tauri-sidecar-python`, ADR 0004):
 1. Argumentos `--host` (solo 127.0.0.1), `--port` (0 = libre), `--data-dir`, `--dev` y
    `--allow-local-sites` (ADR 0012: `http` y loopback para wp-env; nunca en un build
    empaquetado, `sys.frozen` → código 2). En `--dev` también lo activa
-   `FARO_ALLOW_LOCAL_SITES=1` en `.env.local`.
+   `FARO_ALLOW_LOCAL_SITES=1` en `.env.local`. `--fake-llm` (spec F1b §4.1): la capa de IA
+   usa `FakeLLM` con respuestas fijas y precios de prueba, sin pedir claves; solo
+   desarrollo (el núcleo lo pasa en un build de depuración y con `FARO_FAKE_LLM=1`) y
+   rechazado con `sys.frozen` (código 2). En `--dev` también lo activa `FARO_FAKE_LLM=1`.
 2. Sin `--dev`: token = primera línea de stdin (43 caracteres base64url, 10 s máx.).
    Con `--dev`: token y puerto desde `.env.local` (rechazado si `sys.frozen`).
 3. Sin `--dev`: 2.ª línea de stdin = `db_key` (ADR 0010 §1, 10 s máx.). Con `--dev`:
@@ -126,6 +129,11 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--allow-local-sites",
         action="store_true",
         help="Solo desarrollo: permite sitios http y en loopback (wp-env).",
+    )
+    parser.add_argument(
+        "--fake-llm",
+        action="store_true",
+        help="Solo desarrollo: IA simulada (FakeLLM), sin claves ni llamadas reales.",
     )
     return parser.parse_args(argv)
 
@@ -350,9 +358,9 @@ def read_startup(
     env_file: Path | None,
     token_timeout: float,
     db_key_timeout: float,
-) -> tuple[bytes, int, protocol.DbKeyLine, bool] | int:
-    """Token, puerto, llave de la base y modo de sitios locales; o el código de salida si
-    no se puede arrancar.
+) -> tuple[bytes, int, protocol.DbKeyLine, bool, bool] | int:
+    """Token, puerto, llave de la base, modo de sitios locales y modo de IA simulada; o el
+    código de salida si no se puede arrancar.
 
     Sin `--dev`: 1.ª línea de stdin = token, 2.ª = `db_key`. Con `--dev`: `.env.local`.
     """
@@ -367,7 +375,8 @@ def read_startup(
         else:
             key_line = protocol.DbKeyLine(profile_id=dev.profile_id, key=dev.db_key)
         allow_local = bool(args.allow_local_sites) or dev.allow_local_sites
-        return dev.token, args.port or dev.port, key_line, allow_local
+        fake_llm = bool(args.fake_llm) or dev.fake_llm
+        return dev.token, args.port or dev.port, key_line, allow_local, fake_llm
 
     token = protocol.read_token(reader, token_timeout)
     if token is None:
@@ -377,7 +386,20 @@ def read_startup(
     if key_line.shutdown:
         log.info("engine.shutdown_requested", reason="shutdown_event")
         return EXIT_OK
-    return token, args.port, key_line, bool(args.allow_local_sites)
+    return token, args.port, key_line, bool(args.allow_local_sites), bool(args.fake_llm)
+
+
+def _rejects_dev_flags(args: argparse.Namespace) -> bool:
+    """En un build empaquetado (`sys.frozen`), los modos de desarrollo salen con código 2."""
+    for enabled, event in (
+        (args.dev, "config.dev_rejected"),
+        (args.allow_local_sites, "config.local_sites_rejected"),
+        (args.fake_llm, "config.fake_llm_rejected"),
+    ):
+        if enabled:
+            log.error(event, reason="frozen_build")
+            return True
+    return False
 
 
 def run(
@@ -402,11 +424,7 @@ def run(
         return EXIT_USAGE
 
     is_frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
-    if args.dev and is_frozen:
-        log.error("config.dev_rejected", reason="frozen_build")
-        return EXIT_USAGE
-    if args.allow_local_sites and is_frozen:
-        log.error("config.local_sites_rejected", reason="frozen_build")
+    if is_frozen and _rejects_dev_flags(args):
         return EXIT_USAGE
 
     data_dir: Path | None = args.data_dir
@@ -432,7 +450,7 @@ def run(
     )
     if isinstance(startup, int):
         return startup
-    token, port, key_line, allow_local_sites = startup
+    token, port, key_line, allow_local_sites, fake_llm = startup
     database = open_database(data_dir, key_line)
     del key_line, startup
 
@@ -451,8 +469,12 @@ def run(
         dev=args.dev,
         data_dir=data_dir,
         allow_local_sites=allow_local_sites,
+        fake_llm=fake_llm,
     )
     del token
+    if fake_llm:
+        # Solo desarrollo (spec F1b §4.1): ninguna clave ni llamada real a proveedores.
+        log.warning("llm.fake_mode_enabled")
     if allow_local_sites:
         # Solo desarrollo (ADR 0012): `http` y loopback, salvo el puerto del motor.
         log.warning("net.local_sites_enabled", engine_port=real_port)

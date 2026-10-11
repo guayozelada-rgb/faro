@@ -21,6 +21,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/llm/limits/{provider}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Cambiar el tope diario de gasto de una clave de IA */
+        put: operations["setLlmDailyLimit"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/llm/preferences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Elegir la clave de IA que usan los agentes */
+        put: operations["setLlmPreferences"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/llm/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Gasto de hoy y tope de cada clave de IA */
+        get: operations["getLlmUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sites": {
         parameters: {
             query?: never;
@@ -193,6 +244,70 @@ export interface components {
              * @example 0.1.0
              */
             version: string;
+        };
+        /** LlmDailyLimitIn */
+        LlmDailyLimitIn: {
+            /**
+             * Daily Limit Micros
+             * @description Tope diario en micros de USD, de 500 000 (US$0,50) a 500 000 000 (US$500).
+             * @example 5000000
+             */
+            daily_limit_micros: number;
+        };
+        /** LlmPreferencesIn */
+        LlmPreferencesIn: {
+            /**
+             * Preferred Provider
+             * @description Proveedor de la clave que usan los agentes; `null` = automático.
+             */
+            preferred_provider: ("anthropic" | "openai" | "gemini") | null;
+        };
+        /**
+         * LlmProviderUsageOut
+         * @description Gasto de hoy y tope de la clave de un proveedor. Nunca la clave ni su `last4`.
+         */
+        LlmProviderUsageOut: {
+            /** Daily Limit Micros */
+            daily_limit_micros: number;
+            /**
+             * Has Key
+             * @description Hay clave en la Bóveda (según el último aviso del núcleo).
+             */
+            has_key: boolean;
+            /** Limit Reached */
+            limit_reached: boolean;
+            /**
+             * Provider
+             * @enum {string}
+             */
+            provider: "anthropic" | "openai" | "gemini";
+            /** Requests Today */
+            requests_today: number;
+            /** Spent Today Micros */
+            spent_today_micros: number;
+            /** Tokens Today */
+            tokens_today: number;
+        };
+        /** LlmUsageOut */
+        LlmUsageOut: {
+            /**
+             * Currency
+             * @default USD
+             * @constant
+             */
+            currency: "USD";
+            /** Preferred Provider */
+            preferred_provider: ("anthropic" | "openai" | "gemini") | null;
+            /** Providers */
+            providers: components["schemas"]["LlmProviderUsageOut"][];
+            /** Total Today Micros */
+            total_today_micros: number;
+            /**
+             * Usage Date
+             * @description Día local AAAA-MM-DD.
+             * @example 2026-10-09
+             */
+            usage_date: string;
         };
         /**
          * ReconnectSiteIn
@@ -384,6 +499,194 @@ export interface operations {
             };
             /** @description Cabecera Host no permitida. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    setLlmDailyLimit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Proveedor de IA. */
+                provider: "anthropic" | "openai" | "gemini";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LlmDailyLimitIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmUsageOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `llm.no_key`: no hay clave de ese proveedor. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `llm.invalid_provider` o `llm.invalid_limit`. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    setLlmPreferences: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LlmPreferencesIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmUsageOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `llm.no_key`: no hay clave de ese proveedor. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `llm.invalid_provider` o `llm.invalid_limit`. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    getLlmUsage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmUsageOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

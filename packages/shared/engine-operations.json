@@ -36,6 +36,13 @@
     "secrets": []
   },
   {
+    "operationId": "getLlmUsage",
+    "method": "GET",
+    "path": "/llm/usage",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
     "operationId": "listSiteContent",
     "method": "GET",
     "path": "/sites/{site_id}/content",
@@ -84,5 +91,19 @@
         ]
       }
     ]
+  },
+  {
+    "operationId": "setLlmDailyLimit",
+    "method": "PUT",
+    "path": "/llm/limits/{provider}",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
+    "operationId": "setLlmPreferences",
+    "method": "PUT",
+    "path": "/llm/preferences",
+    "timeout_seconds": 10,
+    "secrets": []
   }
 ]

@@ -55,10 +55,14 @@ def test_engine_operations_are_exactly_the_f1a_operations() -> None:
         _op("checkSiteConnection", "POST", "/sites/{site_id}/check", 45, _wp(site, "get")),
         _op("connectSite", "POST", "/sites", 60, _wp("wp/{new}/token", "create", "delete")),
         _op("getHealth", "GET", "/health", 10, []),
+        # Capa de IA (spec F1b §5.2): ninguna pide secretos.
+        _op("getLlmUsage", "GET", "/llm/usage", 10, []),
         _op("listSiteContent", "GET", "/sites/{site_id}/content", 45, _wp(site, "get")),
         _op("listSites", "GET", "/sites", 10, []),
         _op("reconnectSite", "PUT", "/sites/{site_id}/connection", 60, _wp(site, "set")),
         _op("removeSite", "DELETE", "/sites/{site_id}", 45, _wp(site, "get", "delete")),
+        _op("setLlmDailyLimit", "PUT", "/llm/limits/{provider}", 10, []),
+        _op("setLlmPreferences", "PUT", "/llm/preferences", 10, []),
     ]
 
 

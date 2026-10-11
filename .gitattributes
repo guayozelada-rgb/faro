@@ -47,3 +47,7 @@ uv.lock linguist-generated=true
 packages/shared/openapi.json linguist-generated=true
 packages/shared/engine.d.ts linguist-generated=true
 packages/shared/engine-operations.json linguist-generated=true
+
+# Vocabulario `cl100k_base` de tiktoken incluido en el motor (spec F1b T6): byte a byte,
+# su SHA-256 lo comprueban el motor y tiktoken.
+apps/engine/faro_engine/llm/tiktoken/* binary
