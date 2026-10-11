@@ -163,6 +163,9 @@ class LazyLiteLlmClient:
                 self._client = module.LiteLlmClient()
             return self._client
 
+    async def prepare(self) -> None:
+        await self._load()
+
     async def complete(self, call: ResolvedCall, api_key: str | None) -> RawCompletion:
         client = await self._load()
         return await client.complete(call, api_key)
@@ -275,6 +278,14 @@ class LlmService:
                 max_cost=max_cost,
                 max_input_tokens=max_input,
             )
+            # El adaptador se carga antes de pedir la clave: si no carga, no se pide nada
+            # (revisión de seguridad de T6, hallazgo 5).
+            try:
+                await self.client.prepare()
+            except LlmCallError as err:
+                error = failure_error(err, provider)
+                self._log_failure(call, error.code)
+                raise error from None
             # 6. Clave (una petición por llamada lógica) y 7-10.
             if not self.client.requires_key:
                 return await self._run(call, None)

@@ -111,12 +111,45 @@ async def drop_client_cache() -> None:
     litellm.in_memory_llm_clients_cache.flush_cache()  # type: ignore[no-untyped-call]
 
 
+async def _cleanup(client: Any) -> None:
+    """Cierra el cliente propio, vacía la caché de clientes y vuelve a vaciar los callbacks.
+
+    Cada paso va protegido por separado y los dos últimos en `finally` anidados: se ejecutan
+    siempre, también si el anterior lanza o si cancelan la tarea durante `close()`. Un fallo
+    de limpieza (`Exception`) solo se registra con el nombre de la clase y nunca sustituye la
+    respuesta ni el fallo original. Una cancelación sí sale (es `BaseException`) y
+    `LlmService` cuenta entonces el intento como consumido (su máximo), sin subconteo.
+    Revisión de seguridad de T6, hallazgo 1.
+    """
+    try:
+        try:
+            await client.close()
+        except Exception as exc:  # noqa: BLE001 - la limpieza no sustituye el resultado
+            log.warning("llm.cleanup_failed", step="close", error_type=type(exc).__name__)
+    finally:
+        try:
+            try:
+                await drop_client_cache()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("llm.cleanup_failed", step="cache", error_type=type(exc).__name__)
+        finally:
+            try:
+                hardening.apply_litellm_settings(litellm)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "llm.cleanup_failed", step="settings", error_type=type(exc).__name__
+                )
+
+
 class LiteLlmClient:
     """`LlmClient` de producción. Una instancia por motor; sin estado entre llamadas."""
 
     @property
     def requires_key(self) -> bool:
         return True
+
+    async def prepare(self) -> None:
+        """Ya cargado al importar el módulo: nada que hacer."""
 
     async def complete(self, call: ResolvedCall, api_key: str | None) -> RawCompletion:
         if not api_key:
@@ -153,9 +186,7 @@ class LiteLlmClient:
             # Solo el nombre de la clase y el tipo de fallo; nunca el mensaje.
             log.info("llm.adapter_error", error_type=type(exc).__name__, kind=failure.kind)
         finally:
-            await client.close()
-            await drop_client_cache()
-            hardening.apply_litellm_settings(litellm)
+            await _cleanup(client)
         if failure is not None:
             # Fuera del `except`: la excepción original (con el texto del proveedor) no queda
             # encadenada en `__context__`.

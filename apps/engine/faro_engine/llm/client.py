@@ -138,10 +138,13 @@ class RawCompletion:
 
 class LlmClient(Protocol):
     """Habla con el proveedor. `requires_key = False` solo en `FakeLLM`: el servicio no pide
-    ninguna clave por `secret_request` (modo `--fake-llm`)."""
+    ninguna clave por `secret_request` (modo `--fake-llm`). `prepare()` deja el cliente listo
+    (p. ej. carga el adaptador) **antes** de pedir la clave: si falla, no se pide nada."""
 
     @property
     def requires_key(self) -> bool: ...
+
+    async def prepare(self) -> None: ...
 
     async def complete(self, call: ResolvedCall, api_key: str | None) -> RawCompletion: ...
 

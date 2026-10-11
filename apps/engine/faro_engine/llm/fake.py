@@ -92,6 +92,9 @@ class FakeLLM:
     def requires_key(self) -> bool:
         return self.needs_key
 
+    async def prepare(self) -> None:
+        """Sin nada que cargar."""
+
     def _next(self, prompt_id: str) -> FakeStep:
         configured = self.responses.get(prompt_id)
         if configured is None:

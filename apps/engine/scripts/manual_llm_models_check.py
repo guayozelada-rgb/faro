@@ -21,15 +21,19 @@ Qué hace, para un proveedor (`anthropic`, `openai` o `gemini`):
 3. Hace **una** llamada por modelo (económico y premium, o el nivel de `--tier`) pidiendo
    una salida estructurada mínima.
 
+Antes de cargar el adaptador, los registros del motor y de LiteLLM se configuran con la
+redacción del motor y se descartan (`quiet_logging`): el script no imprime nada de los
+loggers, solo sus propias líneas.
+
 Solo imprime el modelo, el resultado (`ok` o el tipo de fallo), los tokens informados, el
 motivo de fin, si el JSON cumple el esquema y el costo con los precios del catálogo. Nunca
 la clave, el texto de la respuesta ni los mensajes de error del proveedor.
 
 Uso, desde `apps/engine`:
 
-    uv run python scripts/manual_llm_models_check.py anthropic
-    uv run python scripts/manual_llm_models_check.py openai --tier premium
-    uv run python scripts/manual_llm_models_check.py gemini
+    uv run --native-tls python scripts/manual_llm_models_check.py anthropic
+    uv run --native-tls python scripts/manual_llm_models_check.py openai --tier premium
+    uv run --native-tls python scripts/manual_llm_models_check.py gemini
 """
 
 from __future__ import annotations
@@ -37,6 +41,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
+import logging
+import os
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -129,6 +135,17 @@ async def run_all(client: LlmClient, models: list[CatalogModel], key: str) -> No
         await check(client, model, key)
 
 
+def quiet_logging() -> None:
+    """Registros del motor (con su redacción) y de LiteLLM a un sumidero que no imprime."""
+    from faro_engine.core.logging import configure_logging  # noqa: PLC0415
+
+    sink = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115 - vive lo que el proceso
+    configure_logging(level=logging.CRITICAL + 10, stream=sink)
+    for name in list(logging.root.manager.loggerDict):
+        if name.startswith("LiteLLM"):
+            logging.getLogger(name).disabled = True
+
+
 def load_client() -> LlmClient:
     from faro_engine.llm.litellm_client import LiteLlmClient
 
@@ -146,6 +163,7 @@ def main(
     parser.add_argument("--tier", choices=TIERS)
     args = parser.parse_args(argv)
     models = models_for(args.provider, args.tier)
+    quiet_logging()
     client = (client_factory or load_client)()
     today = datetime.now(UTC).date()
     worst = sum(max_call_cost(m, len(PROMPT), MAX_OUTPUT_TOKENS, today) for m in models)
