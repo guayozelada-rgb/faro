@@ -90,6 +90,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent-runs/{run_id}/suggestion/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Aplicar la sugerencia de una tarea (nivel 0: «Guardar resumen») */
+        post: operations["acceptAgentSuggestion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agents": {
         parameters: {
             query?: never;
@@ -102,6 +119,75 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Propuestas de los agentes (Bandeja), la más reciente primero */
+        get: operations["listApprovals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/{approval_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Guardar o descartar una propuesta (la tarea vuelve a la cola) */
+        post: operations["decideApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/autonomy-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Reglas de autonomía, niveles predeterminados y guardarraíles */
+        get: operations["listAutonomyRules"];
+        /** Crear o cambiar la regla de un agente (general o de un sitio) */
+        put: operations["setAutonomyRule"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/autonomy-rules/{rule_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Quitar la regla de un sitio (vuelve a la general) */
+        delete: operations["deleteAutonomyRule"];
         options?: never;
         head?: never;
         patch?: never;
@@ -395,7 +481,7 @@ export interface components {
             status: "queued" | "running" | "waiting_approval" | "paused" | "succeeded" | "failed" | "cancelled";
             /**
              * Status Reason
-             * @description `daily_limit`, `agents_paused`, `interrupted`, `cancel_requested`…
+             * @description `daily_limit`, `agents_paused`, `interrupted`, `cancel_requested`, `user_cancelled`, `dependency_failed`…
              */
             status_reason: string | null;
             /** Steps */
@@ -460,7 +546,7 @@ export interface components {
             status: "queued" | "running" | "waiting_approval" | "paused" | "succeeded" | "failed" | "cancelled";
             /**
              * Status Reason
-             * @description `daily_limit`, `agents_paused`, `interrupted`, `cancel_requested`…
+             * @description `daily_limit`, `agents_paused`, `interrupted`, `cancel_requested`, `user_cancelled`, `dependency_failed`…
              */
             status_reason: string | null;
             /** Token Budget */
@@ -517,6 +603,20 @@ export interface components {
             /** Tokens Out */
             tokens_out: number;
         };
+        /**
+         * AgentsHealth
+         * @description Estado del trabajador de los agentes (hallazgo 3 de la revisión de T7).
+         */
+        AgentsHealth: {
+            /** Consecutive Failures */
+            consecutive_failures: number;
+            /**
+             * Worker
+             * @description `not_started`: sin base o sin arrancar; `retrying`: un fallo inesperado del bucle, reintenta con espera; `stopped`: el trabajador terminó (apagado).
+             * @enum {string}
+             */
+            worker: "not_started" | "ok" | "retrying" | "stopped";
+        };
         /** ApprovalOut */
         ApprovalOut: {
             /** Action Kind */
@@ -570,6 +670,55 @@ export interface components {
              * @enum {string}
              */
             status: "pending" | "approved" | "rejected" | "expired" | "cancelled" | "executed" | "failed";
+        };
+        /** ApprovalPage */
+        ApprovalPage: {
+            /** Items */
+            items: components["schemas"]["ApprovalOut"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** AutonomyDefaultOut */
+        AutonomyDefaultOut: {
+            /** Agent Kind */
+            agent_kind: string;
+            /**
+             * Level
+             * @default 1
+             * @constant
+             */
+            level: 1;
+        };
+        /** AutonomyRuleOut */
+        AutonomyRuleOut: {
+            /** Agent Kind */
+            agent_kind: string;
+            /** Id */
+            id: string;
+            /** Level */
+            level: number;
+            /**
+             * Site Id
+             * @description `null` = regla general del agente (todos los sitios).
+             */
+            site_id: string | null;
+            /** Updated At */
+            updated_at: string;
+        };
+        /** AutonomyRulesOut */
+        AutonomyRulesOut: {
+            /**
+             * Defaults
+             * @description Nivel de cada agente sin regla (1, «Preparar y pedirte OK»).
+             */
+            defaults: components["schemas"]["AutonomyDefaultOut"][];
+            /**
+             * Guardrails
+             * @description Lo que ningún agente hace nunca.
+             */
+            guardrails: ("no_delete" | "daily_spend_cap" | "publish_spend_need_rules" | "ads_paused")[];
+            /** Items */
+            items: components["schemas"]["AutonomyRuleOut"][];
         };
         /**
          * ConnectSiteIn
@@ -673,6 +822,15 @@ export interface components {
              */
             state: "ready" | "unavailable";
         };
+        /** DecideApprovalIn */
+        DecideApprovalIn: {
+            /**
+             * Decision
+             * @description `approve` (Guardar) o `reject` (Descartar).
+             * @enum {string}
+             */
+            decision: "approve" | "reject";
+        };
         /**
          * ErrorOut
          * @description Formato de error común a todas las capas (ADR 0002).
@@ -715,6 +873,7 @@ export interface components {
          * @description Estado del motor.
          */
         HealthOut: {
+            agents: components["schemas"]["AgentsHealth"];
             database: components["schemas"]["DatabaseHealth"];
             /**
              * Status
@@ -864,6 +1023,19 @@ export interface components {
              * @description 0 = lunes … 6 = domingo; solo semanales.
              */
             weekday: number | null;
+        };
+        /** SetAutonomyRuleIn */
+        SetAutonomyRuleIn: {
+            /**
+             * Agent Kind
+             * @description Tipo de agente.
+             * @example site_summary
+             */
+            agent_kind: string;
+            /** Level */
+            level: number;
+            /** Site Id */
+            site_id?: string | null;
         };
         /** SiteConnectionOut */
         SiteConnectionOut: {
@@ -1448,6 +1620,83 @@ export interface operations {
             };
         };
     };
+    acceptAgentSuggestion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description UUID de la tarea en minúsculas. */
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `agent.run_not_found`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `agent.no_suggestion` o `agent.already_queued`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
     listAgents: {
         parameters: {
             query?: never;
@@ -1482,6 +1731,347 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    listApprovals: {
+        parameters: {
+            query?: {
+                status?: "pending" | "approved" | "rejected" | "expired" | "cancelled" | "executed" | "failed";
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalPage"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    decideApproval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description UUID de la propuesta en minúsculas. */
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DecideApprovalIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `approval.not_found`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `approval.already_decided`, o `approval.not_ready` (la tarea aún prepara la propuesta: reintenta en unos segundos). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `approval.expired`. */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    listAutonomyRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyRulesOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    setAutonomyRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetAutonomyRuleIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutonomyRuleOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `agent.unknown` o `site.not_found`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `autonomy.invalid_level`. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    deleteAutonomyRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description UUID de la regla en minúsculas. */
+                rule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `autonomy.rule_not_found`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `autonomy.default_rule`: la general solo se cambia. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
             /** @description Base de datos no disponible. */

@@ -184,4 +184,4 @@ async def test_reanudar_tolera_una_transicion_perdida(
 async def test_agente_sin_sitio_no_necesita_uno(world: JobWorld) -> None:
     from tests.fakes.agents import StepAgent
 
-    assert await world.jobs.submitter.site(StepAgent(requires_site=False), None) is None
+    assert await world.jobs.orchestrator.site(StepAgent(requires_site=False), None) is None

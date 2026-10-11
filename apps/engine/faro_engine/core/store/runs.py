@@ -329,18 +329,49 @@ def list_runs_by_status(
     return [RunRecord(*row) for row in rows]
 
 
+# Una tarea de un plan (`parent_run_id` = la tarea de la que depende, spec F1b §4.2) solo
+# se puede tomar cuando esa tarea terminó bien.
+_READY: Final = (
+    " AND (parent_run_id IS NULL OR EXISTS (SELECT 1 FROM agent_runs AS dep "
+    "WHERE dep.id = agent_runs.parent_run_id AND dep.status = 'succeeded'))"
+)
+
+
 def next_queued_run(conn: Connection, *, skip_reason: str | None = None) -> RunRecord | None:
-    """La siguiente tarea `queued` por prioridad y antigüedad (opcionalmente sin las que
-    esperan por un motivo, p. ej. `daily_limit`)."""
+    """La siguiente tarea `queued` lista por prioridad y antigüedad (opcionalmente sin las
+    que esperan por un motivo, p. ej. `daily_limit`). Las de un plan esperan a la tarea de
+    la que dependen."""
     order = " ORDER BY priority, created_at, id LIMIT 1"
     if skip_reason is None:
-        row = conn.execute(_SELECT_RUN + " WHERE status = 'queued'" + order).fetchone()
+        row = conn.execute(_SELECT_RUN + " WHERE status = 'queued'" + _READY + order).fetchone()
     else:
         row = conn.execute(
-            _SELECT_RUN + " WHERE status = 'queued' AND status_reason IS NOT ?" + order,
+            _SELECT_RUN + " WHERE status = 'queued' AND status_reason IS NOT ?" + _READY + order,
             (skip_reason,),
         ).fetchone()
     return _run(row)
+
+
+def orphaned_runs(conn: Connection) -> list[str]:
+    """Tareas en cola cuya tarea previa del plan falló o se canceló (no correrán nunca)."""
+    rows = conn.execute(
+        "SELECT child.id FROM agent_runs AS child JOIN agent_runs AS dep "
+        "ON dep.id = child.parent_run_id WHERE child.status = 'queued' "
+        "AND dep.status IN ('failed', 'cancelled') ORDER BY child.created_at, child.id"
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def reopen_succeeded_run(conn: Connection, run_id: str, *, now: str, priority: int) -> bool:
+    """`succeeded` → `queued` **solo** para aplicar una sugerencia aceptada a mano (nivel 0,
+    `run_control.accept_suggestion`). No es una transición general: `RUN_TRANSITIONS` sigue
+    sin salidas desde los estados finales."""
+    cursor = conn.execute(
+        "UPDATE agent_runs SET status = 'queued', status_reason = NULL, error_code = NULL, "
+        "priority = ?, finished_at = NULL, updated_at = ? WHERE id = ? AND status = 'succeeded'",
+        (priority, now, run_id),
+    )
+    return int(cursor.rowcount) == 1
 
 
 def transition_run(

@@ -151,6 +151,8 @@ def test_ready_health_and_shutdown_event(spawn: Any, tmp_path: Path) -> None:
             "status": "ok",
             "version": __version__,
             "database": {"state": "ready", "error_code": None, "newer_schema": False},
+            # El motor real arranca su trabajador de agentes (hallazgo 3 de T7, T8).
+            "agents": {"worker": "ok", "consecutive_failures": 0},
         }
         denied = http.get("/health", headers={"Authorization": "Bearer " + "B" * 43})
         assert denied.status_code == 401

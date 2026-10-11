@@ -222,6 +222,41 @@ def scenario_graph_default() -> dict[str, Any]:
     return _run_graph()
 
 
+def scenario_faro_graph() -> dict[str, Any]:
+    """Condiciones 7 y 13 del informe de T2 (T8): con LangSmith activado en el entorno, el
+    marco de agentes lo apaga al importarse (antes de construir cualquier grafo) y, al
+    construir y ejecutar un grafo, `httpx2`/`httpcore2` no crean contextos TLS ni hay
+    intentos de red."""
+    import os
+    import traceback
+
+    import truststore
+
+    created: list[str] = []
+    original = truststore.SSLContext.__init__
+
+    def spy(self: Any, *args: Any, **kwargs: Any) -> None:
+        files = " ".join(frame.filename for frame in traceback.extract_stack())
+        created.append("httpx2" if "httpx2" in files or "httpcore2" in files else "other")
+        original(self, *args, **kwargs)
+
+    truststore.SSLContext.__init__ = spy  # type: ignore[method-assign]
+    before = sorted(n for n in os.environ if n.upper().startswith(("LANGSMITH_", "LANGCHAIN_")))
+    import faro_engine.agents.framework.graph  # noqa: F401 - aplica la condición 7
+
+    after = sorted(n for n in os.environ if n.upper().startswith(("LANGSMITH_", "LANGCHAIN_")))
+    from langsmith import utils as langsmith_utils
+
+    report = _run_graph()
+    # Independiente del proxy del entorno: LangSmith no traza (un proxy en loopback no
+    # aparecería en `attempts`).
+    report["tracing_enabled"] = bool(langsmith_utils.tracing_is_enabled())
+    report["env_before"] = before
+    report["env_after"] = after
+    report["httpx2_contexts"] = created.count("httpx2")
+    return report
+
+
 def _stub_encoding() -> None:
     """Sustituye el vocabulario `cl100k_base` por uno de bytes, sin archivos ni red.
 
@@ -360,6 +395,7 @@ SCENARIOS: dict[str, Callable[..., dict[str, Any]]] = {
     "import_f1b": scenario_import_f1b,
     "graph_tracing_off": scenario_graph_tracing_off,
     "graph_default": scenario_graph_default,
+    "faro_graph": scenario_faro_graph,
     "ssl_late_injection": scenario_ssl_late_injection,
 }
 

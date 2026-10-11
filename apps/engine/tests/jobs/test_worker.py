@@ -95,6 +95,9 @@ async def test_prioridad_usuario_reanudada_programada(world: JobWorld) -> None:
         return await original(invocation)
 
     world.agent.run = spy  # type: ignore[method-assign]
+    # Sin sitio para no chocar con la deduplicación por (agente, sitio): el agente no lo
+    # necesita (con `requires_site`, una tarea sin sitio se cancela con `agent.site_removed`).
+    world.agent.requires_site = False
     await world.add_run(R1, trigger="schedule", priority=2, site_id=None)
     await world.add_run(R2, trigger="user", priority=0, site_id=REVOKED_SITE)
     await world.add_run(run_id(3), trigger="user", priority=1, created_at="2026-10-09T14:00:00Z")

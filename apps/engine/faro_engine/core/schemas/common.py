@@ -34,6 +34,20 @@ class DatabaseHealth(BaseModel):
     )
 
 
+class AgentsHealth(BaseModel):
+    """Estado del trabajador de los agentes (hallazgo 3 de la revisión de T7)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    worker: Literal["not_started", "ok", "retrying", "stopped"] = Field(
+        description=(
+            "`not_started`: sin base o sin arrancar; `retrying`: un fallo inesperado del bucle, "
+            "reintenta con espera; `stopped`: el trabajador terminó (apagado)."
+        )
+    )
+    consecutive_failures: int = Field(ge=0)
+
+
 class HealthOut(BaseModel):
     """Estado del motor."""
 
@@ -42,3 +56,4 @@ class HealthOut(BaseModel):
     status: Literal["ok"] = "ok"
     version: str = Field(examples=["0.1.0"])
     database: DatabaseHealth
+    agents: AgentsHealth

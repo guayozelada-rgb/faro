@@ -106,7 +106,10 @@ class AgentRunOut(_Out):
     trigger: RunTrigger
     status: RunStatus
     status_reason: str | None = Field(
-        description="`daily_limit`, `agents_paused`, `interrupted`, `cancel_requested`…"
+        description=(
+            "`daily_limit`, `agents_paused`, `interrupted`, `cancel_requested`, "
+            "`user_cancelled`, `dependency_failed`…"
+        )
     )
     error_code: str | None
     provider: ProviderName | None
@@ -175,6 +178,50 @@ class AgentRunDetailOut(AgentRunOut):
         description="Resultado del agente (JSON validado; T9 lo tipa para `site_summary`)."
     )
     approval: ApprovalOut | None
+
+
+class ApprovalPage(_Out):
+    items: list[ApprovalOut]
+    next_cursor: str | None
+
+
+class DecideApprovalIn(_Out):
+    decision: Literal["approve", "reject"] = Field(
+        description="`approve` (Guardar) o `reject` (Descartar)."
+    )
+
+
+# --- Autonomía -------------------------------------------------------------------------
+
+Guardrail = Literal["no_delete", "daily_spend_cap", "publish_spend_need_rules", "ads_paused"]
+
+
+class AutonomyRuleOut(_Out):
+    id: str
+    agent_kind: str
+    site_id: str | None = Field(description="`null` = regla general del agente (todos los sitios).")
+    level: int = Field(ge=0, le=3)
+    updated_at: str
+
+
+class AutonomyDefaultOut(_Out):
+    agent_kind: str
+    level: Literal[1] = 1
+
+
+class AutonomyRulesOut(_Out):
+    items: list[AutonomyRuleOut]
+    defaults: list[AutonomyDefaultOut] = Field(
+        description="Nivel de cada agente sin regla (1, «Preparar y pedirte OK»)."
+    )
+    guardrails: list[Guardrail] = Field(description="Lo que ningún agente hace nunca.")
+
+
+# El nivel se valida en la ruta para responder `autonomy.invalid_level` (no un 422 genérico).
+class SetAutonomyRuleIn(_Out):
+    agent_kind: AgentKindField
+    site_id: SiteIdField | None = None
+    level: StrictInt
 
 
 class AcknowledgeNoticesIn(_Out):

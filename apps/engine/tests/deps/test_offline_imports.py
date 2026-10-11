@@ -25,6 +25,25 @@ def test_langsmith_desactivado_aunque_el_entorno_lo_active() -> None:
     assert result.report == {"interrupted": True, "resumed": True, "attempts": []}
 
 
+def test_el_marco_apaga_langsmith_y_httpx2_no_crea_contextos() -> None:
+    """Condiciones 7 y 13 del informe de T2 (T8): importar el marco quita `LANGSMITH_*` y
+    `LANGCHAIN_*` y llama a `langsmith.configure(enabled=False)`; construir y ejecutar un
+    grafo no abre conexiones ni crea contextos TLS de `httpx2`/`httpcore2`."""
+    env = {**LANGSMITH_ON, "langchain_tracing_v2": "true"}
+    result = run_probe("faro_graph", env=env)
+    assert result.report["env_before"] == [
+        "LANGSMITH_API_KEY",
+        "LANGSMITH_TRACING",
+        "langchain_tracing_v2",
+    ]
+    assert result.report["env_after"] == []
+    assert result.report["tracing_enabled"] is False
+    assert result.report["interrupted"] is True
+    assert result.report["resumed"] is True
+    assert result.report["attempts"] == []
+    assert result.report["httpx2_contexts"] == 0
+
+
 def test_sin_desactivar_langsmith_el_entorno_envia_trazas() -> None:
     """Motivo de la regla anterior: langchain-core enviaría el estado del grafo a LangSmith."""
     result = run_probe("graph_default", env=LANGSMITH_ON)

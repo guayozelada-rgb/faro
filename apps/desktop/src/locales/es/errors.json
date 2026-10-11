@@ -83,7 +83,11 @@
     "already_queued": "Este agente ya está trabajando en ese sitio. Espera a que termine.",
     "estimate_changed": "El costo cambió. Revísalo y vuelve a lanzar.",
     "run_not_found": "No encontramos esa tarea.",
-    "not_cancellable": "Esta tarea ya terminó."
+    "not_cancellable": "Esta tarea ya terminó.",
+    "no_suggestion": "Esta tarea no tiene nada que guardar.",
+    "version_changed": "Faro se actualizó mientras esta tarea esperaba. Lánzala de nuevo.",
+    "state_unreadable": "No pudimos retomar esta tarea. Lánzala de nuevo.",
+    "site_removed": "Quitaste el sitio de esta tarea, así que se canceló."
   },
   "llm": {
     "no_key": "Agrega una clave de IA en Configuración para que los agentes puedan trabajar.",
@@ -103,5 +107,21 @@
     "invalid": "Revisa la frecuencia y la hora.",
     "duplicate": "Ya hay una programación de este agente para ese sitio.",
     "not_found": "Esa programación ya no existe."
+  },
+  "approval": {
+    "not_found": "No encontramos esa propuesta.",
+    "already_decided": "Esta propuesta ya se decidió.",
+    "expired": "Esta propuesta caducó. Lanza el agente de nuevo.",
+    "not_ready": "Esta propuesta aún se está preparando. Intenta de nuevo en unos segundos."
+  },
+  "autonomy": {
+    "invalid_level": "Elige uno de los niveles de la lista.",
+    "rule_not_found": "Esa regla ya no existe.",
+    "default_rule": "La regla general no se puede quitar, solo cambiar."
+  },
+  "tool": {
+    "limit_reached": "El agente llegó al máximo de consultas de esta tarea.",
+    "invalid_arguments": "El agente pidió una consulta que no es válida y se detuvo. Lánzalo de nuevo.",
+    "timeout": "Una consulta del agente tardó demasiado. Intenta de nuevo en unos minutos."
   }
 }

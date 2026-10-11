@@ -65,6 +65,25 @@ SCHEDULE_INVALID: Final = "schedule.invalid"
 SCHEDULE_DUPLICATE: Final = "schedule.duplicate"
 SCHEDULE_NOT_FOUND: Final = "schedule.not_found"
 
+# Marco de agentes, aprobaciones, autonomía y herramientas (spec F1b §4.2, §5.2 y §5.5;
+# ADR 0016). `approval.not_ready`, `tool.invalid_arguments` y `tool.timeout` no están en la
+# tabla de §5.5: los añade T8 (informe de QA de T8, decisiones). Su estado HTTP está en
+# `JOBS_STATUS`.
+AGENT_NO_SUGGESTION: Final = "agent.no_suggestion"
+AGENT_VERSION_CHANGED: Final = "agent.version_changed"
+AGENT_STATE_UNREADABLE: Final = "agent.state_unreadable"
+AGENT_SITE_REMOVED: Final = "agent.site_removed"
+APPROVAL_NOT_FOUND: Final = "approval.not_found"
+APPROVAL_ALREADY_DECIDED: Final = "approval.already_decided"
+APPROVAL_EXPIRED_CODE: Final = "approval.expired"
+APPROVAL_NOT_READY: Final = "approval.not_ready"
+AUTONOMY_INVALID_LEVEL: Final = "autonomy.invalid_level"
+AUTONOMY_RULE_NOT_FOUND: Final = "autonomy.rule_not_found"
+AUTONOMY_DEFAULT_RULE: Final = "autonomy.default_rule"
+TOOL_LIMIT_REACHED: Final = "tool.limit_reached"
+TOOL_INVALID_ARGUMENTS: Final = "tool.invalid_arguments"
+TOOL_TIMEOUT: Final = "tool.timeout"
+
 # Capa de IA (spec F1b §4.1 y §5.5). Sus mensajes, con el nombre del proveedor, y su
 # estado HTTP están en `faro_engine/llm/errors.py` (`llm_error`).
 AGENT_BUDGET_EXHAUSTED: Final = "agent.budget_exhausted"
@@ -137,6 +156,24 @@ _BASE_MESSAGES: Final[Mapping[str, str]] = {
     SCHEDULE_INVALID: "Revisa la frecuencia y la hora.",
     SCHEDULE_DUPLICATE: "Ya hay una programación de este agente para ese sitio.",
     SCHEDULE_NOT_FOUND: "Esa programación ya no existe.",
+    AGENT_NO_SUGGESTION: "Esta tarea no tiene nada que guardar.",
+    AGENT_VERSION_CHANGED: "Faro se actualizó mientras esta tarea esperaba. Lánzala de nuevo.",
+    AGENT_STATE_UNREADABLE: "No pudimos retomar esta tarea. Lánzala de nuevo.",
+    AGENT_SITE_REMOVED: "Quitaste el sitio de esta tarea, así que se canceló.",
+    APPROVAL_NOT_FOUND: "No encontramos esa propuesta.",
+    APPROVAL_ALREADY_DECIDED: "Esta propuesta ya se decidió.",
+    APPROVAL_EXPIRED_CODE: "Esta propuesta caducó. Lanza el agente de nuevo.",
+    APPROVAL_NOT_READY: (
+        "Esta propuesta aún se está preparando. Intenta de nuevo en unos segundos."
+    ),
+    AUTONOMY_INVALID_LEVEL: "Elige uno de los niveles de la lista.",
+    AUTONOMY_RULE_NOT_FOUND: "Esa regla ya no existe.",
+    AUTONOMY_DEFAULT_RULE: "La regla general no se puede quitar, solo cambiar.",
+    TOOL_LIMIT_REACHED: "El agente llegó al máximo de consultas de esta tarea.",
+    TOOL_INVALID_ARGUMENTS: (
+        "El agente pidió una consulta que no es válida y se detuvo. Lánzalo de nuevo."
+    ),
+    TOOL_TIMEOUT: "Una consulta del agente tardó demasiado. Intenta de nuevo en unos minutos.",
 }
 
 JOBS_STATUS: Final[Mapping[str, int]] = {
@@ -150,6 +187,21 @@ JOBS_STATUS: Final[Mapping[str, int]] = {
     SCHEDULE_INVALID: 422,
     SCHEDULE_DUPLICATE: 409,
     SCHEDULE_NOT_FOUND: 404,
+    AGENT_NO_SUGGESTION: 409,
+    AGENT_VERSION_CHANGED: 409,
+    AGENT_STATE_UNREADABLE: 409,
+    AGENT_SITE_REMOVED: 409,
+    APPROVAL_NOT_FOUND: 404,
+    APPROVAL_ALREADY_DECIDED: 409,
+    APPROVAL_EXPIRED_CODE: 410,
+    # La tarea aún corre entre el nodo que propone y el `interrupt`: la interfaz reintenta.
+    APPROVAL_NOT_READY: 409,
+    AUTONOMY_INVALID_LEVEL: 422,
+    AUTONOMY_RULE_NOT_FOUND: 404,
+    AUTONOMY_DEFAULT_RULE: 409,
+    TOOL_LIMIT_REACHED: 409,
+    TOOL_INVALID_ARGUMENTS: 422,
+    TOOL_TIMEOUT: 504,
 }
 
 # Sitios conectados (spec F1a §5.6, ADR 0011 y 0012). El estado HTTP de cada uno está en

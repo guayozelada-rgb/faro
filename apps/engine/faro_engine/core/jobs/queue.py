@@ -11,11 +11,16 @@ La cola **es** la tabla: una tarea en espera es una fila `queued`. Este módulo 
 - el resto de transiciones (`UPDATE … WHERE status = ?`), cada una con su evento
   `run_status` por `agent_activity`. El `seq` del evento sale de la base
   (`agent_runs.activity_seq`), el mismo que devuelve `getAgentRun`.
-- despertar al trabajador (`notify`) cuando entra trabajo.
+- despertar al trabajador (`notify`) cuando entra trabajo;
+- planes del orquestador (`enqueue_plan`): todas sus tareas en una transacción; una tarea
+  con `parent_run_id` (la tarea del plan de la que depende) solo se toma cuando esa terminó
+  `succeeded`, y se cancela (`dependency_failed`) si falló o se canceló;
+- eventos de pasos y de propuestas (`emit_event`) para `StepRecorder` y el marco.
 
 Motivos (`status_reason`) que usa la cola: `daily_limit` (en cola hasta otro día),
 `agents_paused` (pausa global), `interrupted` (cierre del motor), `cancel_requested` (el
-usuario canceló una tarea en curso; se detiene en el siguiente límite) y `user_cancelled`.
+usuario canceló una tarea en curso; se detiene en el siguiente límite), `user_cancelled` y
+`dependency_failed`.
 
 Ninguna operación de este módulo borra tareas ni pasos (condición T6-C2 de la revisión
 de T6): una llamada en curso siempre encuentra su fila al registrar el gasto.
@@ -25,7 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -34,7 +39,7 @@ import structlog
 
 from faro_engine.core.db.connection import Connection
 from faro_engine.core.db.database import Database
-from faro_engine.core.jobs.activity import ActivityEmitter
+from faro_engine.core.jobs.activity import ActivityEmitter, ActivityKind
 from faro_engine.core.store import run_control, runs
 from faro_engine.core.store.common import atomic, format_utc, to_json
 from faro_engine.core.store.run_control import CancelResult
@@ -46,12 +51,18 @@ DAILY_LIMIT: Final = "daily_limit"
 AGENTS_PAUSED_REASON: Final = "agents_paused"
 INTERRUPTED: Final = "interrupted"
 CANCEL_REQUESTED: Final = "cancel_requested"
+# Tarea de un plan cuya tarea previa falló o se canceló (spec F1b §4.2, orquestador).
+DEPENDENCY_FAILED: Final = "dependency_failed"
 # Tareas en pausa que vuelven a la cola cuando los agentes pueden trabajar.
 RESUMABLE_REASONS: Final = (AGENTS_PAUSED_REASON, INTERRUPTED)
 
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+class _PlanRejectedError(Exception):
+    """Una tarea del plan ya estaba activa: se deshace el plan entero."""
 
 
 class RunQueue:
@@ -100,7 +111,12 @@ class RunQueue:
         return await self._database.run(lambda c: runs.get_run(c, run_id))
 
     async def peek(self) -> RunRecord | None:
-        """La siguiente tarea `queued` (sin las que esperan por el tope diario)."""
+        """La siguiente tarea `queued` lista (sin las que esperan por el tope diario ni las
+        de un plan cuya tarea previa no terminó). Antes cancela las de un plan cuya tarea
+        previa falló o se canceló (`dependency_failed`)."""
+        while orphans := await self._database.run(runs.orphaned_runs):
+            for orphan in orphans:
+                await self.cancel(orphan, status_reason=DEPENDENCY_FAILED)
         return await self._database.run(lambda c: runs.next_queued_run(c, skip_reason=DAILY_LIMIT))
 
     # --- Encolar y tomar -----------------------------------------------------------------
@@ -122,6 +138,31 @@ class RunQueue:
             record = await self.emit(record)
             self.notify()
         return record
+
+    async def enqueue_plan(self, plan: Sequence[NewRun]) -> list[RunRecord] | None:
+        """Inserta todas las tareas de un plan en **una** transacción (en orden de
+        dependencias). `None` (y nada insertado) si alguna ya tenía una activa del mismo
+        agente y sitio."""
+
+        def write(conn: Connection) -> list[RunRecord] | None:
+            with atomic(conn):
+                for run in plan:
+                    if not runs.insert_run(conn, run):
+                        raise _PlanRejectedError  # deshace las ya insertadas
+                return [record for run in plan if (record := runs.get_run(conn, run.id))]
+
+        try:
+            records = await self._database.run(write)
+        except _PlanRejectedError:
+            return None
+        emitted: list[RunRecord] = []
+        for record in records or []:
+            log.info(
+                "jobs.run_queued", run_id=record.id, agent=record.agent_kind, trigger=record.trigger
+            )
+            emitted.append(await self.emit(record))
+        self.notify()
+        return emitted
 
     async def claim(self, run_id: str) -> RunRecord | None:
         """`queued` → `running` (CAS). `None` si otra toma o una cancelación ganó."""
@@ -261,20 +302,38 @@ class RunQueue:
     async def emit(self, record: RunRecord) -> RunRecord:
         """Evento `run_status` con el `seq` guardado en la base. Nunca rompe la transición.
         Devuelve la fila con el `activity_seq` nuevo."""
+        return await self.emit_event(
+            record, kind="run_status", status=record.status, step=record.current_step
+        )
+
+    async def emit_event(
+        self,
+        record: RunRecord,
+        *,
+        kind: ActivityKind,
+        status: str,
+        step: str | None,
+        step_cost_micros: int = 0,
+        error_code: str | None = None,
+    ) -> RunRecord:
+        """Evento de actividad de la tarea (`run_status`, `step_started`, `step_finished`,
+        `approval_requested`) con el `seq` de la base. Solo identificadores, números y
+        códigos (ADR 0014 §3). Nunca rompe a quien lo llama."""
         seq = await self._database.run(lambda c: runs.next_activity_seq(c, record.id))
         if seq is None:  # pragma: no cover - la tarea existe: se acaba de leer
             return record
         try:
             await self._activity.emit(
                 run_id=record.id,
-                kind="run_status",
+                kind=kind,
                 agent=record.agent_kind,
                 site_id=record.site_id,
-                status=record.status,
-                step=record.current_step,
+                status=status,
+                step=step,
+                step_cost_micros=step_cost_micros,
                 run_cost_micros=record.cost_micros,
                 run_tokens=record.tokens,
-                error_code=record.error_code,
+                error_code=record.error_code if error_code is None else error_code,
                 seq=seq,
             )
         except ValueError:

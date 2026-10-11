@@ -24,6 +24,8 @@ async def test_health_returns_status_and_version(
         "status": "ok",
         "version": __version__,
         "database": {"state": "unavailable", "error_code": "db.unavailable", "newer_schema": False},
+        # Sin base, el trabajador de los agentes no arranca (hallazgo 3 de la revisión de T7).
+        "agents": {"worker": "not_started", "consecutive_failures": 0},
     }
     HealthOut.model_validate(response.json())
 

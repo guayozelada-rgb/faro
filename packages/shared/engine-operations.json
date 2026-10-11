@@ -1,5 +1,12 @@
 [
   {
+    "operationId": "acceptAgentSuggestion",
+    "method": "POST",
+    "path": "/agent-runs/{run_id}/suggestion/accept",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
     "operationId": "acknowledgeAgentNotices",
     "method": "POST",
     "path": "/agent-runs/notices/ack",
@@ -50,6 +57,20 @@
     "secrets": []
   },
   {
+    "operationId": "decideApproval",
+    "method": "POST",
+    "path": "/approvals/{approval_id}/decision",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
+    "operationId": "deleteAutonomyRule",
+    "method": "DELETE",
+    "path": "/autonomy-rules/{rule_id}",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
     "operationId": "deleteSchedule",
     "method": "DELETE",
     "path": "/schedules/{schedule_id}",
@@ -95,6 +116,20 @@
     "operationId": "listAgents",
     "method": "GET",
     "path": "/agents",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
+    "operationId": "listApprovals",
+    "method": "GET",
+    "path": "/approvals",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
+    "operationId": "listAutonomyRules",
+    "method": "GET",
+    "path": "/autonomy-rules",
     "timeout_seconds": 10,
     "secrets": []
   },
@@ -154,6 +189,13 @@
         ]
       }
     ]
+  },
+  {
+    "operationId": "setAutonomyRule",
+    "method": "PUT",
+    "path": "/autonomy-rules",
+    "timeout_seconds": 10,
+    "secrets": []
   },
   {
     "operationId": "setLlmDailyLimit",

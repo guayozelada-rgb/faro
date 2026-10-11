@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from faro_engine.agents.registry import agent_grants_table
+from faro_engine.agents.registry import agent_catalog, agent_grants_table
 from faro_engine.core.audit import AuditLog
 from faro_engine.core.config import Settings
 from faro_engine.core.db.database import Database
@@ -17,6 +17,8 @@ from faro_engine.core.jobs.runtime import JobSystem
 from faro_engine.core.logging import RequestLoggingMiddleware
 from faro_engine.core.operations import validate_app_operations
 from faro_engine.core.routes import agents as agent_routes
+from faro_engine.core.routes import approvals as approval_routes
+from faro_engine.core.routes import autonomy as autonomy_routes
 from faro_engine.core.routes import health, schedules, sites
 from faro_engine.core.routes import llm as llm_routes
 from faro_engine.core.run_id import RunIdMiddleware
@@ -58,9 +60,10 @@ def default_llm_service(
 
 
 def default_agent_catalog() -> AgentCatalog:
-    """Agentes del producto. Vacío en T7: el registro (`agents/registry.py`) llega en T8/T9.
-    Los agentes de prueba se registran solo en las pruebas."""
-    return AgentCatalog()
+    """Agentes del producto: el registro (`agents/registry.py`), validado al arrancar (si no
+    cumple, el motor no arranca). Vacío hasta que T9 registre `site_summary`. Los agentes de
+    prueba se registran solo en las pruebas."""
+    return agent_catalog()
 
 
 def create_app(
@@ -138,6 +141,8 @@ def create_app(
     app.include_router(sites.router)
     app.include_router(llm_routes.router)
     app.include_router(agent_routes.router)
+    app.include_router(approval_routes.router)
+    app.include_router(autonomy_routes.router)
     app.include_router(schedules.router)
     # Toda operación declara timeout y secretos (ADR 0010 §3); si no, el motor no arranca.
     validate_app_operations(app)
