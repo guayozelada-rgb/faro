@@ -1,7 +1,9 @@
 """`GET /health`: el núcleo lo consulta cada 15 s (exige token, ADR 0004).
 
 Informa también el estado de la base (`database`, ADR 0009 §4): el motor responde `ok`
-aunque la base no esté disponible, y el núcleo muestra el código a la interfaz.
+aunque la base no esté disponible, y el núcleo muestra el código a la interfaz. Desde T8,
+`agents` informa del trabajador de los agentes (`worker`: `not_started`, `ok`, `retrying`
+tras un fallo inesperado del bucle, `stopped`), hallazgo 3 de la revisión de T7.
 """
 
 from __future__ import annotations
@@ -12,8 +14,9 @@ from fastapi import APIRouter, Request
 
 from faro_engine.core.config import Settings
 from faro_engine.core.db.database import Database
+from faro_engine.core.jobs.runtime import JobSystem
 from faro_engine.core.operations import faro_operation
-from faro_engine.core.schemas.common import DatabaseHealth, ErrorOut, HealthOut
+from faro_engine.core.schemas.common import AgentsHealth, DatabaseHealth, ErrorOut, HealthOut
 
 router = APIRouter(tags=["health"])
 
@@ -33,10 +36,14 @@ router = APIRouter(tags=["health"])
 async def get_health(request: Request) -> HealthOut:
     settings: Settings = request.app.state.settings
     status = cast(Database, request.app.state.database).status
+    jobs = cast(JobSystem, request.app.state.jobs)
     return HealthOut(
         status="ok",
         version=settings.version,
         database=DatabaseHealth(
             state=status.state, error_code=status.error_code, newer_schema=status.newer_schema
+        ),
+        agents=AgentsHealth(
+            worker=jobs.worker_health, consecutive_failures=jobs.worker.consecutive_failures
         ),
     )

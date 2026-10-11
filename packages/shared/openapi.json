@@ -304,7 +304,7 @@
                 "type": "null"
               }
             ],
-            "description": "`daily_limit`, `agents_paused`, `interrupted`, `cancel_requested`…",
+            "description": "`daily_limit`, `agents_paused`, `interrupted`, `cancel_requested`, `user_cancelled`, `dependency_failed`…",
             "title": "Status Reason"
           },
           "steps": {
@@ -536,7 +536,7 @@
                 "type": "null"
               }
             ],
-            "description": "`daily_limit`, `agents_paused`, `interrupted`, `cancel_requested`…",
+            "description": "`daily_limit`, `agents_paused`, `interrupted`, `cancel_requested`, `user_cancelled`, `dependency_failed`…",
             "title": "Status Reason"
           },
           "token_budget": {
@@ -741,6 +741,34 @@
         "title": "AgentStepOut",
         "type": "object"
       },
+      "AgentsHealth": {
+        "additionalProperties": false,
+        "description": "Estado del trabajador de los agentes (hallazgo 3 de la revisión de T7).",
+        "properties": {
+          "consecutive_failures": {
+            "minimum": 0,
+            "title": "Consecutive Failures",
+            "type": "integer"
+          },
+          "worker": {
+            "description": "`not_started`: sin base o sin arrancar; `retrying`: un fallo inesperado del bucle, reintenta con espera; `stopped`: el trabajador terminó (apagado).",
+            "enum": [
+              "not_started",
+              "ok",
+              "retrying",
+              "stopped"
+            ],
+            "title": "Worker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "worker",
+          "consecutive_failures"
+        ],
+        "title": "AgentsHealth",
+        "type": "object"
+      },
       "ApprovalOut": {
         "additionalProperties": false,
         "properties": {
@@ -888,6 +916,140 @@
           "executed_at"
         ],
         "title": "ApprovalOut",
+        "type": "object"
+      },
+      "ApprovalPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "ApprovalPage",
+        "type": "object"
+      },
+      "AutonomyDefaultOut": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_kind": {
+            "title": "Agent Kind",
+            "type": "string"
+          },
+          "level": {
+            "const": 1,
+            "default": 1,
+            "title": "Level",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_kind"
+        ],
+        "title": "AutonomyDefaultOut",
+        "type": "object"
+      },
+      "AutonomyRuleOut": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_kind": {
+            "title": "Agent Kind",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "level": {
+            "maximum": 3,
+            "minimum": 0,
+            "title": "Level",
+            "type": "integer"
+          },
+          "site_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`null` = regla general del agente (todos los sitios).",
+            "title": "Site Id"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "agent_kind",
+          "site_id",
+          "level",
+          "updated_at"
+        ],
+        "title": "AutonomyRuleOut",
+        "type": "object"
+      },
+      "AutonomyRulesOut": {
+        "additionalProperties": false,
+        "properties": {
+          "defaults": {
+            "description": "Nivel de cada agente sin regla (1, «Preparar y pedirte OK»).",
+            "items": {
+              "$ref": "#/components/schemas/AutonomyDefaultOut"
+            },
+            "title": "Defaults",
+            "type": "array"
+          },
+          "guardrails": {
+            "description": "Lo que ningún agente hace nunca.",
+            "items": {
+              "enum": [
+                "no_delete",
+                "daily_spend_cap",
+                "publish_spend_need_rules",
+                "ads_paused"
+              ],
+              "type": "string"
+            },
+            "title": "Guardrails",
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AutonomyRuleOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "defaults",
+          "guardrails"
+        ],
+        "title": "AutonomyRulesOut",
         "type": "object"
       },
       "ConnectSiteIn": {
@@ -1128,6 +1290,25 @@
         "title": "DatabaseHealth",
         "type": "object"
       },
+      "DecideApprovalIn": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "description": "`approve` (Guardar) o `reject` (Descartar).",
+            "enum": [
+              "approve",
+              "reject"
+            ],
+            "title": "Decision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "title": "DecideApprovalIn",
+        "type": "object"
+      },
       "ErrorOut": {
         "additionalProperties": false,
         "description": "Formato de error común a todas las capas (ADR 0002).",
@@ -1208,6 +1389,9 @@
         "additionalProperties": false,
         "description": "Estado del motor.",
         "properties": {
+          "agents": {
+            "$ref": "#/components/schemas/AgentsHealth"
+          },
           "database": {
             "$ref": "#/components/schemas/DatabaseHealth"
           },
@@ -1227,7 +1411,8 @@
         },
         "required": [
           "version",
-          "database"
+          "database",
+          "agents"
         ],
         "title": "HealthOut",
         "type": "object"
@@ -1557,6 +1742,44 @@
           "last_run_id"
         ],
         "title": "ScheduleOut",
+        "type": "object"
+      },
+      "SetAutonomyRuleIn": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_kind": {
+            "description": "Tipo de agente.",
+            "examples": [
+              "site_summary"
+            ],
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Agent Kind",
+            "type": "string"
+          },
+          "level": {
+            "title": "Level",
+            "type": "integer"
+          },
+          "site_id": {
+            "anyOf": [
+              {
+                "description": "UUID del sitio.",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Id"
+          }
+        },
+        "required": [
+          "agent_kind",
+          "level"
+        ],
+        "title": "SetAutonomyRuleIn",
         "type": "object"
       },
       "SiteConnectionOut": {
@@ -2665,6 +2888,106 @@
         "x-faro-timeout-seconds": 10
       }
     },
+    "/agent-runs/{run_id}/suggestion/accept": {
+      "post": {
+        "operationId": "acceptAgentSuggestion",
+        "parameters": [
+          {
+            "description": "UUID de la tarea en minúsculas.",
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "description": "UUID de la tarea en minúsculas.",
+              "examples": [
+                "01920000-0000-7000-8000-000000000001"
+              ],
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`agent.run_not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`agent.no_suggestion` o `agent.already_queued`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Aplicar la sugerencia de una tarea (nivel 0: «Guardar resumen»)",
+        "tags": [
+          "approvals"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      }
+    },
     "/agents": {
       "get": {
         "operationId": "listAgents",
@@ -2713,6 +3036,460 @@
         "summary": "Agentes disponibles",
         "tags": [
           "agents"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      }
+    },
+    "/approvals": {
+      "get": {
+        "operationId": "listApprovals",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "pending",
+              "enum": [
+                "pending",
+                "approved",
+                "rejected",
+                "expired",
+                "cancelled",
+                "executed",
+                "failed"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Propuestas de los agentes (Bandeja), la más reciente primero",
+        "tags": [
+          "approvals"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      }
+    },
+    "/approvals/{approval_id}/decision": {
+      "post": {
+        "operationId": "decideApproval",
+        "parameters": [
+          {
+            "description": "UUID de la propuesta en minúsculas.",
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "description": "UUID de la propuesta en minúsculas.",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecideApprovalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`approval.not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`approval.already_decided`, o `approval.not_ready` (la tarea aún prepara la propuesta: reintenta en unos segundos)."
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`approval.expired`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Guardar o descartar una propuesta (la tarea vuelve a la cola)",
+        "tags": [
+          "approvals"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      }
+    },
+    "/autonomy-rules": {
+      "get": {
+        "operationId": "listAutonomyRules",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutonomyRulesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Reglas de autonomía, niveles predeterminados y guardarraíles",
+        "tags": [
+          "autonomy"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      },
+      "put": {
+        "operationId": "setAutonomyRule",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetAutonomyRuleIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutonomyRuleOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`agent.unknown` o `site.not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`autonomy.invalid_level`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Crear o cambiar la regla de un agente (general o de un sitio)",
+        "tags": [
+          "autonomy"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      }
+    },
+    "/autonomy-rules/{rule_id}": {
+      "delete": {
+        "operationId": "deleteAutonomyRule",
+        "parameters": [
+          {
+            "description": "UUID de la regla en minúsculas.",
+            "in": "path",
+            "name": "rule_id",
+            "required": true,
+            "schema": {
+              "description": "UUID de la regla en minúsculas.",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Rule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`autonomy.rule_not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`autonomy.default_rule`: la general solo se cambia."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Quitar la regla de un sitio (vuelve a la general)",
+        "tags": [
+          "autonomy"
         ],
         "x-faro-secrets": [],
         "x-faro-timeout-seconds": 10

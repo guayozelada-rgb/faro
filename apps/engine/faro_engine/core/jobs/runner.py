@@ -1,9 +1,10 @@
 """Contrato entre el trabajador y los agentes (spec F1b §4.3; skill `agentes-langgraph`).
 
 El trabajador (`worker.py`) no sabe nada de LangGraph: ejecuta un `AgentDefinition` con
-`run(invocation)`. En T7 solo lo implementa un agente de pruebas (en `tests/`); en T8 el
-marco (`agents/framework`) lo implementa con el grafo, el checkpointer y `StepRecorder`, y
-el registro (`agents/registry.py`) aporta el `AgentCatalog` de producción.
+`run(invocation)`. Desde T8 lo implementa `AgentSpec` (`agents/registry.py`) con el marco
+(`agents/framework/graph.py`: grafo, checkpointer y `StepRecorder`), y el registro aporta
+el `AgentCatalog` de producción (vacío hasta que T9 registre `site_summary`). El agente de
+pruebas sin LangGraph de T7 (`tests/fakes/agents.py`) sigue cumpliendo este contrato.
 
 Qué recibe un agente (`RunInvocation`):
 
@@ -11,18 +12,24 @@ Qué recibe un agente (`RunInvocation`):
   `agent_runs` (`RunContext`). El sitio, el proveedor y los límites **solo** salen de aquí.
 - `first_start`: `True` si la tarea nunca empezó (entrada nueva); si no, continúa desde
   su último estado guardado (cierre brusco, pausa, concesión renovada o decisión).
-- `approval`: la última propuesta de la tarea, releída de la base (o `None`). Con ella, T8
-  decide si reanuda con `Command(resume=…)` (aprobada o rechazada) o sigue sin más.
+- `approval`: la última propuesta de la tarea, releída de la base (o `None`). Con ella, el
+  marco decide si reanuda con `Command(resume=…)` (aprobada o rechazada), si aplica una
+  sugerencia aceptada a mano o si sigue sin más.
 - `stop`: la señal de parada. El agente llama a `stop.check()` en cada límite entre pasos:
   lanza `RunStopped` si los agentes están en pausa, si el usuario canceló la tarea o si el
   motor se apaga. La tarea queda en su último estado guardado.
 - `llm`: **el** `LlmService` del motor (`app.state.llm`), con el único `DailyLimiter`:
   ningún agente crea otro (condición T6-C2 de la revisión de T6).
+- `queue`: la cola del trabajador (base, reloj y eventos `agent_activity` con el `seq` de
+  la base): `StepRecorder` emite con ella `step_started`, `step_finished` y
+  `approval_requested`.
 
 Qué devuelve: `RunResult("succeeded", result)` al terminar (`result` = JSON validado del
-esquema del agente, nunca secretos ni respuestas crudas) o `RunResult("waiting_approval")`
-si se detuvo a esperar una decisión. Los errores con código (`FaroError`) dejan la tarea
-`failed` con ese código; cualquier otra excepción, `failed` con `internal.unexpected`.
+esquema del agente, nunca secretos ni respuestas crudas), `RunResult("waiting_approval")`
+si se detuvo a esperar una decisión o `RunResult("cancelled", error_code=…)` si no puede
+seguir sin que sea un fallo (`agent.version_changed`). Los errores con código
+(`FaroError`) dejan la tarea `failed` con ese código; cualquier otra excepción, `failed`
+con `internal.unexpected`.
 """
 
 from __future__ import annotations
@@ -39,11 +46,12 @@ from faro_engine.llm.catalog import Catalog
 from faro_engine.llm.client import Provider, Tier
 
 if TYPE_CHECKING:
+    from faro_engine.core.jobs.queue import RunQueue
     from faro_engine.llm.service import LlmService
     from faro_engine.sites.repository import SiteRecord
 
 StopReason = Literal["agents_paused", "user_cancelled", "shutdown"]
-RunOutcome = Literal["succeeded", "waiting_approval"]
+RunOutcome = Literal["succeeded", "waiting_approval", "cancelled"]
 SideEffect = Literal["internal", "publish", "spend"]
 RunTrigger = Literal["user", "schedule", "catch_up"]
 
@@ -113,18 +121,24 @@ class RunInvocation:
     approval: ApprovalRecord | None
     stop: StopSignal
     llm: LlmService
+    queue: RunQueue
 
 
 @dataclass(frozen=True, slots=True)
 class RunResult:
     outcome: RunOutcome
     result: Mapping[str, Any] | None = None
+    error_code: str | None = None  # solo con `cancelled`
 
 
 @dataclass(frozen=True, slots=True)
 class AgentAction:
+    """Una acción con efectos de un agente, tal como la ven las rutas (ADR 0016 §1).
+    `max_level`: nivel de autonomía máximo que admite (`publish`/`spend` ≤ 1 en F1b)."""
+
     action_kind: str
     side_effect: SideEffect
+    max_level: int = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,7 +169,7 @@ class AgentEstimate:
 
 
 class AgentDefinition(Protocol):
-    """Un tipo de agente tal como lo ve el motor (T8: `AgentSpec` lo implementa)."""
+    """Un tipo de agente tal como lo ve el motor (lo implementa `AgentSpec`)."""
 
     @property
     def kind(self) -> str: ...
@@ -180,8 +194,8 @@ class AgentDefinition(Protocol):
 class AgentCatalog:
     """Agentes que el motor puede ejecutar, por `kind`.
 
-    En producción (T7) está vacío: el registro de agentes llega en T8/T9. Un agente de
-    pruebas se registra solo dentro de las pruebas (nunca en `agents/registry.py`, que
+    En producción lo construye el registro (`agents/registry.py::agent_catalog`). Un agente
+    de pruebas se registra solo dentro de las pruebas (nunca en `agents/registry.py`, que
     alimenta la tabla de concesiones que incrusta el núcleo).
     """
 

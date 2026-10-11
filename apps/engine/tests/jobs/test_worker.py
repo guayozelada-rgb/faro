@@ -61,7 +61,7 @@ async def test_tarea_completa_con_concesion_run_id_y_actividad(world: JobWorld) 
         {"run_id": R1, "agent": "test_agent", "site_id": SITE, "provider": "anthropic",
          "trigger": "user"}
     ]  # fmt: skip
-    assert world.grants.releases == [(R1, "succeeded")]
+    await eventually(lambda: world.grants.releases == [(R1, "succeeded")])
     # El `run_id` de la concesión está fijado mientras corre el agente (canal de secretos).
     assert world.agent.run_ids_seen == [R1]
     [invocation] = world.agent.invocations
@@ -95,6 +95,9 @@ async def test_prioridad_usuario_reanudada_programada(world: JobWorld) -> None:
         return await original(invocation)
 
     world.agent.run = spy  # type: ignore[method-assign]
+    # Sin sitio para no chocar con la deduplicación por (agente, sitio): el agente no lo
+    # necesita (con `requires_site`, una tarea sin sitio se cancela con `agent.site_removed`).
+    world.agent.requires_site = False
     await world.add_run(R1, trigger="schedule", priority=2, site_id=None)
     await world.add_run(R2, trigger="user", priority=0, site_id=REVOKED_SITE)
     await world.add_run(run_id(3), trigger="user", priority=1, created_at="2026-10-09T14:00:00Z")
@@ -120,14 +123,14 @@ async def test_pausa_a_mitad_y_reanudacion_desde_su_paso(world: JobWorld) -> Non
     run = world.run(R1)
     assert run.status_reason == "agents_paused"
     assert world.agent.progress[R1] == 2  # se detuvo en el límite antes del paso 3
-    assert world.grants.releases == [(R1, "paused")]
+    await eventually(lambda: world.grants.releases == [(R1, "paused")])
 
     world.run_control()
     await eventually(status_is(world, R1, "succeeded"))
     assert world.statuses(R1) == ["queued", "running", "paused", "queued", "running", "succeeded"]
     assert [inv.first_start for inv in world.agent.invocations] == [True, False]
     assert world.agent.progress[R1] == 3
-    assert world.grants.releases == [(R1, "paused"), (R1, "succeeded")]
+    await eventually(lambda: world.grants.releases == [(R1, "paused"), (R1, "succeeded")])
 
 
 async def test_agents_paused_de_la_capa_de_ia_deja_la_tarea_en_pausa(world: JobWorld) -> None:
@@ -169,7 +172,7 @@ async def test_cancelar_una_tarea_en_curso_para_en_el_siguiente_limite(world: Jo
     assert run.status_reason == "user_cancelled"
     assert world.agent.progress[R1] == 2
     assert world.query("SELECT status FROM approvals") == [("cancelled",)]
-    assert world.grants.releases == [(R1, "cancelled")]
+    await eventually(lambda: world.grants.releases == [(R1, "cancelled")])
 
 
 async def test_apagado_en_un_limite_deja_la_tarea_en_pausa_interrumpida(world: JobWorld) -> None:
@@ -184,7 +187,7 @@ async def test_apagado_en_un_limite_deja_la_tarea_en_pausa_interrumpida(world: J
     gate.opened.set()
     await eventually(status_is(world, R1, "paused"))
     assert world.run(R1).status_reason == "interrupted"
-    assert world.grants.releases == [(R1, "paused")]
+    await eventually(lambda: world.grants.releases == [(R1, "paused")])
     await world.jobs.shutdown()
     assert world.jobs.worker_task is not None
     assert world.jobs.worker_task.done()
@@ -232,7 +235,7 @@ async def test_concesion_caducada_se_renueva_una_vez_y_repite_el_paso(world: Job
     await eventually(status_is(world, R1, "succeeded"))
     assert len(world.grants.requests) == 2
     assert [inv.first_start for inv in world.agent.invocations] == [True, False]
-    assert world.grants.releases == [(R1, "succeeded")]
+    await eventually(lambda: world.grants.releases == [(R1, "succeeded")])
 
 
 async def test_renovar_con_el_nucleo_en_pausa_deja_la_tarea_en_pausa(world: JobWorld) -> None:
@@ -265,7 +268,7 @@ async def test_concesion_caducada_dos_veces_falla(world: JobWorld, renewal: str 
     world.run_control()
     await eventually(status_is(world, R1, "failed"))
     assert world.run(R1).error_code == "agent.grant_denied"
-    assert world.grants.releases == [(R1, "failed")]
+    await eventually(lambda: world.grants.releases == [(R1, "failed")])
 
 
 # --- Errores y finales -----------------------------------------------------------------------
@@ -301,7 +304,7 @@ async def test_espera_de_decision(world: JobWorld) -> None:
     await world.add_run(R1)
     world.run_control()
     await eventually(status_is(world, R1, "waiting_approval"))
-    assert world.grants.releases == [(R1, "waiting_approval")]
+    await eventually(lambda: world.grants.releases == [(R1, "waiting_approval")])
 
 
 async def test_agente_desconocido_falla_sin_pedir_concesion(world: JobWorld) -> None:
@@ -543,7 +546,7 @@ async def test_senal_de_apagado_durante_la_concesion_no_invoca_al_agente(
     await eventually(status_is(world, R1, "paused"))
     assert world.run(R1).status_reason == "interrupted"
     assert world.agent.invocations == []
-    assert grants.releases == [(R1, "paused")]
+    await eventually(lambda: grants.releases == [(R1, "paused")])
 
 
 async def test_canal_cerrado_durante_la_concesion_deja_la_tarea_interrumpida(

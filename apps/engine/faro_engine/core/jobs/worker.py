@@ -24,16 +24,28 @@ Ciclo:
    cualquier otra excepción → `failed` con `internal.unexpected` (en el log, solo la clase).
 6. `run_grant_release` siempre que hubo concesión (en un `finally`), con el estado final.
 
+Antes de pedir la concesión, una tarea de un agente que necesita sitio y ya no lo tiene
+(el usuario quitó el sitio: `site_id` pasó a `NULL`) se cancela con `agent.site_removed`,
+sin pedir nada al núcleo (notas de la revisión de T7).
+
 Apagado: `request_stop` pide parar en el siguiente límite entre pasos. Si la tarea no llega
 a tiempo, el sistema de tareas cancela al trabajador: la llamada al LLM en curso registra
 su máximo (`LlmService`, condición T6-C1) y la tarea se queda `running`; la recuperación
 del siguiente arranque la pasa a `paused` (`interrupted`) y la vuelve a encolar.
+
+Fallos fuera del agente (hallazgo 3 de la revisión de T7): un error inesperado en el bucle
+(p. ej. la base en `peek`, `claim`, `_finish` o `resume_paused`) ya no detiene al trabajador
+para toda la sesión. Se registra (solo la clase), se espera `RETRY_DELAYS_SECONDS` (1, 2, 4,
+8, 16 y luego 30 s, con el `sleep` inyectable) y se reintenta. Antes del siguiente intento se
+recupera lo que quedó a medias (`recovery.recover_interrupted`: una tarea que se quedó
+`running` pasa a `paused` con `interrupted` y vuelve a la cola). `status` (`ok`, `retrying`)
+y `consecutive_failures` los informa `/health`.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Final, Literal, Protocol
@@ -42,6 +54,7 @@ import structlog
 
 from faro_engine.core.errors import (
     AGENT_GRANT_DENIED,
+    AGENT_SITE_REMOVED,
     AGENT_UNKNOWN,
     AGENTS_PAUSED,
     INTERNAL_UNEXPECTED,
@@ -59,6 +72,7 @@ from faro_engine.core.jobs.queue import (
     INTERRUPTED,
     RunQueue,
 )
+from faro_engine.core.jobs.recovery import recover_interrupted
 from faro_engine.core.jobs.runner import (
     AgentCatalog,
     AgentDefinition,
@@ -82,7 +96,11 @@ log = structlog.get_logger(__name__)
 
 # Tras `agents.paused` en la concesión: espera un cambio del control como mucho esto.
 GRANT_PAUSED_BACKOFF_SECONDS: Final = 30.0
+# Espera antes de reintentar tras un fallo del bucle (hallazgo 3 de T7); la última se repite.
+RETRY_DELAYS_SECONDS: Final = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
 ReleaseStatus = Literal["succeeded", "failed", "cancelled", "waiting_approval", "paused"]
+WorkerStatus = Literal["ok", "retrying"]
+Sleep = Callable[[float], Awaitable[None]]
 
 
 class GrantSource(Protocol):
@@ -129,6 +147,7 @@ class Worker:
         agents: AgentCatalog,
         clock: Callable[[], datetime] = _utc_now,
         grant_paused_backoff: float = GRANT_PAUSED_BACKOFF_SECONDS,
+        sleep: Sleep = asyncio.sleep,
     ) -> None:
         self._queue = queue
         self._control = control
@@ -142,6 +161,9 @@ class Worker:
         self._day: date | None = None
         self._current: tuple[str, StopSignal] | None = None
         self._busy = False
+        self._sleep = sleep
+        self._failures = 0
+        self._recover = False
 
     # --- Señales desde fuera (rutas, apagado) --------------------------------------------
 
@@ -153,6 +175,15 @@ class Worker:
         """Está con una tarea (desde que empieza a tomarla: también mientras espera la
         concesión). Si no, el apagado lo cancela al momento."""
         return self._busy
+
+    @property
+    def status(self) -> WorkerStatus:
+        """`retrying` tras un fallo del bucle hasta que una vuelta termina bien."""
+        return "retrying" if self._failures else "ok"
+
+    @property
+    def consecutive_failures(self) -> int:
+        return self._failures
 
     @property
     def current_run_id(self) -> str | None:
@@ -176,21 +207,47 @@ class Worker:
 
     async def run_forever(self) -> None:
         while not self.should_stop():
-            blocked = not self._control.can_run
-            await self._control.wait_until_runnable()
-            if self.should_stop():  # pidieron parar mientras esperaba
-                break
-            if blocked or self._resume_pending:
-                self._resume_pending = False
-                await self._queue.resume_paused()
-            await self._new_day()
-            self._queue.clear_notice()
-            candidate = await self._queue.peek()
-            if candidate is None:
-                await self._queue.wait_for_work(self._seconds_to_midnight())
-                continue
-            await self.take(candidate)
+            try:
+                await self._cycle()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - el trabajador sigue (hallazgo 3 de T7)
+                self._failures += 1
+                self._recover = True
+                self._resume_pending = True
+                delay = RETRY_DELAYS_SECONDS[min(self._failures, len(RETRY_DELAYS_SECONDS)) - 1]
+                log.error(
+                    "jobs.worker_error",
+                    error_type=type(exc).__name__,
+                    failures=self._failures,
+                    retry_in=delay,
+                )
+                await self._sleep(delay)
         log.info("jobs.worker_stopped")
+
+    async def _cycle(self) -> None:
+        """Una vuelta del bucle: esperar, recuperar, mirar la cola y tomar una tarea."""
+        blocked = not self._control.can_run
+        await self._control.wait_until_runnable()
+        if self.should_stop():  # pidieron parar mientras esperaba
+            return
+        if self._recover:
+            # Tras un fallo: lo que quedó `running` a medias vuelve a la cola (así lo haría
+            # el siguiente arranque), con sus pasos `running` cancelados.
+            await recover_interrupted(self._queue)
+            self._recover = False
+        if blocked or self._resume_pending:
+            self._resume_pending = False
+            await self._queue.resume_paused()
+        await self._new_day()
+        self._queue.clear_notice()
+        candidate = await self._queue.peek()
+        if candidate is None:
+            self._failures = 0
+            await self._queue.wait_for_work(self._seconds_to_midnight())
+            return
+        await self.take(candidate)
+        self._failures = 0
 
     async def _new_day(self) -> None:
         today = self._llm.today()
@@ -259,6 +316,13 @@ class Worker:
         if definition is None:
             await self._finish(run, _Ending("failed", "failed", error_code=AGENT_UNKNOWN))
             return
+        if definition.requires_site and run.site_id is None:
+            # El usuario quitó el sitio (`site_id` → NULL): no se pide la concesión.
+            log.info("jobs.run_site_removed", run_id=run.id)
+            await self._finish(
+                run, _Ending("cancelled", "cancelled", error_code=AGENT_SITE_REMOVED)
+            )
+            return
         stop = StopSignal(self._control)
         if self._stopping:
             stop.request_shutdown()
@@ -266,18 +330,7 @@ class Worker:
         try:
             await self._grant(run, provider)
         except RunGrantError as err:
-            if await self._cancel_requested(run.id):
-                await self._finish(run, _Ending("cancelled", "cancelled"))
-            elif self._stopping:
-                # Apagado mientras se esperaba (p. ej. `shutdown` por stdin cierra el canal
-                # y la concesión se deniega): la tarea no falló, se interrumpió.
-                await self._finish(run, _Ending("paused", "paused", status_reason=INTERRUPTED))
-            elif err.code == AGENTS_PAUSED:
-                # El núcleo está en pausa y su aviso aún no llegó: vuelve a la cola.
-                await self._queue.transition(run.id, from_status="running", to_status="queued")
-                await self._wait_control_change(snapshot)
-            else:
-                await self._finish(run, _Ending("failed", "failed", error_code=AGENT_GRANT_DENIED))
+            await self._grant_failed(run, err, snapshot)
             return
         self._current = (run.id, stop)
         release: ReleaseStatus = "paused"
@@ -295,13 +348,32 @@ class Worker:
                 ending = await self._invoke(
                     definition, run, provider, stop, first_start=first_start
                 )
-            release = ending.release
             await self._finish(run, ending)
+            # Si `_finish` falla (base), la tarea se queda `running` y se libera como
+            # `paused`: el trabajador la recupera en la siguiente vuelta (hallazgo 3 de T7).
+            release = ending.release
         finally:
             # Con el apagado (cancelación) la tarea se queda `running` y se libera como
             # `paused`: la recuperación del siguiente arranque la vuelve a encolar.
             self._current = None
             await self._grants.release(run.id, release)
+
+    async def _grant_failed(
+        self, run: RunRecord, err: RunGrantError, snapshot: ControlSnapshot
+    ) -> None:
+        """La concesión inicial no llegó: la tarea no se invoca."""
+        if await self._cancel_requested(run.id):
+            await self._finish(run, _Ending("cancelled", "cancelled", status_reason=USER_CANCELLED))
+        elif self._stopping:
+            # Apagado mientras se esperaba (p. ej. `shutdown` por stdin cierra el canal y la
+            # concesión se deniega): la tarea no falló, se interrumpió.
+            await self._finish(run, _Ending("paused", "paused", status_reason=INTERRUPTED))
+        elif err.code == AGENTS_PAUSED:
+            # El núcleo está en pausa y su aviso aún no llegó: vuelve a la cola.
+            await self._queue.transition(run.id, from_status="running", to_status="queued")
+            await self._wait_control_change(snapshot)
+        else:
+            await self._finish(run, _Ending("failed", "failed", error_code=AGENT_GRANT_DENIED))
 
     async def _cancel_requested(self, run_id: str) -> bool:
         record = await self._queue.get(run_id)
@@ -353,7 +425,12 @@ class Worker:
         while True:
             approval = await self._queue.database.run(lambda c: latest_approval_for_run(c, run.id))
             invocation = RunInvocation(
-                ctx=context, first_start=first_start, approval=approval, stop=stop, llm=self._llm
+                ctx=context,
+                first_start=first_start,
+                approval=approval,
+                stop=stop,
+                llm=self._llm,
+                queue=self._queue,
             )
             try:
                 with use_run_id(run.id):
@@ -386,6 +463,9 @@ class Worker:
                 return _Ending("failed", "failed", error_code=INTERNAL_UNEXPECTED)
             if result.outcome == "waiting_approval":
                 return _Ending("waiting_approval", "waiting_approval")
+            if result.outcome == "cancelled":
+                # La tarea no puede seguir sin que sea un fallo (`agent.version_changed`).
+                return _Ending("cancelled", "cancelled", error_code=result.error_code)
             return _Ending("succeeded", "succeeded", result=result)
 
     def _stopped(self, stopped: RunStopped) -> _Ending:
@@ -398,7 +478,12 @@ class Worker:
 
     async def _finish(self, run: RunRecord, ending: _Ending) -> None:
         if ending.to_status == "cancelled":
-            await self._queue.cancel(run.id, include_running=True)
+            await self._queue.cancel(
+                run.id,
+                status_reason=ending.status_reason,
+                error_code=ending.error_code,
+                include_running=True,
+            )
             return
         result = ending.result.result if ending.result is not None else None
         after = await self._queue.transition(

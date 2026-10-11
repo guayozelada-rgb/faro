@@ -229,7 +229,7 @@ async def list_agents(jobs: Jobs) -> AgentListOut:
     openapi_extra=faro_operation(timeout_seconds=AGENTS_TIMEOUT, secrets=[]),
 )
 async def estimate_agent_run(body: EstimateAgentRunIn, jobs: Jobs, _db: Db) -> CostEstimateOut:
-    estimate = await jobs.submitter.estimate(body.agent_kind, body.site_id)
+    estimate = await jobs.orchestrator.estimate(body.agent_kind, body.site_id)
     return CostEstimateOut(
         agent_kind=estimate.agent_kind,
         site_id=estimate.site_id,
@@ -255,7 +255,7 @@ async def estimate_agent_run(body: EstimateAgentRunIn, jobs: Jobs, _db: Db) -> C
     openapi_extra=faro_operation(timeout_seconds=AGENTS_TIMEOUT, secrets=[]),
 )
 async def start_agent_run(body: StartAgentRunIn, jobs: Jobs, database: Db) -> AgentRunOut:
-    record = await jobs.submitter.start(
+    record = await jobs.orchestrator.start(
         body.agent_kind, body.site_id, body.accepted_max_cost_micros
     )
     return await _run_out(database, record)

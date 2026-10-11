@@ -301,7 +301,7 @@ async def test_apagado_con_llamada_en_curso_registra_su_maximo(world: JobWorld) 
     assert world.llm.limiter.reserved(ANTHROPIC_REF) == 0
     # La tarea se queda `running`; la recuperación del siguiente arranque la retoma.
     assert world.run(R1).status == "running"
-    assert world.grants.releases == [(R1, "paused")]
+    await eventually(lambda: world.grants.releases == [(R1, "paused")])
     assert world.jobs.worker_task is not None
     assert world.jobs.worker_task.done()
 
@@ -466,7 +466,7 @@ async def test_el_plazo_de_cancelacion_cuenta_desde_el_aviso_no_desde_serve(
     server_returns.set()
     await serving
     controller.cancel()
-    assert world.grants.releases == [(R1, "paused")]
+    await eventually(lambda: world.grants.releases == [(R1, "paused")])
 
 
 async def test_aviso_de_parada_repetido_o_sin_trabajador(world: JobWorld) -> None:
@@ -495,4 +495,4 @@ async def test_si_serve_vuelve_con_el_plazo_vencido_cancela_al_momento(world: Jo
     assert world.jobs.worker_task is not None
     assert world.jobs.worker_task.done()
     assert world.run(R1).status == "running"  # la recupera el siguiente arranque
-    assert world.grants.releases == [(R1, "paused")]
+    await eventually(lambda: world.grants.releases == [(R1, "paused")])

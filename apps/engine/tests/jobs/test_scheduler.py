@@ -315,7 +315,7 @@ async def test_apscheduler_de_verdad_dispara_a_su_hora(world: JobWorld) -> None:
     world.clock.now = real_now
     add_schedule(world, next_run_at=real_now + timedelta(seconds=1))
 
-    sched = Scheduler(world.database, world.jobs.submitter.from_schedule, clock=world.clock,
+    sched = Scheduler(world.database, world.jobs.orchestrator.from_schedule, clock=world.clock,
                       timer_factory=apscheduler_timer)  # fmt: skip
     original = sched.fire
 

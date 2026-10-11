@@ -35,10 +35,11 @@ import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 import structlog
 
+from faro_engine.agents.framework.orchestrator import Objective, Orchestrator
 from faro_engine.core.db.database import Database
 from faro_engine.core.jobs.activity import ActivityEmitter
 from faro_engine.core.jobs.control import AgentsControlState
@@ -46,11 +47,12 @@ from faro_engine.core.jobs.queue import RunQueue
 from faro_engine.core.jobs.recovery import expire_approvals, recover
 from faro_engine.core.jobs.runner import AgentCatalog
 from faro_engine.core.jobs.scheduler import Scheduler, Timer, apscheduler_timer, system_timezone
-from faro_engine.core.jobs.submit import RunSubmitter
 from faro_engine.core.jobs.worker import GrantSource, Worker
 from faro_engine.llm.service import LlmService
 
 log = structlog.get_logger(__name__)
+
+WorkerHealth = Literal["not_started", "ok", "retrying", "stopped"]
 
 CATCH_UP_DELAY_SECONDS: Final = 60.0
 APPROVAL_EXPIRY_INTERVAL_SECONDS: Final = 24 * 60 * 60.0
@@ -84,6 +86,7 @@ class JobSystem:
         expiry_interval: float = APPROVAL_EXPIRY_INTERVAL_SECONDS,
         stop_wait: float = STOP_WAIT_SECONDS,
         cancel_wait: float = CANCEL_WAIT_SECONDS,
+        objectives: tuple[Objective, ...] = (),
     ) -> None:
         self.database = database
         self.control = control
@@ -92,14 +95,25 @@ class JobSystem:
         self.clock = clock
         self.timezone_name = timezone_name
         self.queue = RunQueue(database, activity, clock=clock)
-        self.submitter = RunSubmitter(
-            database=database, queue=self.queue, control=control, llm=llm, agents=agents
+        self.orchestrator = Orchestrator(
+            database=database,
+            queue=self.queue,
+            control=control,
+            llm=llm,
+            agents=agents,
+            objectives=objectives,
         )
         self.scheduler = Scheduler(
-            database, self.submitter.from_schedule, clock=clock, timer_factory=timer_factory
+            database, self.orchestrator.from_schedule, clock=clock, timer_factory=timer_factory
         )
         self.worker = Worker(
-            queue=self.queue, control=control, grants=grants, llm=llm, agents=agents, clock=clock
+            queue=self.queue,
+            control=control,
+            grants=grants,
+            llm=llm,
+            agents=agents,
+            clock=clock,
+            sleep=sleep,
         )
         self._sleep = sleep
         self._catch_up_delay = catch_up_delay
@@ -120,6 +134,17 @@ class JobSystem:
     @property
     def worker_task(self) -> asyncio.Task[None] | None:
         return self._worker_task
+
+    @property
+    def worker_health(self) -> WorkerHealth:
+        """Para `/health`: sin arrancar (p. ej. base no disponible), bien, reintentando tras
+        un fallo del bucle (hallazgo 3 de T7) o detenido."""
+        task = self._worker_task
+        if task is None:
+            return "not_started"
+        if task.done():
+            return "stopped"
+        return self.worker.status
 
     def _spawn(self, coro: Coroutine[Any, Any, None], name: str) -> asyncio.Task[None]:
         task = asyncio.create_task(coro, name=name)

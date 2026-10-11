@@ -176,6 +176,14 @@ _PRUNE_CHECKPOINTS: Final = (
 )
 
 
+def delete_thread(conn: Connection, thread_id: str) -> int:
+    """Borra todos los checkpoints (y sus escrituras) de un hilo. Devuelve cuántos borró."""
+    with atomic(conn):
+        conn.execute("DELETE FROM agent_checkpoint_writes WHERE thread_id = ?", (thread_id,))
+        cursor = conn.execute("DELETE FROM agent_checkpoints WHERE thread_id = ?", (thread_id,))
+    return int(cursor.rowcount)
+
+
 def prune_checkpoints(conn: Connection, thread_id: str) -> int:
     """Al terminar la tarea: deja solo el último checkpoint de cada espacio (y sus
     escrituras). Devuelve cuántos checkpoints borró."""

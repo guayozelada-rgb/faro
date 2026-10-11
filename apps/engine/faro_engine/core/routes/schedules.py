@@ -137,8 +137,8 @@ async def list_schedules(database: Db) -> ScheduleListOut:
 )
 async def create_schedule(body: CreateScheduleIn, jobs: Jobs, database: Db) -> ScheduleOut:
     checked_cadence(body.cadence, body.weekday, body.time_local)
-    definition = jobs.submitter.definition(body.agent_kind)
-    await jobs.submitter.site(definition, body.site_id)
+    definition = jobs.orchestrator.definition(body.agent_kind)
+    await jobs.orchestrator.site(definition, body.site_id)
     now = jobs.clock()
     timezone_name = jobs.timezone_name()
     schedule = NewSchedule(
