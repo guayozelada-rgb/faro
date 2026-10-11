@@ -1,0 +1,116 @@
+{
+  "id": "restaurante-arabe",
+  "description": "Restaurante inventado de cocina libanesa en árabe (escritura de derecha a izquierda): 4 páginas y 6 entradas.",
+  "agent": "site_summary",
+  "prompts": {
+    "classify_content": 1,
+    "write_summary": 1
+  },
+  "input": {
+    "site_name": "مطعم الأرز",
+    "woocommerce": false,
+    "counts": {
+      "page": 4,
+      "post": 6,
+      "product": 0
+    },
+    "items": [
+      {
+        "kind": "page",
+        "title": "الصفحة الرئيسية",
+        "url": "https://al-arz.test/"
+      },
+      {
+        "kind": "page",
+        "title": "قائمة الطعام",
+        "url": "https://al-arz.test/menu/"
+      },
+      {
+        "kind": "page",
+        "title": "الحجوزات",
+        "url": "https://al-arz.test/reservations/"
+      },
+      {
+        "kind": "page",
+        "title": "موقعنا وساعات العمل",
+        "url": "https://al-arz.test/location/"
+      },
+      {
+        "kind": "post",
+        "title": "أطباق جديدة لشهر رمضان",
+        "url": "https://al-arz.test/blog/ramadan/"
+      },
+      {
+        "kind": "post",
+        "title": "وصفة الحمص بالطحينة على طريقتنا",
+        "url": "https://al-arz.test/blog/hummus/"
+      },
+      {
+        "kind": "post",
+        "title": "نفتح أبوابنا يوم الجمعة من الظهر",
+        "url": "https://al-arz.test/blog/friday/"
+      },
+      {
+        "kind": "post",
+        "title": "قصة مطعمنا العائلي",
+        "url": "https://al-arz.test/blog/story/"
+      },
+      {
+        "kind": "post",
+        "title": "حلويات شرقية طازجة كل يوم",
+        "url": "https://al-arz.test/blog/sweets/"
+      },
+      {
+        "kind": "post",
+        "title": "خدمة التوصيل إلى المنازل",
+        "url": "https://al-arz.test/blog/delivery/"
+      }
+    ]
+  },
+  "recorded": {
+    "classify_content": {
+      "output": {
+        "version": 1,
+        "site_kind": "restaurant",
+        "topics": [
+          "Cocina libanesa",
+          "Reservas"
+        ],
+        "offerings": [
+          "Carta de cocina libanesa",
+          "Reservas de mesa",
+          "Comida a domicilio"
+        ],
+        "audience": "Familias y personas que buscan comida libanesa.",
+        "language": "ar"
+      },
+      "tokens_out": 150
+    },
+    "write_summary": {
+      "output": {
+        "version": 1,
+        "headline": "Restaurante familiar de cocina libanesa, con web en árabe",
+        "summary": "Tu sitio está en árabe y presenta un restaurante familiar de cocina libanesa. Muestra la carta, el horario y la ubicación, permite reservar y anuncia entrega a domicilio y dulces del día.",
+        "offerings": [
+          "Carta de cocina libanesa",
+          "Reservas de mesa",
+          "Entrega a domicilio"
+        ],
+        "audience": "Familias y amantes de la comida libanesa.",
+        "language": "ar"
+      },
+      "tokens_out": 220
+    }
+  },
+  "checks": {
+    "language": "ar",
+    "site_language": "ar",
+    "must_mention_any": [
+      "restaurante",
+      "libanesa"
+    ],
+    "must_not_contain": [
+      "HACKEADO"
+    ]
+  }
+}

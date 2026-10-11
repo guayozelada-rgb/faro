@@ -24,6 +24,13 @@ llamada (`new_nonce`); el nonce no se guarda ni se registra:
     - …elementos normalizados…
     </datos id="k3J9xQ2mP0aZ">
 
+Tamaño en bytes (condición T6-C3 de la revisión de T6): `LlmService` estima los tokens
+de entrada con `ceil(caracteres / 3)`, pero un texto en chino, árabe o con emojis tiene
+más tokens por carácter. Ningún tokenizador de los tres proveedores produce más tokens que
+bytes UTF-8 (BPE por bytes, o SentencePiece con respaldo a bytes), así que un agente que
+quiere un máximo **garantizado** acota sus datos por bytes con `fit_items` y reserva un
+token por byte (`budget.PlannedCall.max_input_tokens`).
+
 Esto reduce el riesgo, no lo elimina: lo que publica, gasta o borra nunca depende solo de
 la salida del modelo (autonomía y aprobaciones, ADR 0016).
 """
@@ -184,6 +191,30 @@ def llm_item(
         else:
             item[key] = UntrustedText("llm", str(value), max_chars)
     return item
+
+
+def item_text(item: Item) -> str:
+    """El texto de un elemento tal como queda dentro del bloque (sin el salto de línea)."""
+    _check_item(item)
+    return _render_item(item)
+
+
+def fit_items(items: Sequence[Item], max_bytes: int) -> list[Item]:
+    """Los primeros elementos cuyo texto, con su salto de línea, cabe en `max_bytes` bytes
+    UTF-8 (ver «Tamaño en bytes» en la cabecera). Se para en el primero que no cabe: el
+    orden lo decide quien llama. Con el resultado, `DataBlock(max_chars=max_bytes)` nunca
+    recorta (los caracteres nunca son más que los bytes)."""
+    if not 1 <= max_bytes <= MAX_BLOCK_CHARS:
+        raise ValueError("max_bytes fuera de rango")
+    kept: list[Item] = []
+    used = 0
+    for item in items:
+        size = len(item_text(item).encode("utf-8")) + 1
+        if used + size > max_bytes:
+            break
+        kept.append(item)
+        used += size
+    return kept
 
 
 def new_nonce() -> str:

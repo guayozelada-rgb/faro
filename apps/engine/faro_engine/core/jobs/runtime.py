@@ -45,7 +45,7 @@ from faro_engine.core.jobs.activity import ActivityEmitter
 from faro_engine.core.jobs.control import AgentsControlState
 from faro_engine.core.jobs.queue import RunQueue
 from faro_engine.core.jobs.recovery import expire_approvals, recover
-from faro_engine.core.jobs.runner import AgentCatalog
+from faro_engine.core.jobs.runner import AgentCatalog, AgentServices
 from faro_engine.core.jobs.scheduler import Scheduler, Timer, apscheduler_timer, system_timezone
 from faro_engine.core.jobs.worker import GrantSource, Worker
 from faro_engine.llm.service import LlmService
@@ -87,6 +87,7 @@ class JobSystem:
         stop_wait: float = STOP_WAIT_SECONDS,
         cancel_wait: float = CANCEL_WAIT_SECONDS,
         objectives: tuple[Objective, ...] = (),
+        services: AgentServices | None = None,
     ) -> None:
         self.database = database
         self.control = control
@@ -114,6 +115,7 @@ class JobSystem:
             agents=agents,
             clock=clock,
             sleep=sleep,
+            services=services,
         )
         self._sleep = sleep
         self._catch_up_delay = catch_up_delay

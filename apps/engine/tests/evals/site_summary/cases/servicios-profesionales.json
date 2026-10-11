@@ -1,0 +1,123 @@
+{
+  "id": "servicios-profesionales",
+  "description": "Gestoría inventada: 7 páginas de servicios y 4 entradas, sin tienda.",
+  "agent": "site_summary",
+  "prompts": {
+    "classify_content": 1,
+    "write_summary": 1
+  },
+  "input": {
+    "site_name": "Gestoría Norte",
+    "woocommerce": false,
+    "counts": {
+      "page": 7,
+      "post": 4,
+      "product": 0
+    },
+    "items": [
+      {
+        "kind": "page",
+        "title": "Inicio",
+        "url": "https://gestoria-norte.test/"
+      },
+      {
+        "kind": "page",
+        "title": "Servicios",
+        "url": "https://gestoria-norte.test/servicios/"
+      },
+      {
+        "kind": "page",
+        "title": "Asesoría fiscal para autónomos",
+        "url": "https://gestoria-norte.test/servicios/fiscal/"
+      },
+      {
+        "kind": "page",
+        "title": "Contabilidad para pymes",
+        "url": "https://gestoria-norte.test/servicios/contabilidad/"
+      },
+      {
+        "kind": "page",
+        "title": "Nóminas y seguros sociales",
+        "url": "https://gestoria-norte.test/servicios/nominas/"
+      },
+      {
+        "kind": "page",
+        "title": "Equipo",
+        "url": "https://gestoria-norte.test/equipo/"
+      },
+      {
+        "kind": "page",
+        "title": "Contacto",
+        "url": "https://gestoria-norte.test/contacto/"
+      },
+      {
+        "kind": "post",
+        "title": "Calendario fiscal del trimestre",
+        "url": "https://gestoria-norte.test/blog/calendario-fiscal/"
+      },
+      {
+        "kind": "post",
+        "title": "Qué gastos puede deducir un autónomo",
+        "url": "https://gestoria-norte.test/blog/gastos-deducibles/"
+      },
+      {
+        "kind": "post",
+        "title": "Cambios en la factura electrónica",
+        "url": "https://gestoria-norte.test/blog/factura-electronica/"
+      },
+      {
+        "kind": "post",
+        "title": "Cómo preparar la declaración de la renta",
+        "url": "https://gestoria-norte.test/blog/declaracion-renta/"
+      }
+    ]
+  },
+  "recorded": {
+    "classify_content": {
+      "output": {
+        "version": 1,
+        "site_kind": "services",
+        "topics": [
+          "Asesoría fiscal",
+          "Contabilidad",
+          "Nóminas"
+        ],
+        "offerings": [
+          "Asesoría fiscal para autónomos",
+          "Contabilidad para pymes",
+          "Gestión de nóminas"
+        ],
+        "audience": "Autónomos y pequeñas empresas que necesitan una gestoría.",
+        "language": "es"
+      },
+      "tokens_out": 150
+    },
+    "write_summary": {
+      "output": {
+        "version": 1,
+        "headline": "Gestoría para autónomos y pequeñas empresas",
+        "summary": "Tu sitio presenta una gestoría que ofrece asesoría fiscal, contabilidad y nóminas. Explica cada servicio, presenta al equipo y tiene un blog con consejos sobre impuestos y facturación.",
+        "offerings": [
+          "Asesoría fiscal para autónomos",
+          "Contabilidad para pymes",
+          "Nóminas y seguros sociales"
+        ],
+        "audience": "Autónomos y pequeñas empresas.",
+        "language": "es"
+      },
+      "tokens_out": 220
+    }
+  },
+  "checks": {
+    "language": "es",
+    "site_language": "es",
+    "must_mention_any": [
+      "gestoría",
+      "asesoría",
+      "fiscal"
+    ],
+    "must_not_contain": [
+      "HACKEADO"
+    ]
+  }
+}

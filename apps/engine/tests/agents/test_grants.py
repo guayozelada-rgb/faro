@@ -161,10 +161,23 @@ def test_error_messages_name_the_agent() -> None:
         canonical_agent_grants([{"requires_site": True, "max_grant_seconds": 900, "secrets": []}])
 
 
-def test_registry_is_empty_in_t3() -> None:
-    # T9 registra `site_summary`; hasta entonces el núcleo no concede nada a ningún agente.
-    assert registry.AGENT_GRANTS == ()
-    assert registry.agent_grants_table() == []
+def test_registry_has_only_site_summary_since_t9() -> None:
+    # T9 registra `site_summary` con exactamente sus cuatro referencias, solo `get` (spec
+    # F1b §9.5). Cambiar esta tabla requiere revisor-seguridad.
+    assert [grant.kind for grant in registry.AGENT_GRANTS] == ["site_summary"]
+    assert registry.agent_grants_table() == [
+        {
+            "kind": "site_summary",
+            "max_grant_seconds": 900,
+            "requires_site": True,
+            "secrets": [
+                {"access": ["get"], "ref": "llm/anthropic/default"},
+                {"access": ["get"], "ref": "llm/gemini/default"},
+                {"access": ["get"], "ref": "llm/openai/default"},
+                {"access": ["get"], "ref": "wp/{site_id}/token"},
+            ],
+        }
+    ]
 
 
 def test_registry_rejects_invalid_specs() -> None:

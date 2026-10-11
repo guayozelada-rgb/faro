@@ -85,6 +85,39 @@ async def test_transicion_condicional_y_resultado(world: JobWorld) -> None:
         await queue(world).transition(R1, from_status="succeeded", to_status="queued")
 
 
+async def test_al_fallar_se_cierran_sus_propuestas_abiertas(world: JobWorld) -> None:
+    """Condición T8-C1 de la revisión de T8: en la misma transacción que pasa la tarea a
+    `failed`, sus propuestas `pending` y `approved` sin ejecutar pasan a `cancelled`; las ya
+    ejecutadas no se tocan, y tampoco las de otras tareas."""
+    await world.add_run(R1)
+    await world.add_run(R2, site_id=REVOKED_SITE)
+    add_approval(world.database, run_id(70), R1)
+    add_approval(world.database, run_id(71), R1, status="approved")
+    add_approval(world.database, run_id(72), R1, status="approved")
+    add_approval(world.database, run_id(73), R2)
+    world.database.run_sync(
+        lambda c: c.execute(
+            "UPDATE approvals SET status = 'executed', executed_at = ? WHERE id = ?",
+            ("2026-10-09T15:00:00Z", run_id(72)),
+        )
+    )
+    after = await queue(world).transition(
+        R1, from_status="queued", to_status="failed", error_code="llm.no_key"
+    )
+    assert after is not None
+    rows = world.query("SELECT id, status FROM approvals ORDER BY id")
+    assert rows == [
+        (run_id(70), "cancelled"),
+        (run_id(71), "cancelled"),
+        (run_id(72), "executed"),
+        (run_id(73), "pending"),
+    ]
+    # Otros estados finales no cierran nada por esta vía.
+    await queue(world).claim(R2)
+    await queue(world).transition(R2, from_status="running", to_status="succeeded")
+    assert world.query("SELECT status FROM approvals WHERE id = ?", (run_id(73),)) == [("pending",)]
+
+
 def test_result_of_sin_resultado_o_no_objeto(world: JobWorld) -> None:
     record: Any = type("R", (), {"result": None})()
     assert result_of(record) is None

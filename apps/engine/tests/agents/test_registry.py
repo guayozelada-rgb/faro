@@ -1,6 +1,6 @@
 """Registro de agentes (spec F1b §4.2, ADR 0014 §1): `AgentSpec` cumple el contrato del
-trabajador, `validate_registry` rechaza lo que no cumple y producción sigue vacío en T8
-(`agent-grants.json` = `[]`)."""
+trabajador, `validate_registry` rechaza lo que no cumple (también la forma del grafo,
+condición T8-C2) y en producción solo está `site_summary` (T9)."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from faro_engine.agents.grants import AgentGrantError
 from faro_engine.core.jobs.runner import AgentAction, EstimateInput
 from faro_engine.core.operations import SecretGrant
 from faro_engine.llm.catalog import default_catalog
+from faro_engine.llm.fake import FakeReply
 from tests.conftest import ENGINE_DIR
 from tests.fakes.graph_agent import SAVE_ACTION, FakeNotes, make_spec
 
@@ -29,11 +30,14 @@ class Loose(AgentState):
     model_config = ConfigDict(extra="ignore")
 
 
-def test_produccion_vacia_en_t8() -> None:
-    assert registry.AGENT_SPECS == ()
-    assert registry.AGENT_GRANTS == ()
-    assert registry.agent_grants_table() == []
-    assert registry.agent_catalog().all() == []
+def test_en_produccion_solo_site_summary() -> None:
+    assert [spec.kind for spec in registry.AGENT_SPECS] == ["site_summary"]
+    assert [grant.kind for grant in registry.AGENT_GRANTS] == ["site_summary"]
+    assert [agent.kind for agent in registry.agent_catalog().all()] == ["site_summary"]
+    assert set(registry.dev_fake_replies()) == {
+        "site_summary.classify_content",
+        "site_summary.write_summary",
+    }
 
 
 def test_agent_spec_cumple_el_contrato_del_trabajador() -> None:
@@ -136,3 +140,22 @@ def test_construir_la_app_no_importa_langgraph() -> None:
 async def test_el_marco_se_carga_en_un_hilo() -> None:
     module = await registry.load_graph_module()
     assert module.__name__ == registry.GRAPH_MODULE
+
+
+def test_respuestas_de_desarrollo_sin_repetir() -> None:
+    spec = make_spec(FakeNotes(), dev_replies={"test_graph.write": FakeReply(text="x")})
+    other = replace(spec, kind="otro_agente", objectives=("otro.run",), action_specs=())
+    assert set(registry.dev_fake_replies([spec])) == {"test_graph.write"}
+    with pytest.raises(ValueError, match="repetida"):
+        registry.dev_fake_replies([spec, other])
+
+
+def test_el_modo_fake_llm_responde_por_el_agente(settings: Any) -> None:
+    from faro_engine.core.app import create_app
+
+    app = create_app(replace(settings, fake_llm=True))
+    client = app.state.llm.client
+    assert set(client.responses) >= {
+        "site_summary.classify_content",
+        "site_summary.write_summary",
+    }

@@ -1,0 +1,107 @@
+{
+  "id": "restaurante",
+  "description": "Restaurante inventado de cocina casera: 5 páginas y 3 entradas, sin tienda.",
+  "agent": "site_summary",
+  "prompts": {
+    "classify_content": 1,
+    "write_summary": 1
+  },
+  "input": {
+    "site_name": "Casa Lola",
+    "woocommerce": false,
+    "counts": {
+      "page": 5,
+      "post": 3,
+      "product": 0
+    },
+    "items": [
+      {
+        "kind": "page",
+        "title": "Inicio",
+        "url": "https://casa-lola.test/"
+      },
+      {
+        "kind": "page",
+        "title": "Carta",
+        "url": "https://casa-lola.test/carta/"
+      },
+      {
+        "kind": "page",
+        "title": "Menú del día",
+        "url": "https://casa-lola.test/menu-del-dia/"
+      },
+      {
+        "kind": "page",
+        "title": "Reservas",
+        "url": "https://casa-lola.test/reservas/"
+      },
+      {
+        "kind": "page",
+        "title": "Cómo llegar",
+        "url": "https://casa-lola.test/como-llegar/"
+      },
+      {
+        "kind": "post",
+        "title": "Llega el menú de otoño con setas de temporada",
+        "url": "https://casa-lola.test/blog/menu-de-otono/"
+      },
+      {
+        "kind": "post",
+        "title": "Abrimos también los domingos al mediodía",
+        "url": "https://casa-lola.test/blog/domingos/"
+      },
+      {
+        "kind": "post",
+        "title": "Nuestra receta de tortilla de patatas",
+        "url": "https://casa-lola.test/blog/receta-tortilla/"
+      }
+    ]
+  },
+  "recorded": {
+    "classify_content": {
+      "output": {
+        "version": 1,
+        "site_kind": "restaurant",
+        "topics": [
+          "Cocina casera",
+          "Menú del día",
+          "Reservas"
+        ],
+        "offerings": [
+          "Menú del día",
+          "Carta de cocina casera",
+          "Reservas de mesa"
+        ],
+        "audience": "Personas que buscan dónde comer cocina casera en su zona.",
+        "language": "es"
+      },
+      "tokens_out": 140
+    },
+    "write_summary": {
+      "output": {
+        "version": 1,
+        "headline": "Restaurante de cocina casera con menú del día",
+        "summary": "Tu sitio presenta un restaurante de cocina casera. Muestra la carta, el menú del día y cómo llegar, y permite hacer reservas. En el blog cuentas novedades como el menú de otoño.",
+        "offerings": [
+          "Menú del día",
+          "Carta de cocina casera",
+          "Reservas de mesa"
+        ],
+        "audience": "Vecinos y visitantes que buscan comer cocina casera.",
+        "language": "es"
+      },
+      "tokens_out": 210
+    }
+  },
+  "checks": {
+    "language": "es",
+    "site_language": "es",
+    "must_mention_any": [
+      "restaurante",
+      "cocina"
+    ],
+    "must_not_contain": [
+      "HACKEADO"
+    ]
+  }
+}

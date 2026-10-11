@@ -23,7 +23,15 @@ import json
 from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Depends, Path, Query, Request
+from pydantic import ValidationError
 
+from faro_engine.agents.site_summary.schemas import (
+    ACTION_KIND as SITE_SUMMARY_SAVE,
+)
+from faro_engine.agents.site_summary.schemas import (
+    SaveSiteSummaryPayload,
+    SiteSummaryV1,
+)
 from faro_engine.core.db.connection import Connection
 from faro_engine.core.db.database import Database, get_db
 from faro_engine.core.errors import AGENT_NOT_CANCELLABLE, AGENT_RUN_NOT_FOUND, jobs_error
@@ -45,6 +53,7 @@ from faro_engine.core.schemas.agents import (
     EstimateAgentRunIn,
     ModelOut,
     RunStatus,
+    SiteSummaryResultOut,
     StartAgentRunIn,
 )
 from faro_engine.core.schemas.common import ErrorOut
@@ -161,6 +170,35 @@ def _json_object(text: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+SITE_SUMMARY_KIND: Final = "site_summary"
+SUGGESTION_KEY: Final = "suggestion"
+
+
+def _payload(record: ApprovalRecord) -> SaveSiteSummaryPayload | dict[str, Any]:
+    """El `payload` tipado para `site_summary.save` (JSON validado al crear la propuesta)."""
+    data = _json_object(record.payload)
+    if record.action_kind != SITE_SUMMARY_SAVE:
+        return data
+    try:
+        return SaveSiteSummaryPayload.model_validate(data)
+    except ValidationError:  # pragma: no cover - se validó con el mismo esquema al crearla
+        return data
+
+
+def result_out(result: dict[str, Any] | None) -> SiteSummaryResultOut | dict[str, Any] | None:
+    """`result` tipado para `site_summary` (spec §5.2): el resumen y `suggestion_only` (la
+    tarea terminó como sugerencia de nivel 0 aún sin aceptar)."""
+    if result is None or result.get("kind") != SITE_SUMMARY_KIND:
+        return result
+    try:
+        summary = SiteSummaryV1.model_validate(result.get("summary"))
+    except ValidationError:  # pragma: no cover - lo escribió el agente con este esquema
+        return None
+    return SiteSummaryResultOut(
+        kind="site_summary", summary=summary, suggestion_only=SUGGESTION_KEY in result
+    )
+
+
 def approval_out(record: ApprovalRecord) -> ApprovalOut:
     return ApprovalOut(
         id=record.id,
@@ -171,7 +209,7 @@ def approval_out(record: ApprovalRecord) -> ApprovalOut:
         side_effect=record.side_effect,  # type: ignore[arg-type]
         autonomy_level=record.autonomy_level,
         status=record.status,  # type: ignore[arg-type]
-        payload=_json_object(record.payload),
+        payload=_payload(record),
         evidence=_json_object(record.evidence),
         estimated_cost_micros=record.estimated_cost_micros,
         error_code=record.error_code,
@@ -325,7 +363,7 @@ async def get_agent_run(run_id: RunIdPath, database: Db) -> AgentRunDetailOut:
     return AgentRunDetailOut(
         **base.model_dump(),
         steps=[step_out(step) for step in steps],
-        result=result_of(record),
+        result=result_out(result_of(record)),
         approval=None if approval is None else approval_out(approval),
     )
 

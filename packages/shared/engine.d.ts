@@ -383,6 +383,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sites/{site_id}/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Resumen del sitio guardado (hecho por IA) */
+        get: operations["getSiteSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -465,9 +482,9 @@ export interface components {
             provider: ("anthropic" | "openai" | "gemini") | null;
             /**
              * Result
-             * @description Resultado del agente (JSON validado; T9 lo tipa para `site_summary`).
+             * @description Resultado del agente (JSON validado; tipado para `site_summary`).
              */
-            result: {
+            result: components["schemas"]["SiteSummaryResultOut"] | {
                 [key: string]: unknown;
             } | null;
             /** Site Id */
@@ -651,9 +668,9 @@ export interface components {
             id: string;
             /**
              * Payload
-             * @description JSON validado de la acción (T9 lo tipa).
+             * @description JSON validado de la acción: `site_summary.save` lleva el resumen propuesto.
              */
-            payload: {
+            payload: components["schemas"]["SaveSiteSummaryPayload"] | {
                 [key: string]: unknown;
             };
             /** Run Id */
@@ -980,6 +997,19 @@ export interface components {
              */
             remote_revoked: boolean;
         };
+        /**
+         * SaveSiteSummaryPayload
+         * @description `payload` de `site_summary.save`: el resumen que se guardará (y su vista previa).
+         */
+        SaveSiteSummaryPayload: {
+            /**
+             * Kind
+             * @default site_summary.save
+             * @constant
+             */
+            kind: "site_summary.save";
+            summary: components["schemas"]["SiteSummaryV1"];
+        };
         /** ScheduleListOut */
         ScheduleListOut: {
             /** Items */
@@ -1147,6 +1177,56 @@ export interface components {
              * @example https://tutienda.com
              */
             url: string;
+        };
+        /**
+         * SiteSummaryOut
+         * @description Resumen guardado de un sitio (`getSiteSummary`); `summary = null` si no hay ninguno.
+         */
+        SiteSummaryOut: {
+            /** Created At */
+            created_at: string | null;
+            /** Run Id */
+            run_id: string | null;
+            /** Site Id */
+            site_id: string;
+            summary: components["schemas"]["SiteSummaryV1"] | null;
+        };
+        /**
+         * SiteSummaryResultOut
+         * @description Resultado de `site_summary`: el resumen (hecho por IA, se muestra como texto) y si la
+         *     tarea terminó como sugerencia sin aceptar (nivel 0).
+         */
+        SiteSummaryResultOut: {
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "site_summary";
+            /** Suggestion Only */
+            suggestion_only: boolean;
+            summary: components["schemas"]["SiteSummaryV1"];
+        };
+        /**
+         * SiteSummaryV1
+         * @description Resumen del sitio para su dueño (salida de `write_summary`, se guarda tal cual).
+         */
+        SiteSummaryV1: {
+            /** Audience */
+            audience: string;
+            /** Headline */
+            headline: string;
+            /** Language */
+            language: string;
+            /** Offerings */
+            offerings: string[];
+            /** Summary */
+            summary: string;
+            /**
+             * Version
+             * @default 1
+             * @constant
+             */
+            version: 1;
         };
         /** StartAgentRunIn */
         StartAgentRunIn: {
@@ -3187,6 +3267,74 @@ export interface operations {
             };
             /** @description `site.timeout`. */
             504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    getSiteSummary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description UUID del sitio en minúsculas. */
+                site_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SiteSummaryOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `site.not_found`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Base de datos o llavero no disponibles. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

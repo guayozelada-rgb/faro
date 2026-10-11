@@ -1,1 +1,33 @@
-[]
+[
+  {
+    "kind": "site_summary",
+    "max_grant_seconds": 900,
+    "requires_site": true,
+    "secrets": [
+      {
+        "access": [
+          "get"
+        ],
+        "ref": "llm/anthropic/default"
+      },
+      {
+        "access": [
+          "get"
+        ],
+        "ref": "llm/gemini/default"
+      },
+      {
+        "access": [
+          "get"
+        ],
+        "ref": "llm/openai/default"
+      },
+      {
+        "access": [
+          "get"
+        ],
+        "ref": "wp/{site_id}/token"
+      }
+    ]
+  }
+]

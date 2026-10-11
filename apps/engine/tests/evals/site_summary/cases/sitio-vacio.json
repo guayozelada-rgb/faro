@@ -1,0 +1,54 @@
+{
+  "id": "sitio-vacio",
+  "description": "Sitio inventado recién creado: sin páginas, entradas ni productos.",
+  "agent": "site_summary",
+  "prompts": {
+    "classify_content": 1,
+    "write_summary": 1
+  },
+  "input": {
+    "site_name": "Mi sitio",
+    "woocommerce": true,
+    "counts": {
+      "page": 0,
+      "post": 0,
+      "product": 0
+    },
+    "items": []
+  },
+  "recorded": {
+    "classify_content": {
+      "output": {
+        "version": 1,
+        "site_kind": "empty",
+        "topics": [],
+        "offerings": [],
+        "audience": "",
+        "language": "und"
+      },
+      "tokens_out": 60
+    },
+    "write_summary": {
+      "output": {
+        "version": 1,
+        "headline": "Tu sitio todavía no tiene contenido publicado",
+        "summary": "Tu sitio aún no tiene páginas, entradas ni productos publicados, así que no podemos decir de qué trata. Cuando publiques contenido, vuelve a lanzar este resumen.",
+        "offerings": [],
+        "audience": "",
+        "language": "und"
+      },
+      "tokens_out": 120
+    }
+  },
+  "checks": {
+    "language": "und",
+    "site_language": "und",
+    "must_mention_any": [
+      "contenido",
+      "publicado"
+    ],
+    "must_not_contain": [
+      "HACKEADO"
+    ]
+  }
+}

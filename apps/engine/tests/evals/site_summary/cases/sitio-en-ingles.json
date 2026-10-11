@@ -1,0 +1,129 @@
+{
+  "id": "sitio-en-ingles",
+  "description": "Tienda inventada de café en inglés: 3 páginas, 2 entradas y 8 productos.",
+  "agent": "site_summary",
+  "prompts": {
+    "classify_content": 1,
+    "write_summary": 1
+  },
+  "input": {
+    "site_name": "Northside Coffee Roasters",
+    "woocommerce": true,
+    "counts": {
+      "page": 3,
+      "post": 2,
+      "product": 8
+    },
+    "items": [
+      {
+        "kind": "page",
+        "title": "Home",
+        "url": "https://northside-coffee.test/"
+      },
+      {
+        "kind": "page",
+        "title": "About us",
+        "url": "https://northside-coffee.test/about/"
+      },
+      {
+        "kind": "page",
+        "title": "Shipping",
+        "url": "https://northside-coffee.test/shipping/"
+      },
+      {
+        "kind": "post",
+        "title": "How to brew pour-over coffee at home",
+        "url": "https://northside-coffee.test/blog/pour-over/"
+      },
+      {
+        "kind": "post",
+        "title": "Single origin vs blend: what is the difference",
+        "url": "https://northside-coffee.test/blog/origin-vs-blend/"
+      },
+      {
+        "kind": "product",
+        "title": "Ethiopia Yirgacheffe whole beans 250 g",
+        "url": "https://northside-coffee.test/shop/ethiopia-yirgacheffe-whole/"
+      },
+      {
+        "kind": "product",
+        "title": "Colombia Huila ground coffee 500 g",
+        "url": "https://northside-coffee.test/shop/colombia-huila-ground/"
+      },
+      {
+        "kind": "product",
+        "title": "Decaf house blend 1 kg",
+        "url": "https://northside-coffee.test/shop/decaf-house-blend/"
+      },
+      {
+        "kind": "product",
+        "title": "Ceramic pour-over dripper",
+        "url": "https://northside-coffee.test/shop/ceramic-pour-over-dripper/"
+      },
+      {
+        "kind": "product",
+        "title": "Paper filters (100 pack)",
+        "url": "https://northside-coffee.test/shop/paper-filters-(100/"
+      },
+      {
+        "kind": "product",
+        "title": "Manual burr grinder",
+        "url": "https://northside-coffee.test/shop/manual-burr-grinder/"
+      },
+      {
+        "kind": "product",
+        "title": "Glass carafe 600 ml",
+        "url": "https://northside-coffee.test/shop/glass-carafe-600/"
+      },
+      {
+        "kind": "product",
+        "title": "Gift card",
+        "url": "https://northside-coffee.test/shop/gift-card/"
+      }
+    ]
+  },
+  "recorded": {
+    "classify_content": {
+      "output": {
+        "version": 1,
+        "site_kind": "store",
+        "topics": [
+          "Café de especialidad",
+          "Métodos de preparación"
+        ],
+        "offerings": [
+          "Café en grano y molido",
+          "Cafeteras de filtro",
+          "Molinillos y accesorios"
+        ],
+        "audience": "Personas que preparan café de especialidad en casa.",
+        "language": "en"
+      },
+      "tokens_out": 160
+    },
+    "write_summary": {
+      "output": {
+        "version": 1,
+        "headline": "Tienda en inglés de café de especialidad y accesorios",
+        "summary": "Tu sitio está en inglés y vende café de especialidad en grano y molido, además de cafeteras de filtro, molinillos y filtros. Tiene un blog con guías para preparar café en casa.",
+        "offerings": [
+          "Café de especialidad en grano y molido",
+          "Cafeteras de filtro y molinillos"
+        ],
+        "audience": "Amantes del café que lo preparan en casa.",
+        "language": "en"
+      },
+      "tokens_out": 230
+    }
+  },
+  "checks": {
+    "language": "en",
+    "site_language": "en",
+    "must_mention_any": [
+      "café"
+    ],
+    "must_not_contain": [
+      "HACKEADO"
+    ]
+  }
+}

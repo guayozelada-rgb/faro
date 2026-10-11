@@ -10,7 +10,8 @@ pasos, se emite actividad de pasos y se comprueban la pausa y la cancelación:
   `agent_steps` (`running`, `seq` siguiente, `idempotency_key` = UUID v7 nuevo), actualiza
   `agent_runs.current_step` y emite `step_started`.
 - **Durante**: el nodo recibe un `StepHandle` (lo usan `LlmService`, la autonomía y las
-  propuestas) y un `ToolRunner` con el contador de herramientas del estado.
+  propuestas) y un `ToolRunner` con el contador de herramientas del estado (desactivado en
+  los nodos `approval`: condición T8-C2).
 - **Después**: cierra el paso `succeeded` (tokens y costo los sumó `LlmService`), guarda el
   contador de herramientas en el estado y emite `step_finished` con `step_cost_micros` y
   los acumulados de la tarea.
@@ -160,7 +161,8 @@ class StepRecorder:
         # entrada del nodo; el estado del grafo ya lo fija `StateGraph(<estado>)`.
         async def run(state: Any) -> dict[str, Any]:
             handle = await self.start(ctx, node, kind)
-            tools = ToolRunner(counts=dict(state.tool_calls))
+            # El nodo que propone no ejecuta herramientas (condición T8-C2).
+            tools = ToolRunner(counts=dict(state.tool_calls), enabled=kind != "approval")
             try:
                 update = dict(await fn(state, context(handle, tools)))
             except GraphBubbleUp:

@@ -8,6 +8,10 @@
 | POST | `/sites/{site_id}/check` | `checkSiteConnection` | 45 s | `wp/{site_id}/token`: get |
 | GET | `/sites/{site_id}/content` | `listSiteContent` | 45 s | `wp/{site_id}/token`: get |
 | DELETE | `/sites/{site_id}` | `removeSite` | 45 s | `wp/{site_id}/token`: get, delete |
+| GET | `/sites/{site_id}/summary` | `getSiteSummary` | 10 s | — |
+
+`getSiteSummary` (spec F1b §5.2) devuelve el resumen guardado por el agente `site_summary`
+(hecho por IA; la interfaz lo muestra como texto). Solo lee la base: no pide secretos.
 
 Las concesiones las aplica el núcleo desde `engine-operations.json` (ADR 0010 §3) y las
 comprueba una prueba del núcleo: cualquier cambio aquí lo revisa `revisor-seguridad`. El
@@ -20,10 +24,12 @@ from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Depends, Path, Query, Request
 
+from faro_engine.agents.site_summary.saved import saved_summary
 from faro_engine.core.audit import AuditLog, get_audit
 from faro_engine.core.config import Settings
 from faro_engine.core.db.database import Database, get_db
 from faro_engine.core.operations import SecretAccess, SecretGrant, faro_operation
+from faro_engine.core.schemas.agents import SiteSummaryOut
 from faro_engine.core.schemas.common import ErrorOut
 from faro_engine.core.schemas.sites import (
     ConnectSiteIn,
@@ -181,6 +187,26 @@ async def list_site_content(
     page = int(cursor) if cursor is not None else 1
     service = _service(context, SITE_TIMEOUT)
     return await service.list_content(site_id, kind, page, limit)
+
+
+@router.get(
+    "/sites/{site_id}/summary",
+    operation_id="getSiteSummary",
+    response_model=SiteSummaryOut,
+    summary="Resumen del sitio guardado (hecho por IA)",
+    responses={**_ERRORS, 404: {"model": ErrorOut, "description": "`site.not_found`."}},
+    openapi_extra=faro_operation(timeout_seconds=LIST_TIMEOUT, secrets=[]),
+)
+async def get_site_summary(
+    site_id: SiteId, database: Annotated[Database, Depends(get_db)]
+) -> SiteSummaryOut:
+    saved = await saved_summary(database, site_id)
+    return SiteSummaryOut(
+        site_id=saved.site_id,
+        summary=saved.summary,
+        run_id=saved.run_id,
+        created_at=saved.created_at,
+    )
 
 
 @router.delete(
