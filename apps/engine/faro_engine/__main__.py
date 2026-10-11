@@ -30,13 +30,27 @@ Protocolo (spec F0 §4.4, skill `tauri-sidecar-python`, ADR 0004):
 7. `{"event":"shutdown"}` o EOF en stdin → salida ordenada; 10 s máx., luego `os._exit`.
    Las solicitudes de secretos pendientes fallan con `vault.secret_timeout` y las de
    concesiones con `agent.grant_denied`; la auditoría pendiente se inserta antes de cerrar
-   la base.
+   la base. El sistema de tareas de los agentes (`core/jobs/runtime.py`) arranca justo
+   antes de servir y se para en el `finally` de `serve_with_jobs`: la tarea en curso para
+   en el siguiente límite o, si no llega en 5 s, se cancela y su llamada al LLM registra
+   su máximo antes de cerrar la base (condición T6-C1).
    Con `--dev` el EOF se ignora (no hay núcleo que supervise por stdin); se detiene con
    Ctrl+C / SIGINT / SIGTERM / CTRL_BREAK. En ambos modos esas señales salen con código 0.
 
 Códigos de salida: 0 = apagado normal, 1 = no se pudo abrir el socket, 2 = uso o token
 inválido, 3 = el bucle del servidor falló. Un problema con la base nunca cambia el código
 de salida (ADR 0009 §4).
+
+Directorio de trabajo (condición 14 del informe de T2): `python -m` pone el directorio de
+trabajo en `sys.path[0]`, y un módulo puesto ahí (o un `tiktoken_ext/*.py`, que tiktoken
+importa desde cualquier entrada de `sys.path`) se ejecutaría dentro del motor, que tiene
+claves en memoria. Por eso, antes de cualquier otro import, `sys.path[0]` sale si es el
+directorio de trabajo, y `run()` fija el directorio de trabajo en la carpeta del propio
+código del motor (`engine_workdir`: el paquete `faro_engine` o, empaquetado, la carpeta
+del ejecutable). Quien puede escribir ahí ya puede cambiar el código del motor, así que no
+abre ninguna vía nueva. `--data-dir` relativo se resuelve antes del cambio. Lo que corre
+antes de este código (la búsqueda de `faro_engine` por `runpy`) depende del directorio con
+el que lo lanza el núcleo: eso es del núcleo (T11).
 
 Antes de cualquier otro import se quitan del entorno (`TLS_ENV_REMOVED`):
 - `SSLKEYLOGFILE`: la biblioteca estándar la aplica en `ssl.create_default_context` y
@@ -56,12 +70,23 @@ TLS_ENV_REMOVED = ("SSLKEYLOGFILE", "SSL_CERT_FILE", "SSL_CERT_DIR")
 for _name in TLS_ENV_REMOVED:
     os.environ.pop(_name, None)
 
+import sys
+
+if __name__ == "__main__":
+    # `python -m faro_engine`: fuera el directorio de trabajo de `sys.path[0]` antes de
+    # importar nada más (condición 14 del informe de T2).
+    try:
+        _startup_cwd = os.getcwd()
+    except OSError:  # pragma: no cover - directorio de trabajo borrado
+        _startup_cwd = ""
+    if sys.path and sys.path[0] in {"", _startup_cwd}:
+        del sys.path[0]
+
 import argparse
 import asyncio
 import contextlib
 import signal
 import socket
-import sys
 import threading
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
@@ -93,6 +118,7 @@ from faro_engine.core.errors import DB_KEY_MISSING, DB_UNAVAILABLE
 from faro_engine.core.jobs.activity import ActivityEmitter
 from faro_engine.core.jobs.control import EVENT_AGENTS_CONTROL, AgentsControlState
 from faro_engine.core.jobs.grants import EVENT_RUN_GRANT_RESPONSE, RunGrantClient
+from faro_engine.core.jobs.runtime import JobSystem, serve_with_jobs
 from faro_engine.core.logging import configure_logging
 from faro_engine.core.secrets import SecretBroker
 from faro_engine.core.server import LimitedH11Protocol
@@ -162,10 +188,13 @@ class ShutdownController:
         *,
         grace: float = SHUTDOWN_GRACE_SECONDS,
         force_exit: Callable[[int], object] = os._exit,
+        on_exit: Callable[[], None] | None = None,
     ) -> None:
         self._server = server
         self._grace = grace
         self._force_exit = force_exit
+        # Avisa al sistema de tareas en el mismo momento (desde cualquier hilo).
+        self._on_exit = on_exit
         self._lock = threading.Lock()
         self._timer: threading.Timer | None = None
         self._finished = False
@@ -176,6 +205,8 @@ class ShutdownController:
                 return
             log.info("engine.shutdown_requested", reason=reason)
             self._server.should_exit = True
+            if self._on_exit is not None:
+                self._on_exit()
             self._timer = threading.Timer(self._grace, self._on_timeout)
             self._timer.daemon = True
             self._timer.start()
@@ -333,6 +364,24 @@ def serve_loop_factory() -> asyncio.AbstractEventLoop:
     return asyncio.SelectorEventLoop()
 
 
+def engine_workdir(frozen: bool) -> Path:
+    """Directorio de trabajo fijo: la carpeta del código del motor (condición 14)."""
+    if frozen:
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def pin_workdir(workdir: Path) -> bool:
+    """Cambia al directorio fijo. `False` si no se puede (el motor no arranca)."""
+    try:
+        os.chdir(workdir)
+    except OSError:
+        log.error("config.workdir_unavailable")
+        return False
+    log.info("engine.workdir_pinned")
+    return True
+
+
 def open_database(data_dir: Path | None, line: protocol.DbKeyLine) -> Database:
     """Base del perfil según la línea `db_key` (o su equivalente de `--dev`).
 
@@ -412,6 +461,7 @@ def run(
     token_timeout: float = TOKEN_TIMEOUT_SECONDS,
     db_key_timeout: float = DB_KEY_TIMEOUT_SECONDS,
     shutdown_grace: float = SHUTDOWN_GRACE_SECONDS,
+    workdir: Path | None = None,
 ) -> int:
     configure_logging()
     try:
@@ -430,6 +480,11 @@ def run(
     data_dir: Path | None = args.data_dir
     if data_dir is None and args.dev:
         data_dir = dev_data_dir()
+    if data_dir is not None:
+        # Antes de cambiar de directorio: un `--data-dir` relativo es del de arranque.
+        data_dir = data_dir.resolve()
+    if workdir is not None and not pin_workdir(workdir):
+        return EXIT_USAGE
     if data_dir is not None:
         try:
             data_dir.mkdir(parents=True, exist_ok=True)
@@ -487,17 +542,19 @@ def run(
     audit = AuditLog(database)
     audit_writer = AuditWriter(audit)
     audit_writer.start()
+    app = create_app(
+        settings,
+        database,
+        secrets=secrets,
+        audit=audit,
+        control=control,
+        grants=grants,
+        activity=activity,
+    )
+    jobs: JobSystem = app.state.jobs
     server = uvicorn.Server(
         uvicorn.Config(
-            create_app(
-                settings,
-                database,
-                secrets=secrets,
-                audit=audit,
-                control=control,
-                grants=grants,
-                activity=activity,
-            ),
+            app,
             log_config=None,
             access_log=False,
             server_header=False,
@@ -507,7 +564,7 @@ def run(
             ws="none",
         ),
     )
-    controller = ShutdownController(server, grace=shutdown_grace)
+    controller = ShutdownController(server, grace=shutdown_grace, on_exit=jobs.request_stop)
     # En `--dev` no hay núcleo que supervise por stdin: el EOF no apaga (ADR 0004).
     threading.Thread(
         target=watch_stdin,
@@ -529,7 +586,10 @@ def run(
     code = EXIT_OK
     try:
         with handle_stop_signals(controller):
-            asyncio.run(server.serve(sockets=[sock]), loop_factory=serve_loop_factory)
+            asyncio.run(
+                serve_with_jobs(lambda: server.serve(sockets=[sock]), jobs),
+                loop_factory=serve_loop_factory,
+            )
     except Exception as exc:  # noqa: BLE001 - JSON en stderr en vez de una traza suelta
         log.error("engine.loop_failed", error_type=type(exc).__name__, error=str(exc))
         code = EXIT_LOOP_FAILED
@@ -547,7 +607,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     protocol_out = sys.stdout
     sys.stdout = sys.stderr
     try:
-        return run(argv, out=protocol_out.buffer)
+        frozen = bool(getattr(sys, "frozen", False))
+        return run(argv, out=protocol_out.buffer, workdir=engine_workdir(frozen))
     finally:
         sys.stdout = protocol_out
 

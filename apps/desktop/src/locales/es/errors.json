@@ -76,7 +76,14 @@
   },
   "agent": {
     "grant_denied": "El agente no obtuvo permiso para usar tus claves. Reinicia Faro e intenta de nuevo.",
-    "budget_exhausted": "La tarea llegó a su límite de gasto y se detuvo. No se gastó nada más."
+    "budget_exhausted": "La tarea llegó a su límite de gasto y se detuvo. No se gastó nada más.",
+    "unknown": "Ese agente no existe en esta versión de Faro.",
+    "site_required": "Elige un sitio conectado para este agente.",
+    "site_not_active": "Ese sitio está desconectado. Vuelve a conectarlo para que el agente pueda leerlo.",
+    "already_queued": "Este agente ya está trabajando en ese sitio. Espera a que termine.",
+    "estimate_changed": "El costo cambió. Revísalo y vuelve a lanzar.",
+    "run_not_found": "No encontramos esa tarea.",
+    "not_cancellable": "Esta tarea ya terminó."
   },
   "llm": {
     "no_key": "Agrega una clave de IA en Configuración para que los agentes puedan trabajar.",
@@ -91,5 +98,10 @@
     "bad_output": "La IA respondió algo que no pudimos usar. Intenta de nuevo.",
     "invalid_limit": "El límite debe estar entre US$0,50 y US$500 por día.",
     "invalid_provider": "Ese proveedor de IA no está disponible en Faro."
+  },
+  "schedule": {
+    "invalid": "Revisa la frecuencia y la hora.",
+    "duplicate": "Ya hay una programación de este agente para ese sitio.",
+    "not_found": "Esa programación ya no existe."
   }
 }

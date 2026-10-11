@@ -1,6 +1,895 @@
 {
   "components": {
     "schemas": {
+      "AcknowledgeNoticesIn": {
+        "additionalProperties": false,
+        "properties": {
+          "run_ids": {
+            "items": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Run Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_ids"
+        ],
+        "title": "AcknowledgeNoticesIn",
+        "type": "object"
+      },
+      "AcknowledgeNoticesOut": {
+        "additionalProperties": false,
+        "properties": {
+          "acknowledged": {
+            "minimum": 0,
+            "title": "Acknowledged",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "acknowledged"
+        ],
+        "title": "AcknowledgeNoticesOut",
+        "type": "object"
+      },
+      "AgentActionOut": {
+        "additionalProperties": false,
+        "properties": {
+          "action_kind": {
+            "title": "Action Kind",
+            "type": "string"
+          },
+          "side_effect": {
+            "enum": [
+              "internal",
+              "publish",
+              "spend"
+            ],
+            "title": "Side Effect",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action_kind",
+          "side_effect"
+        ],
+        "title": "AgentActionOut",
+        "type": "object"
+      },
+      "AgentListOut": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AgentOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "AgentListOut",
+        "type": "object"
+      },
+      "AgentOut": {
+        "additionalProperties": false,
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/AgentActionOut"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "requires_site": {
+            "title": "Requires Site",
+            "type": "boolean"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "version",
+          "requires_site",
+          "actions"
+        ],
+        "title": "AgentOut",
+        "type": "object"
+      },
+      "AgentRunDetailOut": {
+        "additionalProperties": false,
+        "properties": {
+          "activity_seq": {
+            "minimum": 0,
+            "title": "Activity Seq",
+            "type": "integer"
+          },
+          "agent_kind": {
+            "title": "Agent Kind",
+            "type": "string"
+          },
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cost_micros": {
+            "minimum": 0,
+            "title": "Cost Micros",
+            "type": "integer"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "const": "USD",
+            "default": "USD",
+            "title": "Currency",
+            "type": "string"
+          },
+          "current_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Step"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "estimated_cost_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Micros"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "max_cost_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cost Micros"
+          },
+          "notice_pending": {
+            "description": "Recuperada al abrir Faro y aún sin **Entendido** del usuario.",
+            "title": "Notice Pending",
+            "type": "boolean"
+          },
+          "parent_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Run Id"
+          },
+          "pending_approval_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Approval Id"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "enum": [
+                  "anthropic",
+                  "openai",
+                  "gemini"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Resultado del agente (JSON validado; T9 lo tipa para `site_summary`).",
+            "title": "Result"
+          },
+          "site_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "waiting_approval",
+              "paused",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "status_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`daily_limit`, `agents_paused`, `interrupted`, `cancel_requested`…",
+            "title": "Status Reason"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/AgentStepOut"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "token_budget": {
+            "minimum": 0,
+            "title": "Token Budget",
+            "type": "integer"
+          },
+          "tokens": {
+            "minimum": 0,
+            "title": "Tokens",
+            "type": "integer"
+          },
+          "trigger": {
+            "enum": [
+              "user",
+              "schedule",
+              "catch_up"
+            ],
+            "title": "Trigger",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "parent_run_id",
+          "agent_kind",
+          "site_id",
+          "trigger",
+          "status",
+          "status_reason",
+          "error_code",
+          "provider",
+          "current_step",
+          "cost_micros",
+          "tokens",
+          "token_budget",
+          "estimated_cost_micros",
+          "max_cost_micros",
+          "pending_approval_id",
+          "notice_pending",
+          "activity_seq",
+          "created_at",
+          "started_at",
+          "finished_at",
+          "steps",
+          "result",
+          "approval"
+        ],
+        "title": "AgentRunDetailOut",
+        "type": "object"
+      },
+      "AgentRunOut": {
+        "additionalProperties": false,
+        "properties": {
+          "activity_seq": {
+            "minimum": 0,
+            "title": "Activity Seq",
+            "type": "integer"
+          },
+          "agent_kind": {
+            "title": "Agent Kind",
+            "type": "string"
+          },
+          "cost_micros": {
+            "minimum": 0,
+            "title": "Cost Micros",
+            "type": "integer"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "const": "USD",
+            "default": "USD",
+            "title": "Currency",
+            "type": "string"
+          },
+          "current_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Step"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "estimated_cost_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Micros"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "max_cost_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cost Micros"
+          },
+          "notice_pending": {
+            "description": "Recuperada al abrir Faro y aún sin **Entendido** del usuario.",
+            "title": "Notice Pending",
+            "type": "boolean"
+          },
+          "parent_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Run Id"
+          },
+          "pending_approval_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Approval Id"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "enum": [
+                  "anthropic",
+                  "openai",
+                  "gemini"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "site_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "waiting_approval",
+              "paused",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "status_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`daily_limit`, `agents_paused`, `interrupted`, `cancel_requested`…",
+            "title": "Status Reason"
+          },
+          "token_budget": {
+            "minimum": 0,
+            "title": "Token Budget",
+            "type": "integer"
+          },
+          "tokens": {
+            "minimum": 0,
+            "title": "Tokens",
+            "type": "integer"
+          },
+          "trigger": {
+            "enum": [
+              "user",
+              "schedule",
+              "catch_up"
+            ],
+            "title": "Trigger",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "parent_run_id",
+          "agent_kind",
+          "site_id",
+          "trigger",
+          "status",
+          "status_reason",
+          "error_code",
+          "provider",
+          "current_step",
+          "cost_micros",
+          "tokens",
+          "token_budget",
+          "estimated_cost_micros",
+          "max_cost_micros",
+          "pending_approval_id",
+          "notice_pending",
+          "activity_seq",
+          "created_at",
+          "started_at",
+          "finished_at"
+        ],
+        "title": "AgentRunOut",
+        "type": "object"
+      },
+      "AgentRunPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AgentRunOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "AgentRunPage",
+        "type": "object"
+      },
+      "AgentStepOut": {
+        "additionalProperties": false,
+        "properties": {
+          "cost_estimated": {
+            "title": "Cost Estimated",
+            "type": "boolean"
+          },
+          "cost_micros": {
+            "minimum": 0,
+            "title": "Cost Micros",
+            "type": "integer"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "llm_call",
+              "tool_call",
+              "approval",
+              "control"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "node": {
+            "title": "Node",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "running",
+              "succeeded",
+              "failed",
+              "skipped",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "enum": [
+                  "economy",
+                  "premium"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier"
+          },
+          "tokens_in": {
+            "minimum": 0,
+            "title": "Tokens In",
+            "type": "integer"
+          },
+          "tokens_out": {
+            "minimum": 0,
+            "title": "Tokens Out",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "node",
+          "kind",
+          "status",
+          "tier",
+          "model",
+          "tokens_in",
+          "tokens_out",
+          "cost_micros",
+          "cost_estimated",
+          "error_code",
+          "started_at",
+          "finished_at"
+        ],
+        "title": "AgentStepOut",
+        "type": "object"
+      },
+      "ApprovalOut": {
+        "additionalProperties": false,
+        "properties": {
+          "action_kind": {
+            "title": "Action Kind",
+            "type": "string"
+          },
+          "agent_kind": {
+            "title": "Agent Kind",
+            "type": "string"
+          },
+          "autonomy_level": {
+            "maximum": 3,
+            "minimum": 0,
+            "title": "Autonomy Level",
+            "type": "integer"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "currency": {
+            "const": "USD",
+            "default": "USD",
+            "title": "Currency",
+            "type": "string"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "estimated_cost_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Micros"
+          },
+          "evidence": {
+            "additionalProperties": true,
+            "title": "Evidence",
+            "type": "object"
+          },
+          "executed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Executed At"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "description": "JSON validado de la acción (T9 lo tipa).",
+            "title": "Payload",
+            "type": "object"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "side_effect": {
+            "enum": [
+              "internal",
+              "publish",
+              "spend"
+            ],
+            "title": "Side Effect",
+            "type": "string"
+          },
+          "site_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Id"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "approved",
+              "rejected",
+              "expired",
+              "cancelled",
+              "executed",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "agent_kind",
+          "site_id",
+          "action_kind",
+          "side_effect",
+          "autonomy_level",
+          "status",
+          "payload",
+          "evidence",
+          "estimated_cost_micros",
+          "error_code",
+          "created_at",
+          "expires_at",
+          "decided_at",
+          "executed_at"
+        ],
+        "title": "ApprovalOut",
+        "type": "object"
+      },
       "ConnectSiteIn": {
         "additionalProperties": false,
         "description": "Cuerpo de `connectSite`. El código solo vive en esta petición: no se guarda ni se\nregistra.",
@@ -27,6 +916,175 @@
           "pairing_code"
         ],
         "title": "ConnectSiteIn",
+        "type": "object"
+      },
+      "CostEstimateOut": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_kind": {
+            "title": "Agent Kind",
+            "type": "string"
+          },
+          "blocking_code": {
+            "anyOf": [
+              {
+                "enum": [
+                  "agents.paused",
+                  "llm.no_key",
+                  "llm.daily_limit_reached",
+                  "agent.site_not_active"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Por qué no se puede lanzar ahora (`null` = se puede).",
+            "title": "Blocking Code"
+          },
+          "currency": {
+            "const": "USD",
+            "default": "USD",
+            "title": "Currency",
+            "type": "string"
+          },
+          "daily_limit_micros": {
+            "minimum": 0,
+            "title": "Daily Limit Micros",
+            "type": "integer"
+          },
+          "expected_cost_micros": {
+            "minimum": 0,
+            "title": "Expected Cost Micros",
+            "type": "integer"
+          },
+          "fits_daily_limit": {
+            "title": "Fits Daily Limit",
+            "type": "boolean"
+          },
+          "max_cost_micros": {
+            "description": "Máximo garantizado de la tarea.",
+            "minimum": 0,
+            "title": "Max Cost Micros",
+            "type": "integer"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelOut"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "enum": [
+                  "anthropic",
+                  "openai",
+                  "gemini"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "site_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Id"
+          },
+          "spent_today_micros": {
+            "minimum": 0,
+            "title": "Spent Today Micros",
+            "type": "integer"
+          },
+          "token_budget": {
+            "minimum": 0,
+            "title": "Token Budget",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_kind",
+          "site_id",
+          "provider",
+          "models",
+          "expected_cost_micros",
+          "max_cost_micros",
+          "token_budget",
+          "spent_today_micros",
+          "daily_limit_micros",
+          "fits_daily_limit",
+          "blocking_code"
+        ],
+        "title": "CostEstimateOut",
+        "type": "object"
+      },
+      "CreateScheduleIn": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_kind": {
+            "description": "Tipo de agente.",
+            "examples": [
+              "site_summary"
+            ],
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Agent Kind",
+            "type": "string"
+          },
+          "cadence": {
+            "enum": [
+              "daily",
+              "weekly"
+            ],
+            "maxLength": 16,
+            "title": "Cadence",
+            "type": "string"
+          },
+          "site_id": {
+            "description": "UUID del sitio.",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Site Id",
+            "type": "string"
+          },
+          "time_local": {
+            "examples": [
+              "09:00"
+            ],
+            "maxLength": 5,
+            "title": "Time Local",
+            "type": "string"
+          },
+          "weekday": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weekday"
+          }
+        },
+        "required": [
+          "agent_kind",
+          "site_id",
+          "cadence",
+          "time_local"
+        ],
+        "title": "CreateScheduleIn",
         "type": "object"
       },
       "DatabaseHealth": {
@@ -98,6 +1156,39 @@
           "message"
         ],
         "title": "ErrorOut",
+        "type": "object"
+      },
+      "EstimateAgentRunIn": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_kind": {
+            "description": "Tipo de agente.",
+            "examples": [
+              "site_summary"
+            ],
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Agent Kind",
+            "type": "string"
+          },
+          "site_id": {
+            "anyOf": [
+              {
+                "description": "UUID del sitio.",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Id"
+          }
+        },
+        "required": [
+          "agent_kind"
+        ],
+        "title": "EstimateAgentRunIn",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -297,6 +1388,29 @@
         "title": "LlmUsageOut",
         "type": "object"
       },
+      "ModelOut": {
+        "additionalProperties": false,
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "tier": {
+            "enum": [
+              "economy",
+              "premium"
+            ],
+            "title": "Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tier",
+          "model"
+        ],
+        "title": "ModelOut",
+        "type": "object"
+      },
       "ReconnectSiteIn": {
         "additionalProperties": false,
         "description": "Cuerpo de `reconnectSite`.",
@@ -328,6 +1442,121 @@
           "remote_revoked"
         ],
         "title": "RemoveSiteOut",
+        "type": "object"
+      },
+      "ScheduleListOut": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ScheduleOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "title": "Next Cursor",
+            "type": "null"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ScheduleListOut",
+        "type": "object"
+      },
+      "ScheduleOut": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_kind": {
+            "title": "Agent Kind",
+            "type": "string"
+          },
+          "cadence": {
+            "enum": [
+              "daily",
+              "weekly"
+            ],
+            "title": "Cadence",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "last_run_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run At"
+          },
+          "last_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run Id"
+          },
+          "next_run_at": {
+            "title": "Next Run At",
+            "type": "string"
+          },
+          "site_id": {
+            "title": "Site Id",
+            "type": "string"
+          },
+          "time_local": {
+            "examples": [
+              "09:00"
+            ],
+            "title": "Time Local",
+            "type": "string"
+          },
+          "timezone": {
+            "description": "Zona IANA del sistema al guardarla.",
+            "title": "Timezone",
+            "type": "string"
+          },
+          "weekday": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "0 = lunes … 6 = domingo; solo semanales.",
+            "title": "Weekday"
+          }
+        },
+        "required": [
+          "id",
+          "agent_kind",
+          "site_id",
+          "cadence",
+          "weekday",
+          "time_local",
+          "timezone",
+          "enabled",
+          "next_run_at",
+          "last_run_at",
+          "last_run_id"
+        ],
+        "title": "ScheduleOut",
         "type": "object"
       },
       "SiteConnectionOut": {
@@ -664,6 +1893,103 @@
         "title": "SiteOut",
         "type": "object"
       },
+      "StartAgentRunIn": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_max_cost_micros": {
+            "description": "El máximo que vio y aceptó el usuario (de `estimateAgentRun`).",
+            "minimum": 1,
+            "title": "Accepted Max Cost Micros",
+            "type": "integer"
+          },
+          "agent_kind": {
+            "description": "Tipo de agente.",
+            "examples": [
+              "site_summary"
+            ],
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Agent Kind",
+            "type": "string"
+          },
+          "site_id": {
+            "anyOf": [
+              {
+                "description": "UUID del sitio.",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Site Id"
+          }
+        },
+        "required": [
+          "agent_kind",
+          "accepted_max_cost_micros"
+        ],
+        "title": "StartAgentRunIn",
+        "type": "object"
+      },
+      "UpdateScheduleIn": {
+        "additionalProperties": false,
+        "properties": {
+          "cadence": {
+            "anyOf": [
+              {
+                "enum": [
+                  "daily",
+                  "weekly"
+                ],
+                "maxLength": 16,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cadence"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "time_local": {
+            "anyOf": [
+              {
+                "maxLength": 5,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time Local"
+          },
+          "weekday": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weekday"
+          }
+        },
+        "title": "UpdateScheduleIn",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -750,6 +2076,648 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/agent-runs": {
+      "get": {
+        "operationId": "listAgentRuns",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "queued",
+                    "running",
+                    "waiting_approval",
+                    "paused",
+                    "succeeded",
+                    "failed",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "site_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Site Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "notice_pending",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Notice Pending"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRunPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Tareas de los agentes, la más reciente primero",
+        "tags": [
+          "agents"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      },
+      "post": {
+        "operationId": "startAgentRun",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartAgentRunIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRunOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`agent.unknown` o `site.not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`agents.paused`, `agent.site_not_active`, `llm.no_key`, `agent.estimate_changed` (`details.max_cost_micros`), `llm.daily_limit_reached` o `agent.already_queued`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`agent.site_required`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Lanzar un agente (la tarea queda en cola)",
+        "tags": [
+          "agents"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      }
+    },
+    "/agent-runs/estimate": {
+      "post": {
+        "operationId": "estimateAgentRun",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EstimateAgentRunIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CostEstimateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`agent.unknown` o `site.not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`agent.site_required`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Costo estimado y máximo de una tarea antes de lanzarla",
+        "tags": [
+          "agents"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      }
+    },
+    "/agent-runs/notices/ack": {
+      "post": {
+        "operationId": "acknowledgeAgentNotices",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcknowledgeNoticesIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcknowledgeNoticesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Entendido: el usuario vio el aviso de tareas recuperadas",
+        "tags": [
+          "agents"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      }
+    },
+    "/agent-runs/{run_id}": {
+      "get": {
+        "operationId": "getAgentRun",
+        "parameters": [
+          {
+            "description": "UUID de la tarea en minúsculas.",
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "description": "UUID de la tarea en minúsculas.",
+              "examples": [
+                "01920000-0000-7000-8000-000000000001"
+              ],
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRunDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`agent.run_not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Detalle de una tarea: pasos, costos, resultado y propuesta",
+        "tags": [
+          "agents"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      }
+    },
+    "/agent-runs/{run_id}/cancel": {
+      "post": {
+        "operationId": "cancelAgentRun",
+        "parameters": [
+          {
+            "description": "UUID de la tarea en minúsculas.",
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "description": "UUID de la tarea en minúsculas.",
+              "examples": [
+                "01920000-0000-7000-8000-000000000001"
+              ],
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRunOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`agent.run_not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`agent.not_cancellable`: ya terminó."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Cancelar una tarea",
+        "tags": [
+          "agents"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      }
+    },
+    "/agents": {
+      "get": {
+        "operationId": "listAgents",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Agentes disponibles",
+        "tags": [
+          "agents"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      }
+    },
     "/health": {
       "get": {
         "operationId": "getHealth",
@@ -1026,6 +2994,325 @@
         "summary": "Gasto de hoy y tope de cada clave de IA",
         "tags": [
           "llm"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      }
+    },
+    "/schedules": {
+      "get": {
+        "operationId": "listSchedules",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Programaciones de los agentes",
+        "tags": [
+          "schedules"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      },
+      "post": {
+        "operationId": "createSchedule",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateScheduleIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`agent.unknown` o `site.not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`schedule.duplicate`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`schedule.invalid` o `agent.site_required`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Programar un agente en un sitio (cada día o cada semana)",
+        "tags": [
+          "schedules"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      }
+    },
+    "/schedules/{schedule_id}": {
+      "delete": {
+        "operationId": "deleteSchedule",
+        "parameters": [
+          {
+            "description": "UUID de la programación en minúsculas.",
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "description": "UUID de la programación en minúsculas.",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`schedule.not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Quitar una programación",
+        "tags": [
+          "schedules"
+        ],
+        "x-faro-secrets": [],
+        "x-faro-timeout-seconds": 10
+      },
+      "patch": {
+        "operationId": "updateSchedule",
+        "parameters": [
+          {
+            "description": "UUID de la programación en minúsculas.",
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "description": "UUID de la programación en minúsculas.",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateScheduleIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Token ausente o inválido."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Cabecera Host no permitida."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`schedule.not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "`schedule.invalid`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Base de datos no disponible."
+          }
+        },
+        "summary": "Activar, desactivar o cambiar la frecuencia o la hora",
+        "tags": [
+          "schedules"
         ],
         "x-faro-secrets": [],
         "x-faro-timeout-seconds": 10

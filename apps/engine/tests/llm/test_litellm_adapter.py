@@ -98,6 +98,7 @@ EXPECTED_KINDS = {
 }
 EXPECTED_QUOTA = {
     ("openai", "quota"): "insufficient_quota",
+    ("openai", "bad_key"): "invalid_key",
     ("anthropic", "quota"): "insufficient_quota",
     ("anthropic", "billing"): "insufficient_quota",
     ("gemini", "quota"): "insufficient_quota",

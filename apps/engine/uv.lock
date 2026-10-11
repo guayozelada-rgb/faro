@@ -386,6 +386,7 @@ dependencies = [
     { name = "sqlcipher3-wheels" },
     { name = "structlog" },
     { name = "truststore" },
+    { name = "tzlocal" },
     { name = "uvicorn" },
 ]
 
@@ -420,6 +421,7 @@ requires-dist = [
     { name = "sqlcipher3-wheels", specifier = ">=0.5.7,<0.6" },
     { name = "structlog", specifier = ">=26.1.0" },
     { name = "truststore", specifier = "==0.10.4" },
+    { name = "tzlocal", specifier = ">=5.4.4" },
     { name = "uvicorn", specifier = ">=0.54.0,<0.55" },
 ]
 

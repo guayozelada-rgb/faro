@@ -205,16 +205,31 @@ def _chain(exc: BaseException) -> Iterator[BaseException]:
         current = current.__cause__ or current.__context__
 
 
-def _status(exc: BaseException) -> int | None:
+def _statuses(exc: BaseException) -> Iterator[int]:
+    """Estados de la cadena, de fuera hacia dentro: `status_code` de cada excepción y el de
+    su respuesta HTTP (`response.status_code`)."""
     for item in _chain(exc):
         status = getattr(item, "status_code", None)
         if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
-            return status
+            yield status
         response = getattr(item, "response", None)
         status = getattr(response, "status_code", None)
         if isinstance(status, int) and not isinstance(status, bool) and 300 <= status <= 599:
-            return status
-    return None
+            yield status
+
+
+def _status(exc: BaseException) -> int | None:
+    """El primer estado de la cadena, salvo que **cualquier** eslabón lleve un 401.
+
+    LiteLLM 1.104 (`exception_mapping_utils.py`) reescribe un 401 de OpenAI con
+    `type: invalid_request_error` como `BadRequestError(400)` si el mensaje no dice
+    "Incorrect API key provided"; el 401 real queda en la respuesta HTTP o en el
+    `openai.AuthenticationError` encadenado (condición T6-C6 de la revisión de T6).
+    """
+    statuses = list(_statuses(exc))
+    if 401 in statuses:
+        return 401
+    return statuses[0] if statuses else None
 
 
 def _is_redirect(exc: BaseException) -> bool:

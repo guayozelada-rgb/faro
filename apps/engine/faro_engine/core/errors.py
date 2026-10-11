@@ -52,6 +52,19 @@ ENGINE_SECRETS_UNAVAILABLE: Final = "engine.secrets_unavailable"
 AGENTS_PAUSED: Final = "agents.paused"
 AGENT_GRANT_DENIED: Final = "agent.grant_denied"
 
+# Cola, tareas y programaciones de los agentes (spec F1b §4.3, §5.2 y §5.5). Su estado
+# HTTP está en `JOBS_STATUS`.
+AGENT_UNKNOWN: Final = "agent.unknown"
+AGENT_SITE_REQUIRED: Final = "agent.site_required"
+AGENT_SITE_NOT_ACTIVE: Final = "agent.site_not_active"
+AGENT_ALREADY_QUEUED: Final = "agent.already_queued"
+AGENT_ESTIMATE_CHANGED: Final = "agent.estimate_changed"
+AGENT_RUN_NOT_FOUND: Final = "agent.run_not_found"
+AGENT_NOT_CANCELLABLE: Final = "agent.not_cancellable"
+SCHEDULE_INVALID: Final = "schedule.invalid"
+SCHEDULE_DUPLICATE: Final = "schedule.duplicate"
+SCHEDULE_NOT_FOUND: Final = "schedule.not_found"
+
 # Capa de IA (spec F1b §4.1 y §5.5). Sus mensajes, con el nombre del proveedor, y su
 # estado HTTP están en `faro_engine/llm/errors.py` (`llm_error`).
 AGENT_BUDGET_EXHAUSTED: Final = "agent.budget_exhausted"
@@ -112,6 +125,31 @@ _BASE_MESSAGES: Final[Mapping[str, str]] = {
     AGENT_GRANT_DENIED: (
         "El agente no obtuvo permiso para usar tus claves. Reinicia Faro e intenta de nuevo."
     ),
+    AGENT_UNKNOWN: "Ese agente no existe en esta versión de Faro.",
+    AGENT_SITE_REQUIRED: "Elige un sitio conectado para este agente.",
+    AGENT_SITE_NOT_ACTIVE: (
+        "Ese sitio está desconectado. Vuelve a conectarlo para que el agente pueda leerlo."
+    ),
+    AGENT_ALREADY_QUEUED: "Este agente ya está trabajando en ese sitio. Espera a que termine.",
+    AGENT_ESTIMATE_CHANGED: "El costo cambió. Revísalo y vuelve a lanzar.",
+    AGENT_RUN_NOT_FOUND: "No encontramos esa tarea.",
+    AGENT_NOT_CANCELLABLE: "Esta tarea ya terminó.",
+    SCHEDULE_INVALID: "Revisa la frecuencia y la hora.",
+    SCHEDULE_DUPLICATE: "Ya hay una programación de este agente para ese sitio.",
+    SCHEDULE_NOT_FOUND: "Esa programación ya no existe.",
+}
+
+JOBS_STATUS: Final[Mapping[str, int]] = {
+    AGENT_UNKNOWN: 404,
+    AGENT_SITE_REQUIRED: 422,
+    AGENT_SITE_NOT_ACTIVE: 409,
+    AGENT_ALREADY_QUEUED: 409,
+    AGENT_ESTIMATE_CHANGED: 409,
+    AGENT_RUN_NOT_FOUND: 404,
+    AGENT_NOT_CANCELLABLE: 409,
+    SCHEDULE_INVALID: 422,
+    SCHEDULE_DUPLICATE: 409,
+    SCHEDULE_NOT_FOUND: 404,
 }
 
 # Sitios conectados (spec F1a §5.6, ADR 0011 y 0012). El estado HTTP de cada uno está en
@@ -259,6 +297,11 @@ class FaroError(Exception):
 
     def to_out(self) -> ErrorOut:
         return ErrorOut(code=self.code, message=self.message, details=self.details)
+
+
+def jobs_error(code: str, details: Mapping[str, Any] | None = None) -> FaroError:
+    """Error de la cola, las tareas o las programaciones con su mensaje y estado."""
+    return FaroError.of(code, JOBS_STATUS[code], details)
 
 
 def site_error(code: str, details: Mapping[str, Any] | None = None) -> FaroError:

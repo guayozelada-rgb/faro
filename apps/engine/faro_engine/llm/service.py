@@ -345,10 +345,15 @@ class LlmService:
 
     @staticmethod
     def _decode(secret: SecretValue, provider: Provider) -> str:
-        try:
-            return secret.buffer.decode("ascii")
-        except UnicodeDecodeError:
-            raise llm_error(LLM_INVALID_KEY, provider) from None
+        """Copia `str` de la clave. Solo ASCII imprimible sin espacios (`0x21`-`0x7E`), como
+        exige la Bóveda del núcleo al guardarla: una clave con espacios, saltos de línea o
+        caracteres no ASCII no es válida en una cabecera y se rechaza con `llm.invalid_key`
+        **sin enviar nada** al proveedor (comprobación previa a `bytes.decode`)."""
+        buffer = secret.buffer
+        if not buffer or any(byte < 0x21 or byte > 0x7E for byte in buffer):
+            log.warning("llm.key_malformed", provider=provider)
+            raise llm_error(LLM_INVALID_KEY, provider)
+        return buffer.decode("ascii")
 
     @staticmethod
     def _resolve(provider: Provider, model: CatalogModel, request: LlmRequest) -> ResolvedCall:
@@ -411,8 +416,8 @@ class LlmService:
                 raw = await self.client.complete(call.resolved, api_key)
             except asyncio.CancelledError:
                 # 9. El proveedor pudo procesarla: se cuenta el máximo antes de soltar la
-                # reserva, aunque vuelvan a cancelar mientras se escribe.
-                await asyncio.shield(self._record(call, consumed=True))
+                # reserva, aunque vuelvan a cancelar mientras se escribe (T6-C1).
+                await finish_despite_cancel(self._record(call, consumed=True))
                 raise
             except Exception as exc:  # noqa: BLE001 - todo fallo pasa a `LlmCallError`
                 err = classify_exception(exc)
@@ -538,6 +543,26 @@ class LlmService:
             cost_micros=call.cost,
             error_code=code,
         )
+
+
+async def finish_despite_cancel(work: Awaitable[None]) -> None:
+    """Espera a que `work` termine aunque cancelen a quien espera **otra vez**.
+
+    `asyncio.shield` no basta (condición T6-C1 de la revisión de T6): con una segunda
+    cancelación, `await shield(...)` sale enseguida y el `finally` de `call` soltaría la
+    reserva antes de guardar el registro. Aquí se sigue esperando hasta que el registro
+    termina; si el propio registro se canceló (el bucle se cierra), se sale sin más. Un
+    error del registro se propaga. Quien cancela (el trabajador en el apagado) espera a
+    que la tarea termine dentro del plazo de gracia, antes de cerrar el bucle.
+    """
+    task = asyncio.ensure_future(work)
+    while not task.done():
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError:
+            continue
+    if not task.cancelled():
+        task.result()
 
 
 def _strip_fence(text: str) -> str:

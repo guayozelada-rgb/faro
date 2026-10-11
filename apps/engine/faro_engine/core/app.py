@@ -12,9 +12,12 @@ from faro_engine.core.errors import DB_UNAVAILABLE, install_error_handlers
 from faro_engine.core.jobs.activity import ActivityEmitter
 from faro_engine.core.jobs.control import AgentsControlState
 from faro_engine.core.jobs.grants import RunGrantClient
+from faro_engine.core.jobs.runner import AgentCatalog
+from faro_engine.core.jobs.runtime import JobSystem
 from faro_engine.core.logging import RequestLoggingMiddleware
 from faro_engine.core.operations import validate_app_operations
-from faro_engine.core.routes import health, sites
+from faro_engine.core.routes import agents as agent_routes
+from faro_engine.core.routes import health, schedules, sites
 from faro_engine.core.routes import llm as llm_routes
 from faro_engine.core.run_id import RunIdMiddleware
 from faro_engine.core.secrets import SecretBroker
@@ -54,6 +57,12 @@ def default_llm_service(
     )
 
 
+def default_agent_catalog() -> AgentCatalog:
+    """Agentes del producto. Vacío en T7: el registro (`agents/registry.py`) llega en T8/T9.
+    Los agentes de prueba se registran solo en las pruebas."""
+    return AgentCatalog()
+
+
 def create_app(
     settings: Settings,
     database: Database | None = None,
@@ -65,6 +74,8 @@ def create_app(
     grants: RunGrantClient | None = None,
     activity: ActivityEmitter | None = None,
     llm: LlmService | None = None,
+    agents: AgentCatalog | None = None,
+    jobs: JobSystem | None = None,
 ) -> FastAPI:
     """App con seguridad Host + Bearer en todas las rutas.
 
@@ -78,7 +89,11 @@ def create_app(
     ejecución y el emisor de actividad de los agentes (ADR 0014); sin ellos (pruebas), los
     agentes quedan en pausa, toda concesión se deniega y no se emite actividad. `llm` es la
     capa de IA (spec F1b §4.1); por defecto, `default_llm_service` (valida `models.json`:
-    si no cumple, el motor no arranca).
+    si no cumple, el motor no arranca). `agents` son los agentes que el motor puede ejecutar
+    (`default_agent_catalog`) y `jobs` la cola, el trabajador y el programador
+    (`core/jobs/runtime.py`), construidos con **el mismo** `LlmService` de `app.state.llm`
+    (un único `DailyLimiter`, condición T6-C2); `__main__` los arranca y los para
+    alrededor de `server.serve()`.
 
     Sin `/docs`, `/redoc` ni `/openapi.json` por HTTP (tampoco en `--dev`): el esquema
     se exporta con `python -m faro_engine.export_openapi`.
@@ -106,10 +121,24 @@ def create_app(
             settings, app.state.database, app.state.agents_control, app.state.secrets
         )
     )
+    app.state.jobs = (
+        jobs
+        if jobs is not None
+        else JobSystem(
+            database=app.state.database,
+            control=app.state.agents_control,
+            grants=app.state.run_grants,
+            activity=app.state.activity,
+            llm=app.state.llm,
+            agents=agents if agents is not None else default_agent_catalog(),
+        )
+    )
     install_error_handlers(app)
     app.include_router(health.router)
     app.include_router(sites.router)
     app.include_router(llm_routes.router)
+    app.include_router(agent_routes.router)
+    app.include_router(schedules.router)
     # Toda operación declara timeout y secretos (ADR 0010 §3); si no, el motor no arranca.
     validate_app_operations(app)
     # La tabla de concesiones de los agentes cumple ADR 0014 §1; si no, tampoco arranca.

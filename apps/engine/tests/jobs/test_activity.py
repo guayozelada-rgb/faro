@@ -127,3 +127,10 @@ async def test_emitter_without_channel_or_with_broken_stdout(log_stream: io.Stri
     emitted = await broken.emit(run_id=RUN_ID, kind="run_status", agent="a1", status="running")
     assert emitted is False
     assert "agents.activity_dropped" in log_stream.getvalue()
+
+
+async def test_emitter_usa_el_seq_de_la_base_si_se_lo_dan() -> None:
+    sink = Sink()
+    emitter = ActivityEmitter(protocol.ProtocolWriter(sink))
+    await emitter.emit(run_id=RUN_ID, kind="run_status", agent="a1", status="queued", seq=7)
+    assert json.loads(sink.lines[-1])["seq"] == 7

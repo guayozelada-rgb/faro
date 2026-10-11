@@ -4,6 +4,109 @@
  */
 
 export interface paths {
+    "/agent-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Tareas de los agentes, la más reciente primero */
+        get: operations["listAgentRuns"];
+        put?: never;
+        /** Lanzar un agente (la tarea queda en cola) */
+        post: operations["startAgentRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent-runs/estimate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Costo estimado y máximo de una tarea antes de lanzarla */
+        post: operations["estimateAgentRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent-runs/notices/ack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Entendido: el usuario vio el aviso de tareas recuperadas */
+        post: operations["acknowledgeAgentNotices"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent-runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Detalle de una tarea: pasos, costos, resultado y propuesta */
+        get: operations["getAgentRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent-runs/{run_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancelar una tarea */
+        post: operations["cancelAgentRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Agentes disponibles */
+        get: operations["listAgents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -70,6 +173,42 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Programaciones de los agentes */
+        get: operations["listSchedules"];
+        put?: never;
+        /** Programar un agente en un sitio (cada día o cada semana) */
+        post: operations["createSchedule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/schedules/{schedule_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Quitar una programación */
+        delete: operations["deleteSchedule"];
+        options?: never;
+        head?: never;
+        /** Activar, desactivar o cambiar la frecuencia o la hora */
+        patch: operations["updateSchedule"];
         trace?: never;
     };
     "/sites": {
@@ -162,6 +301,276 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AcknowledgeNoticesIn */
+        AcknowledgeNoticesIn: {
+            /** Run Ids */
+            run_ids: string[];
+        };
+        /** AcknowledgeNoticesOut */
+        AcknowledgeNoticesOut: {
+            /** Acknowledged */
+            acknowledged: number;
+        };
+        /** AgentActionOut */
+        AgentActionOut: {
+            /** Action Kind */
+            action_kind: string;
+            /**
+             * Side Effect
+             * @enum {string}
+             */
+            side_effect: "internal" | "publish" | "spend";
+        };
+        /** AgentListOut */
+        AgentListOut: {
+            /** Items */
+            items: components["schemas"]["AgentOut"][];
+        };
+        /** AgentOut */
+        AgentOut: {
+            /** Actions */
+            actions: components["schemas"]["AgentActionOut"][];
+            /** Kind */
+            kind: string;
+            /** Requires Site */
+            requires_site: boolean;
+            /** Version */
+            version: number;
+        };
+        /** AgentRunDetailOut */
+        AgentRunDetailOut: {
+            /** Activity Seq */
+            activity_seq: number;
+            /** Agent Kind */
+            agent_kind: string;
+            approval: components["schemas"]["ApprovalOut"] | null;
+            /** Cost Micros */
+            cost_micros: number;
+            /** Created At */
+            created_at: string;
+            /**
+             * Currency
+             * @default USD
+             * @constant
+             */
+            currency: "USD";
+            /** Current Step */
+            current_step: string | null;
+            /** Error Code */
+            error_code: string | null;
+            /** Estimated Cost Micros */
+            estimated_cost_micros: number | null;
+            /** Finished At */
+            finished_at: string | null;
+            /** Id */
+            id: string;
+            /** Max Cost Micros */
+            max_cost_micros: number | null;
+            /**
+             * Notice Pending
+             * @description Recuperada al abrir Faro y aún sin **Entendido** del usuario.
+             */
+            notice_pending: boolean;
+            /** Parent Run Id */
+            parent_run_id: string | null;
+            /** Pending Approval Id */
+            pending_approval_id: string | null;
+            /** Provider */
+            provider: ("anthropic" | "openai" | "gemini") | null;
+            /**
+             * Result
+             * @description Resultado del agente (JSON validado; T9 lo tipa para `site_summary`).
+             */
+            result: {
+                [key: string]: unknown;
+            } | null;
+            /** Site Id */
+            site_id: string | null;
+            /** Started At */
+            started_at: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "waiting_approval" | "paused" | "succeeded" | "failed" | "cancelled";
+            /**
+             * Status Reason
+             * @description `daily_limit`, `agents_paused`, `interrupted`, `cancel_requested`…
+             */
+            status_reason: string | null;
+            /** Steps */
+            steps: components["schemas"]["AgentStepOut"][];
+            /** Token Budget */
+            token_budget: number;
+            /** Tokens */
+            tokens: number;
+            /**
+             * Trigger
+             * @enum {string}
+             */
+            trigger: "user" | "schedule" | "catch_up";
+        };
+        /** AgentRunOut */
+        AgentRunOut: {
+            /** Activity Seq */
+            activity_seq: number;
+            /** Agent Kind */
+            agent_kind: string;
+            /** Cost Micros */
+            cost_micros: number;
+            /** Created At */
+            created_at: string;
+            /**
+             * Currency
+             * @default USD
+             * @constant
+             */
+            currency: "USD";
+            /** Current Step */
+            current_step: string | null;
+            /** Error Code */
+            error_code: string | null;
+            /** Estimated Cost Micros */
+            estimated_cost_micros: number | null;
+            /** Finished At */
+            finished_at: string | null;
+            /** Id */
+            id: string;
+            /** Max Cost Micros */
+            max_cost_micros: number | null;
+            /**
+             * Notice Pending
+             * @description Recuperada al abrir Faro y aún sin **Entendido** del usuario.
+             */
+            notice_pending: boolean;
+            /** Parent Run Id */
+            parent_run_id: string | null;
+            /** Pending Approval Id */
+            pending_approval_id: string | null;
+            /** Provider */
+            provider: ("anthropic" | "openai" | "gemini") | null;
+            /** Site Id */
+            site_id: string | null;
+            /** Started At */
+            started_at: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "waiting_approval" | "paused" | "succeeded" | "failed" | "cancelled";
+            /**
+             * Status Reason
+             * @description `daily_limit`, `agents_paused`, `interrupted`, `cancel_requested`…
+             */
+            status_reason: string | null;
+            /** Token Budget */
+            token_budget: number;
+            /** Tokens */
+            tokens: number;
+            /**
+             * Trigger
+             * @enum {string}
+             */
+            trigger: "user" | "schedule" | "catch_up";
+        };
+        /** AgentRunPage */
+        AgentRunPage: {
+            /** Items */
+            items: components["schemas"]["AgentRunOut"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** AgentStepOut */
+        AgentStepOut: {
+            /** Cost Estimated */
+            cost_estimated: boolean;
+            /** Cost Micros */
+            cost_micros: number;
+            /** Error Code */
+            error_code: string | null;
+            /** Finished At */
+            finished_at: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "llm_call" | "tool_call" | "approval" | "control";
+            /** Model */
+            model: string | null;
+            /** Node */
+            node: string;
+            /** Seq */
+            seq: number;
+            /** Started At */
+            started_at: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "succeeded" | "failed" | "skipped" | "cancelled";
+            /** Tier */
+            tier: ("economy" | "premium") | null;
+            /** Tokens In */
+            tokens_in: number;
+            /** Tokens Out */
+            tokens_out: number;
+        };
+        /** ApprovalOut */
+        ApprovalOut: {
+            /** Action Kind */
+            action_kind: string;
+            /** Agent Kind */
+            agent_kind: string;
+            /** Autonomy Level */
+            autonomy_level: number;
+            /** Created At */
+            created_at: string;
+            /**
+             * Currency
+             * @default USD
+             * @constant
+             */
+            currency: "USD";
+            /** Decided At */
+            decided_at: string | null;
+            /** Error Code */
+            error_code: string | null;
+            /** Estimated Cost Micros */
+            estimated_cost_micros: number | null;
+            /** Evidence */
+            evidence: {
+                [key: string]: unknown;
+            };
+            /** Executed At */
+            executed_at: string | null;
+            /** Expires At */
+            expires_at: string;
+            /** Id */
+            id: string;
+            /**
+             * Payload
+             * @description JSON validado de la acción (T9 lo tipa).
+             */
+            payload: {
+                [key: string]: unknown;
+            };
+            /** Run Id */
+            run_id: string;
+            /**
+             * Side Effect
+             * @enum {string}
+             */
+            side_effect: "internal" | "publish" | "spend";
+            /** Site Id */
+            site_id: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "approved" | "rejected" | "expired" | "cancelled" | "executed" | "failed";
+        };
         /**
          * ConnectSiteIn
          * @description Cuerpo de `connectSite`. El código solo vive en esta petición: no se guarda ni se
@@ -178,6 +587,69 @@ export interface components {
              * @example https://tutienda.com
              */
             url: string;
+        };
+        /** CostEstimateOut */
+        CostEstimateOut: {
+            /** Agent Kind */
+            agent_kind: string;
+            /**
+             * Blocking Code
+             * @description Por qué no se puede lanzar ahora (`null` = se puede).
+             */
+            blocking_code: ("agents.paused" | "llm.no_key" | "llm.daily_limit_reached" | "agent.site_not_active") | null;
+            /**
+             * Currency
+             * @default USD
+             * @constant
+             */
+            currency: "USD";
+            /** Daily Limit Micros */
+            daily_limit_micros: number;
+            /** Expected Cost Micros */
+            expected_cost_micros: number;
+            /** Fits Daily Limit */
+            fits_daily_limit: boolean;
+            /**
+             * Max Cost Micros
+             * @description Máximo garantizado de la tarea.
+             */
+            max_cost_micros: number;
+            /** Models */
+            models: components["schemas"]["ModelOut"][];
+            /** Provider */
+            provider: ("anthropic" | "openai" | "gemini") | null;
+            /** Site Id */
+            site_id: string | null;
+            /** Spent Today Micros */
+            spent_today_micros: number;
+            /** Token Budget */
+            token_budget: number;
+        };
+        /** CreateScheduleIn */
+        CreateScheduleIn: {
+            /**
+             * Agent Kind
+             * @description Tipo de agente.
+             * @example site_summary
+             */
+            agent_kind: string;
+            /**
+             * Cadence
+             * @enum {string}
+             */
+            cadence: "daily" | "weekly";
+            /**
+             * Site Id
+             * @description UUID del sitio.
+             */
+            site_id: string;
+            /**
+             * Time Local
+             * @example 09:00
+             */
+            time_local: string;
+            /** Weekday */
+            weekday?: number | null;
         };
         /**
          * DatabaseHealth
@@ -221,6 +693,17 @@ export interface components {
              * @description Mensaje en español para el usuario.
              */
             message: string;
+        };
+        /** EstimateAgentRunIn */
+        EstimateAgentRunIn: {
+            /**
+             * Agent Kind
+             * @description Tipo de agente.
+             * @example site_summary
+             */
+            agent_kind: string;
+            /** Site Id */
+            site_id?: string | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -309,6 +792,16 @@ export interface components {
              */
             usage_date: string;
         };
+        /** ModelOut */
+        ModelOut: {
+            /** Model */
+            model: string;
+            /**
+             * Tier
+             * @enum {string}
+             */
+            tier: "economy" | "premium";
+        };
         /**
          * ReconnectSiteIn
          * @description Cuerpo de `reconnectSite`.
@@ -327,6 +820,50 @@ export interface components {
              * @description `true` si el sitio confirmó la desconexión (o ya estaba desconectado).
              */
             remote_revoked: boolean;
+        };
+        /** ScheduleListOut */
+        ScheduleListOut: {
+            /** Items */
+            items: components["schemas"]["ScheduleOut"][];
+            /** Next Cursor */
+            next_cursor?: null;
+        };
+        /** ScheduleOut */
+        ScheduleOut: {
+            /** Agent Kind */
+            agent_kind: string;
+            /**
+             * Cadence
+             * @enum {string}
+             */
+            cadence: "daily" | "weekly";
+            /** Enabled */
+            enabled: boolean;
+            /** Id */
+            id: string;
+            /** Last Run At */
+            last_run_at: string | null;
+            /** Last Run Id */
+            last_run_id: string | null;
+            /** Next Run At */
+            next_run_at: string;
+            /** Site Id */
+            site_id: string;
+            /**
+             * Time Local
+             * @example 09:00
+             */
+            time_local: string;
+            /**
+             * Timezone
+             * @description Zona IANA del sistema al guardarla.
+             */
+            timezone: string;
+            /**
+             * Weekday
+             * @description 0 = lunes … 6 = domingo; solo semanales.
+             */
+            weekday: number | null;
         };
         /** SiteConnectionOut */
         SiteConnectionOut: {
@@ -439,6 +976,33 @@ export interface components {
              */
             url: string;
         };
+        /** StartAgentRunIn */
+        StartAgentRunIn: {
+            /**
+             * Accepted Max Cost Micros
+             * @description El máximo que vio y aceptó el usuario (de `estimateAgentRun`).
+             */
+            accepted_max_cost_micros: number;
+            /**
+             * Agent Kind
+             * @description Tipo de agente.
+             * @example site_summary
+             */
+            agent_kind: string;
+            /** Site Id */
+            site_id?: string | null;
+        };
+        /** UpdateScheduleIn */
+        UpdateScheduleIn: {
+            /** Cadence */
+            cadence?: ("daily" | "weekly") | null;
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Time Local */
+            time_local?: string | null;
+            /** Weekday */
+            weekday?: number | null;
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -470,6 +1034,467 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    listAgentRuns: {
+        parameters: {
+            query?: {
+                status?: ("queued" | "running" | "waiting_approval" | "paused" | "succeeded" | "failed" | "cancelled") | null;
+                site_id?: string | null;
+                notice_pending?: boolean | null;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunPage"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    startAgentRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartAgentRunIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `agent.unknown` o `site.not_found`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `agents.paused`, `agent.site_not_active`, `llm.no_key`, `agent.estimate_changed` (`details.max_cost_micros`), `llm.daily_limit_reached` o `agent.already_queued`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `agent.site_required`. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    estimateAgentRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EstimateAgentRunIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostEstimateOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `agent.unknown` o `site.not_found`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `agent.site_required`. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    acknowledgeAgentNotices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcknowledgeNoticesIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcknowledgeNoticesOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    getAgentRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description UUID de la tarea en minúsculas. */
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunDetailOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `agent.run_not_found`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    cancelAgentRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description UUID de la tarea en minúsculas. */
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `agent.run_not_found`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `agent.not_cancellable`: ya terminó. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    listAgents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentListOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
     getHealth: {
         parameters: {
             query?: never;
@@ -678,6 +1703,269 @@ export interface operations {
             };
             /** @description Cabecera Host no permitida. */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    listSchedules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleListOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    createSchedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateScheduleIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `agent.unknown` o `site.not_found`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `schedule.duplicate`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `schedule.invalid` o `agent.site_required`. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    deleteSchedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description UUID de la programación en minúsculas. */
+                schedule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `schedule.not_found`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Base de datos no disponible. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    updateSchedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description UUID de la programación en minúsculas. */
+                schedule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateScheduleIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleOut"];
+                };
+            };
+            /** @description Token ausente o inválido. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Cabecera Host no permitida. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `schedule.not_found`. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description `schedule.invalid`. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

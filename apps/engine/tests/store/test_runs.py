@@ -402,3 +402,23 @@ def test_cancel_running_steps_after_abrupt_close(conn: Connection) -> None:
     assert runs.cancel_running_steps(conn, "run-1", now=T2) == 1
     assert [s.status for s in runs.list_steps(conn, "run-1")] == ["succeeded", "cancelled"]
     assert runs.cancel_running_steps(conn, "run-1", now=T2) == 0
+
+
+def test_set_and_clear_status_reason(conn: Connection) -> None:
+    add_run(conn, "run-1")
+    add_run(conn, "run-2", site_id=OTHER_SITE)
+    assert runs.set_status_reason(conn, "run-1", status="queued", reason="daily_limit", now=T1)
+    assert runs.set_status_reason(conn, "run-2", status="queued", reason="daily_limit", now=T1)
+    assert not runs.set_status_reason(conn, "run-1", status="running", reason="x", now=T1)
+    assert not runs.set_status_reason(conn, "no-existe", status="queued", reason="x", now=T1)
+    record = runs.get_run(conn, "run-1")
+    assert record is not None
+    assert (record.status_reason, record.updated_at) == ("daily_limit", T1)
+    assert runs.clear_status_reason(conn, status="queued", reason="daily_limit", now=T2) == 2
+    assert runs.clear_status_reason(conn, status="queued", reason="daily_limit", now=T2) == 0
+    cleared = runs.get_run(conn, "run-2")
+    assert cleared is not None and cleared.status_reason is None
+    with pytest.raises(ValueError, match="estado"):
+        runs.set_status_reason(conn, "run-1", status="otro", reason=None, now=T1)
+    with pytest.raises(ValueError, match="estado"):
+        runs.clear_status_reason(conn, status="otro", reason="x", now=T1)

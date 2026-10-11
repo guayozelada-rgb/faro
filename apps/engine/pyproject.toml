@@ -19,6 +19,7 @@ dependencies = [
     "sqlcipher3-wheels>=0.5.7,<0.6",
     "structlog>=26.1.0",
     "truststore==0.10.4",
+    "tzlocal>=5.4.4",
     "uvicorn>=0.54.0,<0.55",  # core/server.py usa detalles internos de uvicorn 0.54
 ]
 
@@ -146,6 +147,15 @@ strict_modules = [
     "faro_engine/core/jobs/grants.py",
     "faro_engine/core/jobs/control.py",
     "faro_engine/core/jobs/activity.py",
+    # Cola, trabajador, programador, recuperación y arranque/apagado de las tareas de los
+    # agentes (spec F1b T7, §4.3).
+    "faro_engine/core/jobs/queue.py",
+    "faro_engine/core/jobs/worker.py",
+    "faro_engine/core/jobs/scheduler.py",
+    "faro_engine/core/jobs/recovery.py",
+    "faro_engine/core/jobs/runner.py",
+    "faro_engine/core/jobs/runtime.py",
+    "faro_engine/core/jobs/submit.py",
     # Capa de IA: costo en micros, tope diario, orden de comprobaciones, mapeo de errores,
     # catálogo y endurecimiento de LiteLLM (spec F1b T6, ADR 0015 §1).
     "faro_engine/llm/pricing.py",

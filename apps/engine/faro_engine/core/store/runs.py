@@ -383,6 +383,33 @@ def transition_run(
     return int(cursor.rowcount) == 1
 
 
+def set_status_reason(
+    conn: Connection, run_id: str, *, status: str, reason: str | None, now: str
+) -> bool:
+    """Cambia `status_reason` solo si la tarea sigue en `status` (p. ej. `queued` →
+    `daily_limit`, o `running` → `cancel_requested`). `False` si ya cambió."""
+    if status not in RUN_STATUSES:
+        raise ValueError("estado desconocido")
+    cursor = conn.execute(
+        "UPDATE agent_runs SET status_reason = ?, updated_at = ? WHERE id = ? AND status = ?",
+        (reason, now, run_id, status),
+    )
+    return int(cursor.rowcount) == 1
+
+
+def clear_status_reason(conn: Connection, *, status: str, reason: str, now: str) -> int:
+    """Quita `reason` de todas las tareas en `status` (p. ej. las `queued` por
+    `daily_limit` al empezar otro día). Devuelve cuántas cambiaron."""
+    if status not in RUN_STATUSES:
+        raise ValueError("estado desconocido")
+    cursor = conn.execute(
+        "UPDATE agent_runs SET status_reason = NULL, updated_at = ? "
+        "WHERE status = ? AND status_reason = ?",
+        (now, status, reason),
+    )
+    return int(cursor.rowcount)
+
+
 def update_run(conn: Connection, run_id: str, fields: Mapping[str, object], *, now: str) -> bool:
     """Cambia columnas de la lista cerrada (`result` ya es JSON validado)."""
     unknown = set(fields) - RUN_UPDATABLE_COLUMNS

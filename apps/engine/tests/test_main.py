@@ -880,3 +880,93 @@ def test_motivo_sslkeylogfile_crea_el_archivo_de_claves(tmp_path: Path) -> None:
     code = "import ssl\nssl.create_default_context()\n"
     subprocess.run([sys.executable, "-c", code], env=env, check=True, timeout=60)
     assert keylog.exists()
+
+
+# --- Directorio de trabajo fijo (condición 14 del informe de T2) -------------------------
+
+
+def test_run_fija_el_directorio_de_trabajo_y_resuelve_data_dir_relativo(
+    pipe: Pipe, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    start = tmp_path / "arranque"
+    start.mkdir()
+    workdir = tmp_path / "codigo"
+    workdir.mkdir()
+    monkeypatch.chdir(start)
+    pipe.write(secrets.token_urlsafe(32).encode("ascii") + NL + db_key_line())
+    sink = ReadySink()
+    thread, result = _run_in_thread(
+        argv=["--data-dir", "datos"], stdin_fd=pipe.read_fd, out=sink, workdir=workdir
+    )
+    assert sink.flushed.wait(WAIT)
+    assert Path.cwd() == workdir
+    # `--data-dir` relativo es del directorio de arranque, no del fijo.
+    assert profile_db_path(start / "datos", TEST_PROFILE_ID).is_file()
+    assert not (workdir / "datos").exists()
+    pipe.close_write()
+    thread.join(WAIT)
+    assert result == [entry.EXIT_OK]
+
+
+def test_run_sin_directorio_de_trabajo_valido_no_arranca(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = Path.cwd()
+    code = entry.run([], stdin_fd=0, out=ReadySink(), workdir=tmp_path / "no-existe")
+    assert code == entry.EXIT_USAGE
+    assert Path.cwd() == before
+    assert "config.workdir_unavailable" in capsys.readouterr().err
+
+
+def test_engine_workdir_es_la_carpeta_del_codigo() -> None:
+    assert entry.engine_workdir(frozen=False) == Path(entry.__file__).resolve().parent
+    assert entry.engine_workdir(frozen=True) == Path(sys.executable).resolve().parent
+
+
+def test_shutdown_controller_avisa_al_sistema_de_tareas() -> None:
+    calls: list[int] = []
+    server = uvicorn.Server(uvicorn.Config(FastAPI()))
+    controller = entry.ShutdownController(
+        server, grace=60, force_exit=lambda _code: None, on_exit=lambda: calls.append(1)
+    )
+    controller.request_exit("prueba")
+    controller.request_exit("otra")
+    controller.cancel()
+    assert calls == [1]
+    assert server.should_exit
+
+
+SHADOW = (
+    "import pathlib\n"
+    "pathlib.Path(__file__).with_name('ejecutado.txt').write_text('si')\n"
+    "raise ImportError('módulo del directorio de trabajo')\n"
+)
+
+
+def test_python_m_no_importa_modulos_del_directorio_de_trabajo(tmp_path: Path) -> None:
+    """Condición 14: `python -m faro_engine` quita el directorio de trabajo de `sys.path`
+    antes de importar nada más (aquí, un `structlog.py` puesto en él)."""
+    (tmp_path / "structlog.py").write_text(SHADOW, encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, "-m", "faro_engine", "--host", "0.0.0.0"],  # sale con código 2
+        cwd=tmp_path,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == entry.EXIT_USAGE, completed.stderr[-2000:]
+    assert completed.stdout == b""
+    assert not (tmp_path / "ejecutado.txt").exists()
+
+
+def test_motivo_python_m_pone_el_directorio_de_trabajo_en_sys_path(tmp_path: Path) -> None:
+    """Prueba de control: sin quitarlo, otro `python -m` importa el módulo del directorio."""
+    (tmp_path / "structlog.py").write_text(SHADOW, encoding="utf-8")
+    subprocess.run(
+        [sys.executable, "-m", "timeit", "-n", "1", "-r", "1", "import structlog"],
+        cwd=tmp_path,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert (tmp_path / "ejecutado.txt").exists()
