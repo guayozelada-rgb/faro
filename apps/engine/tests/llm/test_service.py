@@ -9,6 +9,7 @@ aparece en la base, en los logs ni en el resultado.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import sys
 import types
 from datetime import UTC, datetime
@@ -31,7 +32,7 @@ from faro_engine.llm.pricing import max_call_cost
 from faro_engine.llm.service import LazyLiteLlmClient, LlmService, _jitter, _strip_fence
 from faro_engine.net.client import Deadline
 from tests.fakes.llm import FAKE_KEYS, FakeFailure, FakeReply, make_request
-from tests.llm.conftest import NOW, Run, Step, World, add_run, query, set_control
+from tests.llm.conftest import NOW, STEP_ID, Run, Step, World, add_run, query, set_control
 
 ANTHROPIC_REF = "/".join(("llm", "anthropic", "default"))
 
@@ -729,10 +730,16 @@ def test_registro_sin_la_tarea_escribe_igual_el_uso_del_dia(world: World) -> Non
         now="2026-10-09T15:00:00Z",
         usage_id="u-1",
     )
-    with pytest.raises(MissingRecordError):
+    with pytest.raises(MissingRecordError, match="paso"):
         world.database.run_sync(lambda c: record_attempt(c, record))
     assert world.step_row()["attempts"] == 0
     assert world.usage_rows() == [(ANTHROPIC_REF, "2026-10-09", 1, 1, 1, 7)]
+    # Con el paso y sin la tarea: el paso y el uso del día quedan, y se avisa igual.
+    only_step = dataclasses.replace(record, step_id=STEP_ID, usage_id="u-2")
+    with pytest.raises(MissingRecordError, match="tarea"):
+        world.database.run_sync(lambda c: record_attempt(c, only_step))
+    assert world.step_row()["attempts"] == 1
+    assert world.usage_rows() == [(ANTHROPIC_REF, "2026-10-09", 2, 2, 2, 14)]
 
 
 async def test_borrar_la_tarea_durante_la_llamada_no_borra_el_gasto_del_dia(

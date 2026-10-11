@@ -367,3 +367,23 @@ async def test_caducidad_con_la_tarea_aun_en_curso_o_borrada(
     monkeypatch.setattr(world.jobs.queue, "get", gone)
     expired = await recovery.expire_approvals(world.jobs.queue)
     assert [e.run_cancelled for e in expired] == [True]
+
+
+async def test_apagado_espera_a_que_la_tarea_llegue_a_su_limite(
+    world: JobWorld, log_stream: Any
+) -> None:
+    from tests.fakes.agents import Gate
+
+    gate = Gate()
+    world.agent.hooks[1] = gate
+    await world.jobs.start()
+    await world.add_run(R1)
+    world.run_control()
+    await gate.entered.wait()
+    stopping = asyncio.create_task(world.jobs.shutdown())
+    await asyncio.sleep(0)
+    gate.opened.set()  # termina el paso y para en el siguiente límite
+    await stopping
+    assert world.run(R1).status == "paused"
+    assert world.run(R1).status_reason == "interrupted"
+    assert "jobs.worker_cancelled" not in log_stream.getvalue()
