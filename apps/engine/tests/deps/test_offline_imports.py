@@ -31,10 +31,11 @@ def test_el_marco_apaga_langsmith_y_httpx2_no_crea_contextos() -> None:
     grafo no abre conexiones ni crea contextos TLS de `httpx2`/`httpcore2`."""
     env = {**LANGSMITH_ON, "langchain_tracing_v2": "true"}
     result = run_probe("faro_graph", env=env)
-    assert result.report["env_before"] == [
+    # En Windows `os.environ` no distingue mayúsculas y devuelve los nombres en mayúsculas.
+    assert sorted(name.upper() for name in result.report["env_before"]) == [
+        "LANGCHAIN_TRACING_V2",
         "LANGSMITH_API_KEY",
         "LANGSMITH_TRACING",
-        "langchain_tracing_v2",
     ]
     assert result.report["env_after"] == []
     assert result.report["tracing_enabled"] is False
