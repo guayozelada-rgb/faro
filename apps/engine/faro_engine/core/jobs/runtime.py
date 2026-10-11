@@ -20,10 +20,13 @@ programador (APScheduler) y tres tareas: el trabajador, la recuperación de prog
 vencidas (`catch_up`, 60 s después del primer `agents_control` sin pausa) y la caducidad
 de propuestas cada 24 h. Nada se ejecuta hasta recibir un `agents_control` sin pausa.
 
-Apagado (`shutdown`): pide parar al trabajador; espera como mucho `stop_wait` (5 s) a que
-la tarea en curso llegue a un límite; si no, cancela al trabajador y espera como mucho
-`cancel_wait` (2 s) a que termine (la llamada al LLM cancelada registra su máximo); luego
-para lo demás. Total ≤ 7 s, dentro de los 10 s de `SHUTDOWN_GRACE_SECONDS`.
+Apagado: el aviso (`request_stop`, desde el `ShutdownController`) pide parar al
+trabajador y **en ese momento** programa su cancelación a los `stop_wait` (5 s), haga lo que
+haga `server.serve()` (que además tiene `timeout_graceful_shutdown` de 2 s en `__main__`).
+Si la tarea llega antes a un límite, termina `paused` (`interrupted`); si no, se cancela y
+la llamada al LLM en curso registra su máximo. `shutdown()` espera como mucho hasta esa
+cancelación más `cancel_wait` (2 s) y luego para lo demás. Total ≤ 7 s desde el aviso,
+dentro de los 10 s de `SHUTDOWN_GRACE_SECONDS` y del kill del núcleo.
 """
 
 from __future__ import annotations
@@ -107,6 +110,8 @@ class JobSystem:
         self._worker_task: asyncio.Task[None] | None = None
         self._tasks: list[asyncio.Task[None]] = []
         self._stop_requested = False
+        self._stop_deadline: float | None = None
+        self._worker_cancelled = False
 
     @property
     def started(self) -> bool:
@@ -179,22 +184,52 @@ class JobSystem:
             loop.call_soon_threadsafe(self._stop_now)
 
     def _stop_now(self) -> None:
+        """Pide parar y programa la cancelación del trabajador a los `stop_wait` s **desde
+        el aviso**, sin esperar a que vuelva `server.serve()` (revisión de seguridad de
+        T7, hallazgo 1): así la llamada al LLM en curso registra su máximo hacia los 5-7 s,
+        antes del `os._exit` y del kill del núcleo (10 s)."""
+        if self._stop_requested and self._stop_deadline is not None:
+            return
         self._stop_requested = True
         self.worker.request_stop()
+        worker = self._worker_task
+        if worker is None or worker.done():
+            return
+        self._stop_deadline = asyncio.get_running_loop().time() + self._stop_wait
+        if self.worker.busy:
+            self._spawn(self._cancel_after(self._stop_wait), "faro-worker-cancel")
+        else:
+            self._cancel_worker()  # sin tarea en curso: no hay nada que esperar
+
+    async def _cancel_after(self, seconds: float) -> None:
+        await self._sleep(seconds)
+        self._cancel_worker()
+
+    def _cancel_worker(self) -> None:
+        worker = self._worker_task
+        if worker is None or worker.done() or self._worker_cancelled:
+            return
+        self._worker_cancelled = True
+        log.warning("jobs.worker_cancelled", run_id=self.worker.current_run_id)
+        worker.cancel()
 
     async def shutdown(self) -> None:
-        """Para el trabajador (cancelando la llamada en curso si hace falta) y lo demás."""
+        """Para el trabajador (cancelando la llamada en curso si hace falta) y lo demás.
+
+        Espera como mucho hasta `stop_wait` s después del aviso y, si el trabajador sigue,
+        lo cancela (si no lo hizo ya el temporizador de `_stop_now`) y espera como mucho
+        `cancel_wait` s a que guarde el registro de la llamada cancelada."""
         self._stop_now()
         worker = self._worker_task
         if worker is not None and not worker.done():
-            if self.worker.busy:
-                await asyncio.wait({worker}, timeout=self._stop_wait)
-            if not worker.done():
-                log.warning("jobs.worker_cancelled", run_id=self.worker.current_run_id)
-                worker.cancel()
-                await asyncio.wait({worker}, timeout=self._cancel_wait)
-                if not worker.done():  # pragma: no cover - el registro tardó más de 2 s
-                    log.error("jobs.worker_not_stopped")
+            deadline = self._stop_deadline
+            remaining = 0.0 if deadline is None else deadline - asyncio.get_running_loop().time()
+            if remaining > 0:
+                await asyncio.wait({worker}, timeout=remaining)
+            self._cancel_worker()
+            await asyncio.wait({worker}, timeout=self._cancel_wait)
+            if not worker.done():  # pragma: no cover - el registro tardó más de 2 s
+                log.error("jobs.worker_not_stopped")
         for task in self._tasks:
             if not task.done():
                 task.cancel()

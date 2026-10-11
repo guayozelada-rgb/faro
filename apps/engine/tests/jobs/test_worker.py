@@ -518,3 +518,47 @@ async def test_cancelar_mientras_se_pide_la_concesion(world: JobWorld, answer: s
     await eventually(status_is(world, R1, "cancelled"))
     assert world.agent.progress.get(R1, 0) == 0
     assert grants.releases == ([(R1, "cancelled")] if answer is None else [])
+
+
+class StoppingGrants(FakeGrants):
+    """El motor recibe la orden de apagarse mientras el núcleo decide la concesión."""
+
+    worker: Any = None
+
+    async def request(self, **kwargs: Any) -> Any:
+        self.worker.request_stop()
+        return await super().request(**kwargs)
+
+
+async def test_senal_de_apagado_durante_la_concesion_no_invoca_al_agente(
+    world: JobWorld,
+) -> None:
+    """Revisión de T7, hallazgo 2 (b): SIGTERM/Ctrl+C con stdin abierto."""
+    grants = StoppingGrants()
+    world.grants = grants
+    grants.worker = world.jobs.worker
+    await started(world)
+    await world.add_run(R1)
+    world.run_control()
+    await eventually(status_is(world, R1, "paused"))
+    assert world.run(R1).status_reason == "interrupted"
+    assert world.agent.invocations == []
+    assert grants.releases == [(R1, "paused")]
+
+
+async def test_canal_cerrado_durante_la_concesion_deja_la_tarea_interrumpida(
+    world: JobWorld,
+) -> None:
+    """Revisión de T7, hallazgo 2 (a): `shutdown` por stdin cierra el canal y la concesión
+    pendiente se deniega; la tarea no falla."""
+    grants = StoppingGrants(answers=[GRANT_DENIED])
+    world.grants = grants
+    grants.worker = world.jobs.worker
+    await started(world)
+    await world.add_run(R1)
+    world.run_control()
+    await eventually(status_is(world, R1, "paused"))
+    run = world.run(R1)
+    assert (run.status_reason, run.error_code) == ("interrupted", None)
+    assert grants.releases == []
+    assert world.agent.invocations == []

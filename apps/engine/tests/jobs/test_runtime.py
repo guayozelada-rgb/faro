@@ -387,3 +387,112 @@ async def test_apagado_espera_a_que_la_tarea_llegue_a_su_limite(
     assert world.run(R1).status == "paused"
     assert world.run(R1).status_reason == "interrupted"
     assert "jobs.worker_cancelled" not in log_stream.getvalue()
+
+
+async def test_el_plazo_de_cancelacion_cuenta_desde_el_aviso_no_desde_serve(
+    world: JobWorld,
+) -> None:
+    """Revisión de seguridad de T7, hallazgo 1 (T6-C1): aunque `server.serve()` tarde (8 s
+    tras el aviso, simulados), la llamada en curso se cancela a los `stop_wait` s del aviso
+    y su máximo queda en `credential_usage` **antes** del `os._exit` del controlador."""
+    from faro_engine.__main__ import ShutdownController
+
+    hanging = HangingLLM()
+    world.llm_client = hanging
+    request = make_request(max_output_tokens=100)
+    step = run_id(72)
+
+    async def call_llm(inv: RunInvocation) -> None:
+        world.database.run_sync(
+            lambda c: insert_step(
+                c,
+                NewStep(
+                    id=step,
+                    run_id=inv.ctx.run_id,
+                    node="llm_node",
+                    kind="llm_call",
+                    idempotency_key=step,
+                    started_at="2026-10-09T15:00:00Z",
+                ),
+            )
+        )
+
+        class Step:
+            step_id = step
+
+        await inv.llm.call(inv.ctx, Step(), request)
+
+    world.agent.hooks[1] = call_llm
+    forced: list[int] = []
+    server_returns = asyncio.Event()
+
+    class SlowServer:
+        should_exit = False
+
+        async def serve(self) -> None:
+            await server_returns.wait()  # uvicorn esperando peticiones largas
+
+    server = SlowServer()
+    controller = ShutdownController(
+        server,  # type: ignore[arg-type]
+        grace=60,
+        force_exit=forced.append,
+        on_exit=world.jobs.request_stop,
+    )
+    serving = asyncio.create_task(serve_with_jobs(server.serve, world.jobs))
+    await eventually(lambda: world.jobs.started)
+    await world.add_run(R1)
+    world.run_control()
+    await hanging.entered.wait()
+
+    controller.request_exit("shutdown_event")
+    await eventually(lambda: world.sleep.pending(0.5) == 1)  # cancelación programada
+    world.sleep.release(0.5)  # pasan los `stop_wait` s desde el aviso
+    maximum = max_call_cost(
+        world.llm.catalog.model_for("anthropic", "economy"),
+        request.prompt_chars,
+        100,
+        world.llm.today(),
+    )
+    await eventually(lambda: world.query("SELECT cost_micros FROM credential_usage") != [])
+    assert not serving.done()  # `serve()` aún no volvió
+    assert forced == []  # y el `os._exit` aún no llegó
+    assert world.query("SELECT cost_micros FROM credential_usage") == [(maximum,)]
+    assert world.query("SELECT cost_estimated FROM agent_steps WHERE id = ?", (step,)) == [(1,)]
+    worker = world.jobs.worker_task
+    assert worker is not None
+    await eventually(worker.done)
+
+    server_returns.set()
+    await serving
+    controller.cancel()
+    assert world.grants.releases == [(R1, "paused")]
+
+
+async def test_aviso_de_parada_repetido_o_sin_trabajador(world: JobWorld) -> None:
+    await world.jobs.start()
+    world.jobs.request_stop()
+    world.jobs.request_stop()  # dos veces: una sola cancelación
+    await world.jobs.shutdown()
+    world.jobs._cancel_worker()  # ya terminó: sin efecto
+    assert world.jobs.worker_task is not None
+    assert world.jobs.worker_task.done()
+
+
+async def test_si_serve_vuelve_con_el_plazo_vencido_cancela_al_momento(world: JobWorld) -> None:
+    from tests.fakes.agents import Gate
+
+    gate = Gate()
+    world.agent.hooks[1] = gate
+    world.jobs._stop_wait = 0.0  # `serve()` tardó más que el plazo desde el aviso
+    await world.jobs.start()
+    await world.add_run(R1)
+    world.run_control()
+    await gate.entered.wait()
+    world.jobs.request_stop()
+    await eventually(lambda: world.jobs._stop_deadline is not None)
+    await world.jobs.shutdown()
+    assert world.jobs.worker_task is not None
+    assert world.jobs.worker_task.done()
+    assert world.run(R1).status == "running"  # la recupera el siguiente arranque
+    assert world.grants.releases == [(R1, "paused")]

@@ -128,6 +128,7 @@ EXIT_OK = 0
 EXIT_BIND_FAILED = 1
 EXIT_USAGE = 2
 EXIT_LOOP_FAILED = 3
+SERVER_GRACEFUL_SECONDS = 2
 
 log = structlog.get_logger("faro_engine")
 
@@ -577,6 +578,9 @@ def run(
             # Límite de conexiones y plazo de lectura: ver `serve_loop_factory`.
             http=LimitedH11Protocol,
             ws="none",
+            # Peticiones en curso al apagar (hay operaciones de 45-60 s): como mucho 2 s,
+            # para que el sistema de tareas termine dentro de la gracia (revisión de T7).
+            timeout_graceful_shutdown=SERVER_GRACEFUL_SECONDS,
         ),
     )
     controller = ShutdownController(server, grace=shutdown_grace, on_exit=jobs.request_stop)

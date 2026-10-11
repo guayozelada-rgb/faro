@@ -141,6 +141,7 @@ class Worker:
         self._resume_pending = True  # al arrancar: recuperar las `paused` del cierre
         self._day: date | None = None
         self._current: tuple[str, StopSignal] | None = None
+        self._busy = False
 
     # --- Señales desde fuera (rutas, apagado) --------------------------------------------
 
@@ -149,8 +150,9 @@ class Worker:
 
     @property
     def busy(self) -> bool:
-        """Hay una tarea en ejecución."""
-        return self._current is not None
+        """Está con una tarea (desde que empieza a tomarla: también mientras espera la
+        concesión). Si no, el apagado lo cancela al momento."""
+        return self._busy
 
     @property
     def current_run_id(self) -> str | None:
@@ -214,6 +216,13 @@ class Worker:
 
     async def take(self, candidate: RunRecord) -> None:
         """Comprueba, toma y ejecuta `candidate` (una tarea `queued`)."""
+        self._busy = True
+        try:
+            await self._take(candidate)
+        finally:
+            self._busy = False
+
+    async def _take(self, candidate: RunRecord) -> None:
         provider = await self._provider(candidate)
         if provider is None or provider not in self._control.snapshot().llm_providers:
             await self._queue.transition(
@@ -257,15 +266,18 @@ class Worker:
         try:
             await self._grant(run, provider)
         except RunGrantError as err:
-            if err.code == AGENTS_PAUSED and not await self._cancel_requested(run.id):
+            if await self._cancel_requested(run.id):
+                await self._finish(run, _Ending("cancelled", "cancelled"))
+            elif self._stopping:
+                # Apagado mientras se esperaba (p. ej. `shutdown` por stdin cierra el canal
+                # y la concesión se deniega): la tarea no falló, se interrumpió.
+                await self._finish(run, _Ending("paused", "paused", status_reason=INTERRUPTED))
+            elif err.code == AGENTS_PAUSED:
                 # El núcleo está en pausa y su aviso aún no llegó: vuelve a la cola.
                 await self._queue.transition(run.id, from_status="running", to_status="queued")
                 await self._wait_control_change(snapshot)
-                return
-            if err.code == AGENTS_PAUSED:
-                await self._finish(run, _Ending("cancelled", "cancelled"))
-                return
-            await self._finish(run, _Ending("failed", "failed", error_code=AGENT_GRANT_DENIED))
+            else:
+                await self._finish(run, _Ending("failed", "failed", error_code=AGENT_GRANT_DENIED))
             return
         self._current = (run.id, stop)
         release: ReleaseStatus = "paused"
@@ -273,7 +285,16 @@ class Worker:
             # Una cancelación pedida mientras se esperaba la concesión quedó en la base.
             if await self._cancel_requested(run.id):
                 stop.request_cancel()
-            ending = await self._invoke(definition, run, provider, stop, first_start=first_start)
+            if self._stopping:
+                # Apagado por señal mientras se esperaba la concesión (stdin sigue abierto):
+                # no se invoca al agente (ninguna llamada al LLM que luego se cancele).
+                stop.request_shutdown()
+            if stop.reason in ("user_cancelled", "shutdown"):
+                ending = self._stopped(RunStopped(stop.reason))
+            else:
+                ending = await self._invoke(
+                    definition, run, provider, stop, first_start=first_start
+                )
             release = ending.release
             await self._finish(run, ending)
         finally:
