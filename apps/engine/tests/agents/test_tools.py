@@ -10,6 +10,7 @@ from dataclasses import replace
 from typing import Annotated, Any, Literal
 
 import pytest
+import structlog
 from pydantic import Field
 
 from faro_engine.agents.framework.state import RunContext
@@ -19,6 +20,7 @@ from faro_engine.agents.framework.tools import (
     ToolOutput,
     ToolRegistrationError,
     ToolRunner,
+    _check_property,
     check_tool,
     result_block,
     tool_spec,
@@ -146,6 +148,16 @@ class NotInput(ToolOutput):
     limit: int = 1
 
 
+class TupleIn(ToolInput):
+    """`tuple[str, str]` genera `prefixItems` sin `items` (revisión de T8, hallazgo 2)."""
+
+    pair: tuple[str, str] = Field(default=("a", "b"))
+
+
+class AnyListIn(ToolInput):
+    values: list[Any] = Field(default_factory=list, max_length=2)
+
+
 @pytest.mark.parametrize(
     ("over", "message"),
     [
@@ -162,6 +174,8 @@ class NotInput(ToolOutput):
         ({"input_model": MapIn}, "valor simple"),
         ({"input_model": LooseIn}, "campos de más"),
         ({"input_model": NotInput}, "heredar"),
+        ({"input_model": TupleIn}, "límite"),
+        ({"input_model": AnyListIn}, "valor simple"),
         ({"timeout_seconds": 0}, "timeout"),
         ({"max_calls_per_run": 0}, "max_calls"),
         ({"max_output_chars": 0}, "max_output"),
@@ -170,6 +184,11 @@ class NotInput(ToolOutput):
 def test_reglas_de_registro(over: dict[str, Any], message: str) -> None:
     with pytest.raises(ToolRegistrationError, match=message):
         check_tool(make_tool(Pages(), **over))
+
+
+def test_lista_sin_esquema_de_elementos() -> None:
+    with pytest.raises(ToolRegistrationError, match="elementos"):
+        _check_property("values", {"type": "array", "maxItems": 2}, "herramienta 'x'")
 
 
 # --- Invocación ---------------------------------------------------------------------------
@@ -185,6 +204,19 @@ async def test_el_alcance_sale_del_contexto_no_del_modelo() -> None:
     assert err.value.details == {}  # nunca repite los argumentos recibidos
     assert pages.seen == []  # no se tocó ningún sitio
     assert runner.counts == {"read_pages": 1}  # cuenta como llamada
+
+
+async def test_el_log_solo_lleva_los_nombres_canonicos_de_alcance() -> None:
+    """Revisión de T8, hallazgo 1: la clave la elige el modelo y puede traer texto del sitio."""
+    pages = Pages()
+    key = "x" * 500 + "_site_id"
+    with structlog.testing.capture_logs() as logs, pytest.raises(FaroError) as err:
+        await ToolRunner().invoke(CTX, make_tool(pages), {key: "1", "url": "u"})
+    assert err.value.code == "tool.invalid_arguments"
+    event = next(e for e in logs if e["event"] == "agents.tool_invalid_arguments")
+    assert event["scope_fields"] == ["site_id", "url"]
+    assert all(key not in repr(e) for e in logs)
+    assert pages.seen == []
 
 
 @pytest.mark.parametrize(

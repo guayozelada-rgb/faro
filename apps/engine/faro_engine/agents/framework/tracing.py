@@ -9,10 +9,12 @@ motor: excepción conocida solo mientras LangSmith siga apagado).
 `disable_langsmith()` quita del entorno toda variable `LANGSMITH_*` y `LANGCHAIN_*`
 (comparando en mayúsculas) y llama a `langsmith.configure(enabled=False)`, que gana al
 entorno. `graph.py` la llama al importarse, así que se aplica **antes de construir
-cualquier grafo**; si no se puede aplicar, el módulo no se carga y el motor no arranca
-(mejor parado que enviando datos). Pruebas: `tests/agents/test_tracing.py` y el escenario
-`faro_graph` de `tests/deps/offline_probe.py` (con LangSmith activado en el entorno, ningún
-intento de red ni contexto TLS de `httpx2`/`httpcore2` al construir y ejecutar un grafo).
+cualquier grafo**; si no se puede aplicar, el módulo no se carga y la tarea que lo
+importa falla (`internal.unexpected`): `graph.py` se importa con la primera tarea, no al
+arrancar el motor (mejor parado que enviando datos). Pruebas: `tests/agents/test_tracing.py`
+y el escenario `faro_graph` de `tests/deps/offline_probe.py` (con LangSmith activado en el
+entorno, ningún intento de red ni contexto TLS de `httpx2`/`httpcore2` al construir y
+ejecutar un grafo).
 """
 
 from __future__ import annotations

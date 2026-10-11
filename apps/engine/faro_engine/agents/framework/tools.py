@@ -119,9 +119,14 @@ class Tool[In: ToolInput, Out: ToolOutput]:
     source: Source = "api"
 
 
-def _is_scope_field(name: str) -> bool:
+def _scope_matches(name: str) -> set[str]:
+    """Nombres de `SCOPE_FIELDS` con los que coincide `name` (igual o con sufijo `_<campo>`)."""
     lowered = name.lower()
-    return any(lowered == scope or lowered.endswith("_" + scope) for scope in SCOPE_FIELDS)
+    return {scope for scope in SCOPE_FIELDS if lowered == scope or lowered.endswith("_" + scope)}
+
+
+def _is_scope_field(name: str) -> bool:
+    return bool(_scope_matches(name))
 
 
 _BOUNDS: Final[Mapping[str, frozenset[str]]] = {
@@ -142,9 +147,17 @@ def _check_property(name: str, prop: Mapping[str, Any], where: str) -> None:
         bounds = _BOUNDS.get(str(kind))
         if bounds is not None and not bounds & set(variant):
             raise ToolRegistrationError(f"{where}: {name!r} necesita un límite (longitud o rango)")
-        items = variant.get("items")
-        if kind == "array" and isinstance(items, Mapping):
-            _check_property(name, items, where)
+        if kind == "array":
+            # `tuple[...]` genera `prefixItems`: cada posición necesita su propio límite.
+            # Una lista sin esquema de elementos no se acepta.
+            items = variant.get("items")
+            prefix = variant.get("prefixItems")
+            if not isinstance(items, Mapping) and not isinstance(prefix, list):
+                raise ToolRegistrationError(f"{where}: {name!r} debe declarar sus elementos")
+            if isinstance(items, Mapping):
+                _check_property(name, items, where)
+            for item in prefix if isinstance(prefix, list) else []:
+                _check_property(name, item, where)
 
 
 def _check_schema(schema: Mapping[str, Any], where: str) -> None:
@@ -225,12 +238,14 @@ class ToolRunner:
             raise jobs_error(TOOL_LIMIT_REACHED)
         self.counts[tool.name] = used + 1
         self.changed = True
-        scope = sorted(name for name in raw_args if _is_scope_field(str(name)))
+        # Solo los nombres canónicos de `SCOPE_FIELDS`: la clave que eligió el modelo puede
+        # traer texto del sitio (revisión de seguridad de T8, hallazgo 1).
+        scope = sorted(set().union(*(_scope_matches(str(name)) for name in raw_args)))
         try:
             args = tool.input_model.model_validate(dict(raw_args))
         except ValidationError:
-            # Solo el nombre de la herramienta y, si los hay, los campos de alcance (de una
-            # lista fija): nunca los valores que mandó el modelo.
+            # Solo el nombre de la herramienta y, si los hay, los campos de alcance de la
+            # lista fija: nunca los valores ni las claves que mandó el modelo.
             log.warning(
                 "agents.tool_invalid_arguments",
                 run_id=ctx.run_id,

@@ -137,3 +137,18 @@ Fallos ajenos conocidos de este contenedor (proxy): `test_sin_desactivar_langsmi
 - **T11:** sin cambios respecto a T7 (lanzador de release, bloqueo global de red en `conftest.py`, humo del empaquetado). El humo debería ejecutar un grafo con `FaroCheckpointSaver` y comprobar que `faro_engine/agents/framework/graph.py` entra en el paquete (se importa con `importlib`).
 - **T14 (cierre):** las skills `agentes-langgraph`, `herramientas-de-agente` y `prompts-y-evals` tienen puntos "(verificar en T8)" resueltos aquí (§2: tipos del serializador, `configurable`, nivel 0, contador de herramientas, códigos `tool.*`, firma de `build_graph(g: AgentGraph)` y de los nodos `fn(state, n: NodeContext)`); `contratos-api-local` y `faro-arquitectura` (módulos `agents/framework`, sin `core/jobs/submit.py`).
 - **Mejoras posibles (fuera de la spec):** podar los checkpoints de una tarea cancelada desde la ruta mientras no corría (hoy se conservan; solo el trabajador poda al terminar); caducidad de aprobaciones `approved` sin ejecutar (pendiente de F5, ADR 0016 C).
+
+## 8. Revisión de seguridad (2026-10-11)
+
+Veredicto de `revisor-seguridad`: **aprobado con cambios**. Hay 4 hallazgos bajos y ninguno se puede activar hoy en producción: `AGENT_SPECS` está vacío, `agent-grants.json` sigue siendo `[]` y `LiteLlmClient` rechaza herramientas.
+
+| # | Hallazgo | Estado | Prueba |
+| --- | --- | --- | --- |
+| 1 | `ToolRunner.invoke` registraba en el log la clave de alcance **tal cual** la mandó el modelo (p. ej. `"<texto del sitio>_site_id"`), contra §7 | Corregido: solo los nombres canónicos de `SCOPE_FIELDS` que coinciden (`_scope_matches`) | `test_el_log_solo_lleva_los_nombres_canonicos_de_alcance` |
+| 2 | `check_tool` no revisaba `prefixItems`: un `tuple[str, str]` en `In` pasaba con cadenas sin límite | Corregido: se recorre `prefixItems`, y una lista sin esquema de elementos se rechaza | `test_reglas_de_registro` (casos `TupleIn` y `AnyListIn`) |
+| 3 | Al terminar en `failed` (`worker.py::_finish`), las propuestas `pending` y las `approved` sin ejecutar no se cierran: es la aprobación colgada que el ADR 0016 A quería evitar. Hoy no se puede ejecutar | **Condición T8-C1 para T9**, antes de registrar `site_summary` | En la misma transacción que pasa la tarea a `failed`, esas propuestas pasan a `cancelled`. Prueba: nivel 3 y fallo forzado entre proponer y ejecutar → ninguna queda `approved` ni `pending` |
+| 4 | El marco no impide llamar al LLM ni a herramientas dentro del nodo que propone (se vuelve a ejecutar al reanudar, también al rechazar: choca con el ADR 0016 B), ni que un nodo arme un `LlmRequest` a mano saltándose `render` | **Condición T8-C2 para T9** | `call_llm` y `run_tool_calls` lanzan error si `step.kind == "approval"`; `validate()` exige que `proposal_node` sea de tipo `approval`; prueba o regla de lint de que ningún `agents/<agente>/` construye `LlmRequest` ni `LlmMessage`. Prueba: un nodo que propone y llama al LLM → error |
+
+También se corrigió el texto de `tracing.py`: si LangSmith no se puede apagar, falla la tarea que importa `graph.py` (`internal.unexpected`), no el arranque del motor. Para F4 queda anotado que el ejecutor no mira `cancel_requested` y que hay una ventana mínima entre comprobar la pausa y escribir (no importa con efectos `internal`; entra en la condición del ADR 0016 A).
+
+**Condiciones que el revisor da por cerradas:** T6-C4 (parte T8; antes de habilitar herramientas en el adaptador real sigue pendiente la prueba por proveedor con `respx`), el hallazgo 3 de T7, las tres notas del revisor para T8, y las condiciones 7 y 13 de T2. La prueba de humo de T11 debe repetir la sonda de `httpx2` con `FaroCheckpointSaver`.
