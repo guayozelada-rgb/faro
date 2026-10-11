@@ -136,9 +136,7 @@ async def _cleanup(client: Any) -> None:
             try:
                 hardening.apply_litellm_settings(litellm)
             except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "llm.cleanup_failed", step="settings", error_type=type(exc).__name__
-                )
+                log.warning("llm.cleanup_failed", step="settings", error_type=type(exc).__name__)
 
 
 class LiteLlmClient:

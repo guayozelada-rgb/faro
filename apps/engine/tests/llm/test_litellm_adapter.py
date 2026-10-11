@@ -70,7 +70,8 @@ def run_probe(
 def matrix() -> dict[str, Any]:
     work = Path(os.environ.get("TMP", ENGINE_DIR)) / "faro-adapter-matrix"
     work.mkdir(parents=True, exist_ok=True)
-    report, _, _ = run_probe(work, "matrix")
+    report, out, err = run_probe(work, "matrix")
+    report["_output"] = out + err
     return report
 
 
@@ -154,6 +155,35 @@ def test_salida_estructurada_con_los_seis_modelos_solo_va_a_los_hosts_oficiales(
     for result in structured["models"].values():
         assert result["tokens"] == [11, 2], result
     assert structured["requires_key"] is True
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+@pytest.mark.parametrize("failing", ["close", "cache", "settings"])
+def test_un_fallo_de_limpieza_no_sustituye_el_resultado(provider: str, failing: str) -> None:
+    """Revisión de seguridad de T6, hallazgo 1: cada paso de la limpieza por separado."""
+    cleanup = matrix()["cleanup"]
+    ok = cleanup[f"{provider}:{failing}:ok"]
+    assert ok["result"]["text"] == "hola"
+    assert ok["steps"] == ["close", "cache", "settings"]
+    failed = cleanup[f"{provider}:{failing}:server_error"]
+    assert failed["result"] == {"kind": "server_error", "retry_after": None}
+    assert failed["steps"] == ["close", "cache", "settings"]
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+def test_cancelar_durante_close_termina_la_limpieza_y_sale_cancelada(provider: str) -> None:
+    """La cancelación sale (el servicio cuenta el intento como consumido, ver
+    `test_service.py`), pero antes se vacía la caché y se reaplican los ajustes."""
+    cancel = matrix()["cleanup"][f"{provider}:cancel"]
+    assert cancel == {"outcome": "cancelled", "steps": ["close", "cache", "settings"]}
+
+
+def test_los_fallos_de_limpieza_no_dejan_la_clave_ni_clientes_en_cache() -> None:
+    report = matrix()
+    assert report["cleanup"]["cache_entries"] == 0
+    assert "llm.cleanup_failed" in report["_output"]
+    for key in KEYS.values():
+        assert key not in report["_output"]
 
 
 def test_herramientas_rechazadas_sin_enviar_nada() -> None:

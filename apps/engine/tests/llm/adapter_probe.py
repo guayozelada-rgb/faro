@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import gc
 import json
 import os
@@ -374,6 +375,7 @@ def scenario_matrix() -> dict[str, Any]:
     asyncio.run(run())
     no_key_result = asyncio.run(run_no_key())
     structured = asyncio.run(run_structured())
+    cleanup = asyncio.run(run_cleanup(client, current, responder))
     import litellm
 
     gc.collect()
@@ -381,6 +383,7 @@ def scenario_matrix() -> dict[str, Any]:
         "results": results,
         "no_key": no_key_result,
         "structured": structured,
+        "cleanup": cleanup,
         "requests": {p: s[:1] + s[-1:] for p, s in seen.items()},
         "redirect_hits": trap.connections,
         "cache_entries": len(litellm.in_memory_llm_clients_cache.cache_dict),
@@ -389,6 +392,101 @@ def scenario_matrix() -> dict[str, Any]:
     }
     trap.close()
     return report
+
+
+async def run_cleanup(
+    client: Any, current: dict[str, Any], responder: Callable[[str], Any]
+) -> dict[str, Any]:
+    """Hallazgo 1 de la revisión de seguridad de T6: un fallo en cada paso de la limpieza
+    (cerrar el cliente propio, vaciar la caché, volver a aplicar los ajustes) no sustituye
+    la respuesta ni el fallo original, y los pasos siguientes se ejecutan igual. Una
+    cancelación durante `close()` sale como cancelación, también tras vaciar la caché."""
+    import litellm
+    import respx
+
+    from faro_engine.llm import hardening, litellm_client
+
+    real_build = litellm_client.build_client
+    real_drop = litellm_client.drop_client_cache
+    real_apply = hardening.apply_litellm_settings
+    steps: list[str] = []
+    close_mode: dict[str, str | None] = {"mode": None}
+    in_close: dict[str, asyncio.Event] = {}
+
+    def build(provider: str, api_key: str) -> Any:
+        built = real_build(provider, api_key)
+        original_close = built.close
+
+        async def close() -> None:
+            steps.append("close")
+            await original_close()
+            if close_mode["mode"] == "raise":
+                raise RuntimeError("close " + KEYS[provider])
+            if close_mode["mode"] == "cancel":
+                in_close["event"].set()
+                await asyncio.Event().wait()  # la prueba cancela aquí
+
+        built.close = close
+        return built
+
+    async def drop(*, fail: bool = False) -> None:
+        steps.append("cache")
+        await real_drop()
+        if fail:
+            raise RuntimeError("cache")
+
+    def apply(module: Any, *, fail: bool = False) -> None:
+        steps.append("settings")
+        real_apply(module)
+        if fail:
+            raise RuntimeError("settings")
+
+    async def one(provider: str, case: str, failing: str) -> dict[str, Any]:
+        steps.clear()
+        current["case"] = CASES[case]
+        close_mode["mode"] = "raise" if failing == "close" else None
+        litellm_client.drop_client_cache = functools.partial(drop, fail=failing == "cache")
+        hardening.apply_litellm_settings = functools.partial(apply, fail=failing == "settings")
+        result = await attempt(client, provider)
+        return {"result": result, "steps": list(steps)}
+
+    async def cancelled(provider: str) -> dict[str, Any]:
+        steps.clear()
+        current["case"] = CASES["ok"]
+        close_mode["mode"] = "cancel"
+        litellm_client.drop_client_cache = drop
+        hardening.apply_litellm_settings = apply
+        in_close["event"] = asyncio.Event()
+        task = asyncio.create_task(attempt(client, provider))
+        await in_close["event"].wait()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+        else:
+            outcome = "returned"
+        return {"outcome": outcome, "steps": list(steps)}
+
+    outcome: dict[str, Any] = {}
+    litellm_client.build_client = build
+    try:
+        with respx.mock(assert_all_called=False) as mock:
+            for provider, url in URLS.items():
+                mock.post(url).mock(side_effect=responder(provider))
+            for provider in ("openai", "anthropic"):
+                for failing in ("close", "cache", "settings"):
+                    for case in ("ok", "server_error"):
+                        name = f"{provider}:{failing}:{case}"
+                        outcome[name] = await one(provider, case, failing)
+                outcome[f"{provider}:cancel"] = await cancelled(provider)
+    finally:
+        litellm_client.build_client = real_build
+        litellm_client.drop_client_cache = real_drop
+        hardening.apply_litellm_settings = real_apply
+    hardening.check_litellm_settings(litellm)
+    outcome["cache_entries"] = len(litellm.in_memory_llm_clients_cache.cache_dict)
+    return outcome
 
 
 # --- trap --------------------------------------------------------------------------------

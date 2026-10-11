@@ -659,9 +659,13 @@ async def test_adaptador_perezoso_que_no_carga_falla_sin_enviar(world: World) ->
     with structlog.testing.capture_logs() as logs:
         with pytest.raises(LlmCallError) as info:
             await lazy.complete(world_call(), "x")
-        await expect_error(world, "llm.provider_error", client=lazy)
+        service = world.service(client=lazy)
+        await expect_error(world, "llm.provider_error", service=service)
     assert info.value.kind == "adapter_unavailable"
     assert any(e["event"] == "llm.adapter_unavailable" for e in logs)
+    # Revisión de seguridad de T6, hallazgo 5: sin adaptador no se pide la clave.
+    assert world.secrets.requests == []
+    assert service.limiter.reserved(ANTHROPIC_REF) == 0
 
 
 async def test_adaptador_perezoso_carga_una_vez(monkeypatch: pytest.MonkeyPatch) -> None:

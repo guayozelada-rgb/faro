@@ -46,6 +46,7 @@ import os
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Final
 
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -137,13 +138,12 @@ async def run_all(client: LlmClient, models: list[CatalogModel], key: str) -> No
 
 def quiet_logging() -> None:
     """Registros del motor (con su redacción) y de LiteLLM a un sumidero que no imprime."""
-    from faro_engine.core.logging import configure_logging  # noqa: PLC0415
+    from faro_engine.core.logging import configure_logging
 
-    sink = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115 - vive lo que el proceso
-    configure_logging(level=logging.CRITICAL + 10, stream=sink)
-    for name in list(logging.root.manager.loggerDict):
-        if name.startswith("LiteLLM"):
-            logging.getLogger(name).disabled = True
+    # Los loggers `LiteLLM*` los deja el endurecimiento sin handlers propios y propagando a
+    # la raíz, que escribe aquí.
+    sink = Path(os.devnull).open("w", encoding="utf-8")  # noqa: SIM115 - vive lo que el proceso
+    configure_logging(level=logging.CRITICAL, stream=sink)
 
 
 def load_client() -> LlmClient:
@@ -157,13 +157,14 @@ def main(
     *,
     read_key: Callable[[str], str] | None = None,
     client_factory: Callable[[], LlmClient] | None = None,
+    setup_logging: Callable[[], None] = quiet_logging,
 ) -> int:
     parser = argparse.ArgumentParser(description="Comprobación manual de los modelos (T6).")
     parser.add_argument("provider", choices=PROVIDERS)
     parser.add_argument("--tier", choices=TIERS)
     args = parser.parse_args(argv)
     models = models_for(args.provider, args.tier)
-    quiet_logging()
+    setup_logging()  # antes de cargar el adaptador (revisión de seguridad de T6, hallazgo 6)
     client = (client_factory or load_client)()
     today = datetime.now(UTC).date()
     worst = sum(max_call_cost(m, len(PROMPT), MAX_OUTPUT_TOKENS, today) for m in models)
