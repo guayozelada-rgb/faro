@@ -9,9 +9,7 @@
     "name": "read_site_content",
     "arguments": {
       "site_id": "01920000-0000-7000-8000-00000000a002",
-      "kinds": [
-        "page"
-      ]
+      "kinds": ["page"]
     }
   }
 }

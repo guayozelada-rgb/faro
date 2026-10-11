@@ -62,16 +62,8 @@
       "output": {
         "version": 1,
         "site_kind": "restaurant",
-        "topics": [
-          "Cocina casera",
-          "Menú del día",
-          "Reservas"
-        ],
-        "offerings": [
-          "Menú del día",
-          "Carta de cocina casera",
-          "Reservas de mesa"
-        ],
+        "topics": ["Cocina casera", "Menú del día", "Reservas"],
+        "offerings": ["Menú del día", "Carta de cocina casera", "Reservas de mesa"],
         "audience": "Personas que buscan dónde comer cocina casera en su zona.",
         "language": "es"
       },
@@ -82,11 +74,7 @@
         "version": 1,
         "headline": "Restaurante de cocina casera con menú del día",
         "summary": "Tu sitio presenta un restaurante de cocina casera. Muestra la carta, el menú del día y cómo llegar, y permite hacer reservas. En el blog cuentas novedades como el menú de otoño.",
-        "offerings": [
-          "Menú del día",
-          "Carta de cocina casera",
-          "Reservas de mesa"
-        ],
+        "offerings": ["Menú del día", "Carta de cocina casera", "Reservas de mesa"],
         "audience": "Vecinos y visitantes que buscan comer cocina casera.",
         "language": "es"
       },
@@ -96,12 +84,7 @@
   "checks": {
     "language": "es",
     "site_language": "es",
-    "must_mention_any": [
-      "restaurante",
-      "cocina"
-    ],
-    "must_not_contain": [
-      "HACKEADO"
-    ]
+    "must_mention_any": ["restaurante", "cocina"],
+    "must_not_contain": ["HACKEADO"]
   }
 }

@@ -171,3 +171,19 @@ def test_un_agente_de_prueba_con_nodo_que_propone_valido() -> None:
     spec = make_spec(FakeNotes())
     assert replace(spec).shape().nodes["propose"] == "approval"
     spec.validate()
+
+
+def test_sin_funcion_de_resultado_no_hay_resultado() -> None:
+    spec = make_spec(FakeNotes())
+    bare = spec_module.AgentSpec(
+        kind=spec.kind,
+        version=1,
+        requires_site=True,
+        secrets=spec.secrets,
+        max_grant_seconds=900,
+        state_schema=spec.state_schema,
+        build_graph=spec.build_graph,
+        estimate_fn=spec.estimate_fn,
+    )
+    assert bare.result(None) is None
+    assert bare.dev_replies == {}

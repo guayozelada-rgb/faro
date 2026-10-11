@@ -25,6 +25,7 @@ from faro_engine.core.db.database import open_profile_database
 from faro_engine.core.errors import SITE_TIMEOUT, site_error
 from faro_engine.core.jobs.control import AgentsControlState
 from faro_engine.core.jobs.recovery import expire_approvals
+from faro_engine.core.secrets import SecretError
 from faro_engine.core.store import settings
 from faro_engine.core.store.approvals import Decision
 from faro_engine.core.store.runs import NewRun
@@ -521,5 +522,32 @@ async def test_el_nodo_que_propone_no_llama_al_modelo_ni_a_herramientas(
         steps = world.steps(run)
         assert (steps[-1].node, steps[-1].status) == ("propose_save", "failed")
         assert world.approval(run) is None
+    finally:
+        await world.jobs.shutdown()
+
+
+async def test_concesion_caducada_al_leer_el_sitio_se_renueva_una_vez(database: Any) -> None:
+    """El núcleo deniega el token del sitio (concesión caducada o revocada): el trabajador
+    pide una concesión nueva y repite `read_site` desde el último estado guardado."""
+    denials = ["vault.secret_not_allowed"]
+
+    async def before() -> None:
+        if denials:
+            raise SecretError(denials.pop())
+
+    reader = FakeSiteReader(snapshots={SITE: snapshot_of()}, before=before)
+    world = summary_world(database, reader=reader)
+    try:
+        run = await launch(world)
+        await world.until(run, "waiting_approval")
+        assert len(reader.calls) == 2
+        assert len(world.grants.requests) == 2
+        steps = world.steps(run)
+        assert (steps[0].node, steps[0].status, steps[0].error_code) == (
+            "read_site",
+            "failed",
+            "vault.secret_not_allowed",
+        )
+        assert world.prompt_ids() == [CLASSIFY, WRITE]
     finally:
         await world.jobs.shutdown()

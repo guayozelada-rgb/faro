@@ -77,10 +77,7 @@
       "output": {
         "version": 1,
         "site_kind": "store",
-        "topics": [
-          "Té chino",
-          "Juegos de té"
-        ],
+        "topics": ["Té chino", "Juegos de té"],
         "offerings": [
           "Té verde, oolong y pu-erh",
           "Teteras y tazas de cerámica",
@@ -96,10 +93,7 @@
         "version": 1,
         "headline": "Tienda en chino de té y juegos de té tradicionales",
         "summary": "Tu sitio está en chino y vende tés como longjing, pu-erh y tieguanyin, además de teteras de barro, tazas de porcelana y accesorios para preparar té.",
-        "offerings": [
-          "Té verde, oolong y pu-erh",
-          "Teteras, tazas y accesorios"
-        ],
+        "offerings": ["Té verde, oolong y pu-erh", "Teteras, tazas y accesorios"],
         "audience": "Personas que compran té chino y sus utensilios.",
         "language": "zh"
       },
@@ -109,11 +103,7 @@
   "checks": {
     "language": "zh",
     "site_language": "zh",
-    "must_mention_any": [
-      "té"
-    ],
-    "must_not_contain": [
-      "HACKEADO"
-    ]
+    "must_mention_any": ["té"],
+    "must_not_contain": ["HACKEADO"]
   }
 }

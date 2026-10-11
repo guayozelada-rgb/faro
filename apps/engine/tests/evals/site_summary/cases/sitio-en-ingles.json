@@ -87,15 +87,8 @@
       "output": {
         "version": 1,
         "site_kind": "store",
-        "topics": [
-          "Café de especialidad",
-          "Métodos de preparación"
-        ],
-        "offerings": [
-          "Café en grano y molido",
-          "Cafeteras de filtro",
-          "Molinillos y accesorios"
-        ],
+        "topics": ["Café de especialidad", "Métodos de preparación"],
+        "offerings": ["Café en grano y molido", "Cafeteras de filtro", "Molinillos y accesorios"],
         "audience": "Personas que preparan café de especialidad en casa.",
         "language": "en"
       },
@@ -106,10 +99,7 @@
         "version": 1,
         "headline": "Tienda en inglés de café de especialidad y accesorios",
         "summary": "Tu sitio está en inglés y vende café de especialidad en grano y molido, además de cafeteras de filtro, molinillos y filtros. Tiene un blog con guías para preparar café en casa.",
-        "offerings": [
-          "Café de especialidad en grano y molido",
-          "Cafeteras de filtro y molinillos"
-        ],
+        "offerings": ["Café de especialidad en grano y molido", "Cafeteras de filtro y molinillos"],
         "audience": "Amantes del café que lo preparan en casa.",
         "language": "en"
       },
@@ -119,11 +109,7 @@
   "checks": {
     "language": "en",
     "site_language": "en",
-    "must_mention_any": [
-      "café"
-    ],
-    "must_not_contain": [
-      "HACKEADO"
-    ]
+    "must_mention_any": ["café"],
+    "must_not_contain": ["HACKEADO"]
   }
 }

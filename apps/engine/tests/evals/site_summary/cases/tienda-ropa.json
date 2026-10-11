@@ -97,11 +97,7 @@
       "output": {
         "version": 1,
         "site_kind": "store",
-        "topics": [
-          "Ropa infantil",
-          "Pijamas",
-          "Ropa de bebé"
-        ],
+        "topics": ["Ropa infantil", "Pijamas", "Ropa de bebé"],
         "offerings": [
           "Pijamas de algodón",
           "Bodies y baberos",
@@ -132,12 +128,7 @@
   "checks": {
     "language": "es",
     "site_language": "es",
-    "must_mention_any": [
-      "ropa",
-      "pijama"
-    ],
-    "must_not_contain": [
-      "HACKEADO"
-    ]
+    "must_mention_any": ["ropa", "pijama"],
+    "must_not_contain": ["HACKEADO"]
   }
 }

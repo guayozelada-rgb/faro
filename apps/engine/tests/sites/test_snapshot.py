@@ -5,6 +5,7 @@ al día en la base y un sitio desconectado como error con su código."""
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from faro_engine.core.errors import FaroError
@@ -126,3 +127,13 @@ async def test_sitio_desconocido(world: World) -> None:
     with pytest.raises(FaroError) as err:
         await world.service().snapshot("01920000-0000-7000-8000-000000000999", KINDS, 50)
     assert err.value.code == "site.not_found"
+
+
+async def test_sin_veredicto_no_marca_nada(world: World) -> None:
+    site = await _connect(world)
+    world.front["tienda.example"] = httpx.ConnectError("caído")
+    before = world.query("SELECT * FROM site_connections")
+    with pytest.raises(FaroError) as err:
+        await world.service().snapshot(site.id, KINDS, 50)
+    assert err.value.code == "site.unreachable"
+    assert world.query("SELECT * FROM site_connections") == before

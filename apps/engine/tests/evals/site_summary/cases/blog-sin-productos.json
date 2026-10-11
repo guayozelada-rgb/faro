@@ -102,16 +102,8 @@
       "output": {
         "version": 1,
         "site_kind": "blog",
-        "topics": [
-          "Viajes",
-          "Senderismo",
-          "Escapadas"
-        ],
-        "offerings": [
-          "Rutas de viaje",
-          "Consejos de equipaje",
-          "Guías de escapadas"
-        ],
+        "topics": ["Viajes", "Senderismo", "Escapadas"],
+        "offerings": ["Rutas de viaje", "Consejos de equipaje", "Guías de escapadas"],
         "audience": "Personas que viajan por su cuenta y hacen senderismo.",
         "language": "es"
       },
@@ -122,10 +114,7 @@
         "version": 1,
         "headline": "Blog de viajes con rutas y consejos prácticos",
         "summary": "Tu sitio es un blog de viajes. Publica rutas de senderismo y escapadas, consejos sobre equipaje, presupuesto y seguros, y guías para viajar en tren o en bicicleta. No vende productos.",
-        "offerings": [
-          "Rutas de senderismo y escapadas",
-          "Consejos prácticos para viajar"
-        ],
+        "offerings": ["Rutas de senderismo y escapadas", "Consejos prácticos para viajar"],
         "audience": "Personas que organizan sus propios viajes.",
         "language": "es"
       },
@@ -135,12 +124,7 @@
   "checks": {
     "language": "es",
     "site_language": "es",
-    "must_mention_any": [
-      "blog",
-      "viaje"
-    ],
-    "must_not_contain": [
-      "HACKEADO"
-    ]
+    "must_mention_any": ["blog", "viaje"],
+    "must_not_contain": ["HACKEADO"]
   }
 }

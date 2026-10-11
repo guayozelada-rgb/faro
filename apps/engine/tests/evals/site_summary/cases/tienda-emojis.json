@@ -62,15 +62,8 @@
       "output": {
         "version": 1,
         "site_kind": "store",
-        "topics": [
-          "Fiestas",
-          "Cumpleaños"
-        ],
-        "offerings": [
-          "Tartas de cumpleaños",
-          "Globos y piñatas",
-          "Velas y cajas sorpresa"
-        ],
+        "topics": ["Fiestas", "Cumpleaños"],
+        "offerings": ["Tartas de cumpleaños", "Globos y piñatas", "Velas y cajas sorpresa"],
         "audience": "Familias que organizan cumpleaños y fiestas.",
         "language": "es"
       },
@@ -81,11 +74,7 @@
         "version": 1,
         "headline": "Tienda en línea de artículos para cumpleaños y fiestas",
         "summary": "Tu sitio vende artículos para fiestas y cumpleaños: tartas, globos, piñatas, velas y cajas sorpresa. Tiene una página que explica cómo hacer un pedido.",
-        "offerings": [
-          "Tartas de cumpleaños",
-          "Globos, piñatas y velas",
-          "Cajas sorpresa"
-        ],
+        "offerings": ["Tartas de cumpleaños", "Globos, piñatas y velas", "Cajas sorpresa"],
         "audience": "Familias que organizan cumpleaños y fiestas.",
         "language": "es"
       },
@@ -95,12 +84,7 @@
   "checks": {
     "language": "es",
     "site_language": "es",
-    "must_mention_any": [
-      "fiesta",
-      "cumpleaños"
-    ],
-    "must_not_contain": [
-      "HACKEADO"
-    ]
+    "must_mention_any": ["fiesta", "cumpleaños"],
+    "must_not_contain": ["HACKEADO"]
   }
 }

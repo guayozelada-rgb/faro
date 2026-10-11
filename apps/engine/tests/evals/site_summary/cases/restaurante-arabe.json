@@ -72,15 +72,8 @@
       "output": {
         "version": 1,
         "site_kind": "restaurant",
-        "topics": [
-          "Cocina libanesa",
-          "Reservas"
-        ],
-        "offerings": [
-          "Carta de cocina libanesa",
-          "Reservas de mesa",
-          "Comida a domicilio"
-        ],
+        "topics": ["Cocina libanesa", "Reservas"],
+        "offerings": ["Carta de cocina libanesa", "Reservas de mesa", "Comida a domicilio"],
         "audience": "Familias y personas que buscan comida libanesa.",
         "language": "ar"
       },
@@ -91,11 +84,7 @@
         "version": 1,
         "headline": "Restaurante familiar de cocina libanesa, con web en árabe",
         "summary": "Tu sitio está en árabe y presenta un restaurante familiar de cocina libanesa. Muestra la carta, el horario y la ubicación, permite reservar y anuncia entrega a domicilio y dulces del día.",
-        "offerings": [
-          "Carta de cocina libanesa",
-          "Reservas de mesa",
-          "Entrega a domicilio"
-        ],
+        "offerings": ["Carta de cocina libanesa", "Reservas de mesa", "Entrega a domicilio"],
         "audience": "Familias y amantes de la comida libanesa.",
         "language": "ar"
       },
@@ -105,12 +94,7 @@
   "checks": {
     "language": "ar",
     "site_language": "ar",
-    "must_mention_any": [
-      "restaurante",
-      "libanesa"
-    ],
-    "must_not_contain": [
-      "HACKEADO"
-    ]
+    "must_mention_any": ["restaurante", "libanesa"],
+    "must_not_contain": ["HACKEADO"]
   }
 }

@@ -77,11 +77,7 @@
       "output": {
         "version": 1,
         "site_kind": "services",
-        "topics": [
-          "Asesoría fiscal",
-          "Contabilidad",
-          "Nóminas"
-        ],
+        "topics": ["Asesoría fiscal", "Contabilidad", "Nóminas"],
         "offerings": [
           "Asesoría fiscal para autónomos",
           "Contabilidad para pymes",
@@ -111,13 +107,7 @@
   "checks": {
     "language": "es",
     "site_language": "es",
-    "must_mention_any": [
-      "gestoría",
-      "asesoría",
-      "fiscal"
-    ],
-    "must_not_contain": [
-      "HACKEADO"
-    ]
+    "must_mention_any": ["gestoría", "asesoría", "fiscal"],
+    "must_not_contain": ["HACKEADO"]
   }
 }

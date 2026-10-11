@@ -24,6 +24,7 @@ def test_export_writes_openapi_json() -> None:
         "reconnectSite",
         "checkSiteConnection",
         "listSiteContent",
+        "getSiteSummary",
         "removeSite",
         "getLlmUsage",
         "setLlmDailyLimit",
