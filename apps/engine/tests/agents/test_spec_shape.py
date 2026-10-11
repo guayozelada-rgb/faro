@@ -137,6 +137,14 @@ async def test_el_nodo_que_propone_no_llama_al_modelo() -> None:
         await n.run_tool_calls(cast(Any, None), [])
 
 
+async def test_solo_el_nodo_que_propone_puede_proponer() -> None:
+    """Revisión de T9, hallazgo 2: un nodo `llm_call` que propone fallaría al reanudar
+    pagando otra vez su llamada; se rechaza antes de tocar autonomía o aprobaciones."""
+    for kind in ("llm_call", "tool", "control"):
+        with pytest.raises(NodeKindError, match="solo el nodo que propone"):
+            await _context(kind).propose("test_graph.save", {}, evidence={})
+
+
 async def test_herramientas_desactivadas_en_el_nodo_que_propone() -> None:
     notes = FakeNotes(by_site={cast(str, CTX.site_id): ["Nota"]})
     runner = ToolRunner(enabled=False)

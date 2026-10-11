@@ -188,6 +188,8 @@ def test_los_elementos_se_acotan_por_bytes() -> None:
 def test_ayudas_del_grafo() -> None:
     assert g.path_of("https://x.test/a/b/?c=1") == "/a/b/?c=1"
     assert g.path_of("https://x.test") == "/"
+    # Revisión de T9, hallazgo 1: una URL que `urlsplit` no entiende no hace fallar la tarea.
+    assert g.path_of("http://[x/p") == "/"
     mixed = [
         {"kind": "post", "title": "1"},
         {"kind": "page", "title": "2"},

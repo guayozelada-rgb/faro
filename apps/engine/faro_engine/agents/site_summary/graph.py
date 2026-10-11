@@ -75,8 +75,13 @@ KIND_LABELS: Final[Mapping[str, str]] = {"page": "página", "post": "entrada", "
 
 
 def path_of(url: str) -> str:
-    """La ruta de una dirección del sitio (el dominio es el mismo en todas)."""
-    parts = urlsplit(url)
+    """La ruta de una dirección del sitio (el dominio es el mismo en todas). Una dirección
+    que `urlsplit` no entiende (p. ej. `http://[x/p`) se queda en `/`: la pone el sitio y no
+    debe hacer fallar la tarea (revisión de seguridad de T9, hallazgo 1)."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "/"
     path = parts.path or "/"
     return f"{path}?{parts.query}" if parts.query else path
 

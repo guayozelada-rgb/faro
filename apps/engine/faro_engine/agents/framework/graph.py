@@ -185,7 +185,12 @@ class NodeContext:
     ) -> dict[str, Any]:
         """Nodo estándar que propone una acción (ver la cabecera del módulo). Devuelve la
         actualización del estado: `outcome` (`suggested` | `approved` | `rejected`),
-        `approval_id` y, con nivel 0, `suggestion`."""
+        `approval_id` y, con nivel 0, `suggestion`. Solo desde el nodo `approval`: si otro
+        nodo propusiera después de llamar al modelo, al reanudar o rechazar volvería a pagar
+        esa llamada (ADR 0016 B; revisión de seguridad de T9, hallazgo 2)."""
+        if self.step.kind != "approval":
+            log.error("agents.propose_outside_approval_node", run_id=self.ctx.run_id)
+            raise NodeKindError("solo el nodo que propone puede proponer")
         deps, ctx = self.deps, self.ctx
         action = deps.action_catalog.require(action_kind)
         decision = await deps.autonomy.decide(ctx.agent_kind, ctx.site_id, action_kind)
