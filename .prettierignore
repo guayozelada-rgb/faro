@@ -25,6 +25,9 @@ packages/wp-plugin/dist/
 # Motor Python (lo formatea ruff)
 apps/engine/.venv/
 
+# Prompts versionados de los agentes: su texto exacto es lo que recibe el modelo
+apps/engine/**/prompts/
+
 # Contratos generados por `npm run contracts` (formato estable propio del generador)
 packages/shared/openapi.json
 packages/shared/engine.d.ts
