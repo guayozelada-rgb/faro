@@ -102,10 +102,6 @@ class RunSubmitter:
         self._agents = agents
         self._ids = ids
 
-    @property
-    def agents(self) -> AgentCatalog:
-        return self._agents
-
     # --- Piezas comunes ------------------------------------------------------------------
 
     def definition(self, agent_kind: str) -> AgentDefinition:
@@ -210,9 +206,7 @@ class RunSubmitter:
             raise llm_error(LLM_NO_KEY, provider)
         estimate = self._estimate(definition, site, provider)
         if estimate.max_cost_micros != accepted_max_cost_micros:
-            raise jobs_error(
-                AGENT_ESTIMATE_CHANGED, {"max_cost_micros": estimate.max_cost_micros}
-            )
+            raise jobs_error(AGENT_ESTIMATE_CHANGED, {"max_cost_micros": estimate.max_cost_micros})
         fits, _, _ = await self._fits(provider, estimate.max_cost_micros)
         if not fits:
             raise llm_error(LLM_DAILY_LIMIT_REACHED, provider)

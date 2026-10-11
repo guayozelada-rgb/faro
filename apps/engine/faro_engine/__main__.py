@@ -76,11 +76,12 @@ if __name__ == "__main__":
     # `python -m faro_engine`: fuera el directorio de trabajo de `sys.path[0]` antes de
     # importar nada más (condición 14 del informe de T2).
     try:
-        _startup_cwd = os.getcwd()
+        _startup_cwd = os.getcwd()  # noqa: PTH109 - antes de importar `pathlib` y lo demás
     except OSError:  # pragma: no cover - directorio de trabajo borrado
         _startup_cwd = ""
-    if sys.path and sys.path[0] in {"", _startup_cwd}:
-        del sys.path[0]
+    sys.path[:] = [
+        entry for index, entry in enumerate(sys.path) if index or entry not in {"", _startup_cwd}
+    ]
 
 import argparse
 import asyncio
@@ -451,6 +452,30 @@ def _rejects_dev_flags(args: argparse.Namespace) -> bool:
     return False
 
 
+@dataclass(frozen=True, slots=True)
+class _Dirs:
+    data_dir: Path | None
+
+
+def prepare_dirs(args: argparse.Namespace, workdir: Path | None) -> _Dirs | int:
+    """Carpeta de datos (absoluta y creada) y directorio de trabajo fijo, o el código de
+    salida. Un `--data-dir` relativo se resuelve **antes** de cambiar de directorio."""
+    data_dir: Path | None = args.data_dir
+    if data_dir is None and args.dev:
+        data_dir = dev_data_dir()
+    if data_dir is not None:
+        data_dir = data_dir.resolve()
+    if workdir is not None and not pin_workdir(workdir):
+        return EXIT_USAGE
+    if data_dir is not None:
+        try:
+            data_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            log.error("config.data_dir_unavailable")
+            return EXIT_USAGE
+    return _Dirs(data_dir)
+
+
 def run(
     argv: Sequence[str] | None,
     *,
@@ -477,20 +502,10 @@ def run(
     if is_frozen and _rejects_dev_flags(args):
         return EXIT_USAGE
 
-    data_dir: Path | None = args.data_dir
-    if data_dir is None and args.dev:
-        data_dir = dev_data_dir()
-    if data_dir is not None:
-        # Antes de cambiar de directorio: un `--data-dir` relativo es del de arranque.
-        data_dir = data_dir.resolve()
-    if workdir is not None and not pin_workdir(workdir):
-        return EXIT_USAGE
-    if data_dir is not None:
-        try:
-            data_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            log.error("config.data_dir_unavailable")
-            return EXIT_USAGE
+    prepared = prepare_dirs(args, workdir)
+    if isinstance(prepared, int):
+        return prepared
+    data_dir = prepared.data_dir
 
     reader = protocol.StdinReader(sys.stdin.fileno() if stdin_fd is None else stdin_fd)
     reader.start()

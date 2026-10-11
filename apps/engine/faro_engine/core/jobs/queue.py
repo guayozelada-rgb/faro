@@ -86,10 +86,10 @@ class RunQueue:
         """Antes de mirar la cola: lo que llegue después vuelve a despertar."""
         self._wake.clear()
 
-    async def wait_for_work(self, timeout: float | None) -> bool:
-        """Espera un aviso como mucho `timeout` segundos. `False` si venció el plazo."""
+    async def wait_for_work(self, seconds: float | None) -> bool:
+        """Espera un aviso como mucho `seconds` segundos. `False` si venció el plazo."""
         try:
-            await asyncio.wait_for(self._wake.wait(), timeout)
+            await asyncio.wait_for(self._wake.wait(), seconds)
         except TimeoutError:
             return False
         return True
@@ -219,7 +219,9 @@ class RunQueue:
         result = await self._database.run(write)
         if result.outcome == "cancelled" and result.run is not None:
             log.info("jobs.run_cancelled", run_id=run_id, reason=status_reason)
-            return CancelResult("cancelled", await self.emit(result.run), result.approvals_cancelled)
+            return CancelResult(
+                "cancelled", await self.emit(result.run), result.approvals_cancelled
+            )
         return result
 
     async def resume_paused(self) -> list[str]:

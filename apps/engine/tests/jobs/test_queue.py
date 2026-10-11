@@ -47,15 +47,18 @@ async def test_siguiente_por_prioridad_y_antiguedad_sin_las_del_tope(world: JobW
     await world.add_run(R2, priority=1, site_id=REVOKED_SITE, created_at="2026-10-09T12:00:00Z")
     await world.add_run(R3, priority=1, site_id=None, created_at="2026-10-09T11:00:00Z")
     peeked = await queue(world).peek()
-    assert peeked is not None and peeked.id == R3
+    assert peeked is not None
+    assert peeked.id == R3
     assert await queue(world).set_reason(R3, status="queued", reason="daily_limit")
     peeked = await queue(world).peek()
-    assert peeked is not None and peeked.id == R2
+    assert peeked is not None
+    assert peeked.id == R2
     assert not await queue(world).set_reason(R3, status="running", reason="x")
     assert await queue(world).release_daily_limit() == 1
     assert await queue(world).release_daily_limit() == 0
     peeked = await queue(world).peek()
-    assert peeked is not None and peeked.id == R3
+    assert peeked is not None
+    assert peeked.id == R3
 
 
 async def test_doble_toma_solo_gana_una(world: JobWorld) -> None:
@@ -119,7 +122,8 @@ async def test_cancelar_en_curso_la_marca_y_el_trabajador_la_cancela(world: JobW
     await queue(world).claim(R1)
     marked = await queue(world).cancel(R1)
     assert marked.outcome == "running"
-    assert marked.run is not None and marked.run.status_reason == "cancel_requested"
+    assert marked.run is not None
+    assert marked.run.status_reason == "cancel_requested"
     done = await queue(world).cancel(R1, include_running=True)
     assert done.outcome == "cancelled"
 
@@ -156,5 +160,28 @@ async def test_un_paso_con_otra_forma_no_rompe_la_transicion(
     await world.add_run(R1)
     await queue(world).update(R1, {"current_step": "Paso Inválido"})
     after = await queue(world).claim(R1)
-    assert after is not None and after.status == "running"
+    assert after is not None
+    assert after.status == "running"
     assert "jobs.activity_invalid" in log_stream.getvalue()
+
+
+async def test_reanudar_tolera_una_transicion_perdida(
+    world: JobWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await world.add_run(R1)
+    await queue(world).claim(R1)
+    await queue(world).transition(
+        R1, from_status="running", to_status="paused", status_reason="agents_paused"
+    )
+
+    async def lost(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(queue(world), "transition", lost)
+    assert await queue(world).resume_paused() == []
+
+
+async def test_agente_sin_sitio_no_necesita_uno(world: JobWorld) -> None:
+    from tests.fakes.agents import StepAgent
+
+    assert await world.jobs.submitter.site(StepAgent(requires_site=False), None) is None

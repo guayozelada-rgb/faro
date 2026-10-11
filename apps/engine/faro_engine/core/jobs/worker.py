@@ -54,6 +54,7 @@ from faro_engine.core.jobs.control import AgentsControlState, ControlSnapshot
 from faro_engine.core.jobs.grants import RunGrant, RunGrantError
 from faro_engine.core.jobs.queue import (
     AGENTS_PAUSED_REASON,
+    CANCEL_REQUESTED,
     DAILY_LIMIT,
     INTERRUPTED,
     RunQueue,
@@ -143,6 +144,9 @@ class Worker:
 
     # --- Señales desde fuera (rutas, apagado) --------------------------------------------
 
+    def should_stop(self) -> bool:
+        return self._stopping
+
     @property
     def busy(self) -> bool:
         """Hay una tarea en ejecución."""
@@ -169,10 +173,10 @@ class Worker:
     # --- Bucle ---------------------------------------------------------------------------
 
     async def run_forever(self) -> None:
-        while not self._stopping:
+        while not self.should_stop():
             blocked = not self._control.can_run
             await self._control.wait_until_runnable()
-            if self._stopping:
+            if self.should_stop():  # pidieron parar mientras esperaba
                 break
             if blocked or self._resume_pending:
                 self._resume_pending = False
@@ -253,16 +257,22 @@ class Worker:
         try:
             await self._grant(run, provider)
         except RunGrantError as err:
-            if err.code == AGENTS_PAUSED:
+            if err.code == AGENTS_PAUSED and not await self._cancel_requested(run.id):
                 # El núcleo está en pausa y su aviso aún no llegó: vuelve a la cola.
                 await self._queue.transition(run.id, from_status="running", to_status="queued")
                 await self._wait_control_change(snapshot)
+                return
+            if err.code == AGENTS_PAUSED:
+                await self._finish(run, _Ending("cancelled", "cancelled"))
                 return
             await self._finish(run, _Ending("failed", "failed", error_code=AGENT_GRANT_DENIED))
             return
         self._current = (run.id, stop)
         release: ReleaseStatus = "paused"
         try:
+            # Una cancelación pedida mientras se esperaba la concesión quedó en la base.
+            if await self._cancel_requested(run.id):
+                stop.request_cancel()
             ending = await self._invoke(definition, run, provider, stop, first_start=first_start)
             release = ending.release
             await self._finish(run, ending)
@@ -271,6 +281,10 @@ class Worker:
             # `paused`: la recuperación del siguiente arranque la vuelve a encolar.
             self._current = None
             await self._grants.release(run.id, release)
+
+    async def _cancel_requested(self, run_id: str) -> bool:
+        record = await self._queue.get(run_id)
+        return record is not None and record.status_reason == CANCEL_REQUESTED
 
     async def _grant(self, run: RunRecord, provider: Provider) -> RunGrant:
         return await self._grants.request(
@@ -316,9 +330,7 @@ class Worker:
         )
         renewed = False
         while True:
-            approval = await self._queue.database.run(
-                lambda c: latest_approval_for_run(c, run.id)
-            )
+            approval = await self._queue.database.run(lambda c: latest_approval_for_run(c, run.id))
             invocation = RunInvocation(
                 ctx=context, first_start=first_start, approval=approval, stop=stop, llm=self._llm
             )
@@ -335,7 +347,10 @@ class Worker:
                     log.info("jobs.grant_renew", run_id=run.id)
                     try:
                         await self._grant(run, provider)
-                    except RunGrantError:
+                    except RunGrantError as denied:
+                        if denied.code == AGENTS_PAUSED:
+                            self._resume_pending = True
+                            return _Ending("paused", "paused", status_reason=AGENTS_PAUSED_REASON)
                         return _Ending("failed", "failed", error_code=AGENT_GRANT_DENIED)
                     continue
                 if err.code == VAULT_SECRET_NOT_ALLOWED:

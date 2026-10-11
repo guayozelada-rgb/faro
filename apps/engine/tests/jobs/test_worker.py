@@ -16,7 +16,7 @@ from faro_engine.core.secrets import SecretError
 from faro_engine.core.store.runs import NewStep, insert_step
 from faro_engine.llm.client import RawCompletion, ResolvedCall
 from faro_engine.llm.pricing import max_call_cost
-from tests.fakes.agents import GRANT_DENIED, GRANT_PAUSED, Gate
+from tests.fakes.agents import GRANT_DENIED, GRANT_PAUSED, FakeGrants, Gate
 from tests.fakes.llm import FakeLLM, make_request
 from tests.jobs.world import (
     REVOKED_SITE,
@@ -52,7 +52,8 @@ async def test_tarea_completa_con_concesion_run_id_y_actividad(world: JobWorld) 
 
     run = world.run(R1)
     assert json.loads(run.result or "") == {"kind": "test", "steps": 3}
-    assert run.started_at is not None and run.finished_at is not None
+    assert run.started_at is not None
+    assert run.finished_at is not None
     assert world.statuses(R1) == ["queued", "running", "succeeded"]
     assert [line["seq"] for line in world.activity(R1)] == [1, 2, 3]
     assert run.activity_seq == 3
@@ -185,7 +186,8 @@ async def test_apagado_en_un_limite_deja_la_tarea_en_pausa_interrumpida(world: J
     assert world.run(R1).status_reason == "interrupted"
     assert world.grants.releases == [(R1, "paused")]
     await world.jobs.shutdown()
-    assert world.jobs.worker_task is not None and world.jobs.worker_task.done()
+    assert world.jobs.worker_task is not None
+    assert world.jobs.worker_task.done()
 
 
 # --- Concesiones ---------------------------------------------------------------------------
@@ -231,6 +233,24 @@ async def test_concesion_caducada_se_renueva_una_vez_y_repite_el_paso(world: Job
     assert len(world.grants.requests) == 2
     assert [inv.first_start for inv in world.agent.invocations] == [True, False]
     assert world.grants.releases == [(R1, "succeeded")]
+
+
+async def test_renovar_con_el_nucleo_en_pausa_deja_la_tarea_en_pausa(world: JobWorld) -> None:
+    failures: list[int] = []
+
+    async def expired(_inv: RunInvocation) -> None:
+        if not failures:
+            failures.append(1)
+            raise SecretError("vault.secret_not_allowed")
+
+    world.agent.hooks[1] = expired
+    world.grants.answers = [None, GRANT_PAUSED]
+    await started(world)
+    await world.add_run(R1)
+    world.run_control()
+    await eventually(lambda: "paused" in world.statuses(R1))
+    assert world.grants.releases[0] == (R1, "paused")
+    await eventually(status_is(world, R1, "succeeded"))  # sigue sin pausa en el motor
 
 
 @pytest.mark.parametrize("renewal", [None, GRANT_DENIED])
@@ -312,6 +332,7 @@ async def test_tarea_sin_proveedor_usa_la_primera_clave_y_lo_guarda(world: JobWo
 
 
 async def test_una_toma_perdida_no_ejecuta_nada(world: JobWorld) -> None:
+    world.run_control()
     await world.add_run(R1)
     candidate = world.run(R1)
     assert await world.jobs.queue.claim(R1) is not None
@@ -423,3 +444,77 @@ async def test_dos_llamadas_a_la_vez_desde_el_trabajador_no_pasan_el_tope(
     [(spent,)] = world.query("SELECT cost_micros FROM credential_usage")
     assert spent <= 500_000
     assert world.llm.limiter.reserved("/".join(("llm", "anthropic", "default"))) == 0
+
+
+# --- Apagado y esperas del control ------------------------------------------------------------
+
+
+async def test_parar_mientras_espera_el_control_sale_del_bucle(world: JobWorld) -> None:
+    await started(world)
+    for _ in range(10):  # el trabajador llega a esperar el control
+        await asyncio.sleep(0)
+    world.jobs.worker.request_stop()
+    world.run_control()
+    task = world.jobs.worker_task
+    assert task is not None
+    await asyncio.wait_for(task, 2)
+    assert world.jobs.worker.busy is False
+
+
+async def test_tarea_tomada_durante_el_apagado_para_en_el_primer_limite(world: JobWorld) -> None:
+    world.run_control()
+    await world.add_run(R1)
+    world.jobs.worker.request_stop()
+    await world.jobs.worker.take(world.run(R1))
+    assert world.run(R1).status == "paused"
+    assert world.run(R1).status_reason == "interrupted"
+    assert world.agent.progress.get(R1, 0) == 0
+
+
+async def test_espera_del_control_tras_concesion_en_pausa(world: JobWorld) -> None:
+    from faro_engine.core.jobs.worker import Worker
+
+    world.run_control()
+    worker = Worker(
+        queue=world.jobs.queue,
+        control=world.control,
+        grants=world.grants,
+        llm=world.llm,
+        agents=world.jobs.agents,
+        grant_paused_backoff=0.01,
+    )
+    before = world.control.snapshot()
+    world.run_control(providers=["openai"])
+    await worker._wait_control_change(before)  # ya cambió: vuelve al momento
+    await worker._wait_control_change(world.control.snapshot())  # vence el plazo
+    assert worker._seconds_to_midnight() >= 1.0
+
+
+async def test_reloj_por_defecto_en_utc() -> None:
+    from faro_engine.core.jobs import queue, runtime, scheduler, worker
+
+    for module in (queue, runtime, scheduler, worker):
+        assert module._utc_now().tzinfo is not None
+
+
+class CancellingGrants(FakeGrants):
+    """El usuario cancela la tarea mientras el núcleo decide la concesión."""
+
+    queue: Any = None
+
+    async def request(self, **kwargs: Any) -> Any:
+        await self.queue.cancel(kwargs["run_id"])  # la ruta: `running` → `cancel_requested`
+        return await super().request(**kwargs)
+
+
+@pytest.mark.parametrize("answer", [None, GRANT_PAUSED])
+async def test_cancelar_mientras_se_pide_la_concesion(world: JobWorld, answer: str | None) -> None:
+    grants = CancellingGrants(answers=[answer])
+    world.grants = grants
+    grants.queue = world.jobs.queue
+    await started(world)
+    await world.add_run(R1)
+    world.run_control()
+    await eventually(status_is(world, R1, "cancelled"))
+    assert world.agent.progress.get(R1, 0) == 0
+    assert grants.releases == ([(R1, "cancelled")] if answer is None else [])

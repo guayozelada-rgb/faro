@@ -275,7 +275,9 @@ def add_approval(
     database.run_sync(write)
 
 
-def spend(database: Database, cost: int, *, day: str = "2026-10-09", limit: int | None = None) -> None:
+def spend(
+    database: Database, cost: int, *, day: str = "2026-10-09", limit: int | None = None
+) -> None:
     """Gasto previo de la clave de Anthropic ese día (y, si se pide, su tope)."""
     ref = "/".join(("llm", "anthropic", "default"))
 
@@ -300,10 +302,10 @@ def spend(database: Database, cost: int, *, day: str = "2026-10-09", limit: int 
     database.run_sync(write)
 
 
-async def eventually(predicate: Callable[[], bool], *, timeout: float = 5.0) -> None:
+async def eventually(predicate: Callable[[], bool], *, within: float = 5.0) -> None:
     """Espera por condición (sin `sleep` fijo): falla si no se cumple a tiempo."""
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
+    deadline = loop.time() + within
     while not predicate():
         if loop.time() > deadline:
             raise AssertionError("la condición no se cumplió a tiempo")

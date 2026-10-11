@@ -10,8 +10,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
+import tzlocal
 
-from faro_engine.core.jobs import scheduler as scheduler_module
 from faro_engine.core.jobs.scheduler import (
     Scheduler,
     apscheduler_timer,
@@ -107,12 +107,9 @@ def test_hora_que_no_existe_corre_con_la_hora_nueva_y_la_repetida_una_vez() -> N
         before = (change - timedelta(hours=1)).astimezone(zone)
         after = change.astimezone(zone)
         forward = after.utcoffset() > before.utcoffset()  # type: ignore[operator]
-        if forward:
-            # Salto adelante: la media hora antes del cambio no existe ese día.
-            local_minute = after.hour * 60 + after.minute - 30
-        else:
-            # Salto atrás: esa media hora existe dos veces.
-            local_minute = after.hour * 60 + 30
+        # Salto adelante: la media hora antes del cambio no existe ese día. Salto atrás:
+        # esa media hora existe dos veces.
+        local_minute = after.hour * 60 + (after.minute - 30 if forward else 30)
         hour, minute = divmod(local_minute % (24 * 60), 60)
         time_local = f"{hour:02d}:{minute:02d}"
         nxt = occurrence(time_local=time_local, after=change - timedelta(hours=6))
@@ -143,15 +140,15 @@ def test_entradas_invalidas(over: dict[str, Any]) -> None:
 
 
 def test_zona_del_sistema_y_respaldo(monkeypatch: pytest.MonkeyPatch, log_stream: Any) -> None:
-    monkeypatch.setattr(scheduler_module.tzlocal, "get_localzone_name", lambda: SANTIAGO)
+    monkeypatch.setattr(tzlocal, "get_localzone_name", lambda: SANTIAGO)
     assert system_timezone() == SANTIAGO
-    monkeypatch.setattr(scheduler_module.tzlocal, "get_localzone_name", lambda: "No/Existe")
+    monkeypatch.setattr(tzlocal, "get_localzone_name", lambda: "No/Existe")
     assert system_timezone() == "UTC"
 
     def boom() -> str:
         raise OSError("registro ilegible")
 
-    monkeypatch.setattr(scheduler_module.tzlocal, "get_localzone_name", boom)
+    monkeypatch.setattr(tzlocal, "get_localzone_name", boom)
     assert system_timezone() == "UTC"
     assert "jobs.system_timezone_unknown" in log_stream.getvalue()
     assert is_valid_timezone("UTC")
@@ -245,6 +242,8 @@ async def test_catch_up_una_sola_tarea_aunque_falten_tres(world: JobWorld) -> No
     world.run_control()
     add_schedule(world, next_run_at=NOW - timedelta(days=3))  # tres ocurrencias perdidas
     add_schedule(world, S2, next_run_at=NOW + timedelta(hours=2), site_id=REVOKED_SITE)
+    # Vencida pero sin tarea posible (agente que ya no existe): solo avanza.
+    add_schedule(world, run_id(503), next_run_at=NOW - timedelta(days=1), agent_kind="viejo")
     created = await world.jobs.scheduler.catch_up()
     assert len(created) == 1
     run = world.run(created[0])
@@ -300,7 +299,7 @@ async def test_trabajos_desde_la_tabla_y_al_cambiar(world: JobWorld) -> None:
 async def test_un_disparo_fallido_no_tumba_el_programador(
     world: JobWorld, monkeypatch: pytest.MonkeyPatch, log_stream: Any
 ) -> None:
-    async def boom(_schedule_id: str, *, trigger: str = "schedule") -> str | None:  # noqa: ARG001
+    async def boom(_schedule_id: str, *, trigger: str = "schedule") -> str | None:
         raise RuntimeError("fallo")
 
     monkeypatch.setattr(world.jobs.scheduler, "fire", boom)
@@ -329,7 +328,7 @@ async def test_apscheduler_de_verdad_dispara_a_su_hora(world: JobWorld) -> None:
     sched.fire = spy  # type: ignore[method-assign]
     await sched.start()
     try:
-        await eventually(lambda: fired == [S1], timeout=10)
+        await eventually(lambda: fired == [S1], within=10)
         assert schedule(world).last_run_id is not None
     finally:
         sched.shutdown()

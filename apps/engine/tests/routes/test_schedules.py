@@ -102,7 +102,9 @@ async def test_cambiar_desactivar_reactivar_y_quitar(world: AgentsApp) -> None:
     created = (await create(world)).json()
     sid = created["id"]
 
-    off = await world.core.call("updateSchedule", path={"schedule_id": sid}, body={"enabled": False})
+    off = await world.core.call(
+        "updateSchedule", path={"schedule_id": sid}, body={"enabled": False}
+    )
     assert off.status_code == 200
     assert off.json()["enabled"] is False
     assert world.timer.jobs == {}
@@ -114,7 +116,9 @@ async def test_cambiar_desactivar_reactivar_y_quitar(world: AgentsApp) -> None:
     assert set(world.timer.jobs) == {sid}
 
     daily = await world.core.call(
-        "updateSchedule", path={"schedule_id": sid}, body={"cadence": "daily", "time_local": "18:30"}
+        "updateSchedule",
+        path={"schedule_id": sid},
+        body={"cadence": "daily", "time_local": "18:30"},
     )
     body = daily.json()
     assert (body["cadence"], body["weekday"], body["time_local"]) == ("daily", None, "18:30")

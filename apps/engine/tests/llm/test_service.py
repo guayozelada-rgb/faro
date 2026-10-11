@@ -31,7 +31,7 @@ from faro_engine.llm.pricing import max_call_cost
 from faro_engine.llm.service import LazyLiteLlmClient, LlmService, _jitter, _strip_fence
 from faro_engine.net.client import Deadline
 from tests.fakes.llm import FAKE_KEYS, FakeFailure, FakeReply, make_request
-from tests.llm.conftest import NOW, STEP_ID, Run, Step, World, add_run, query, set_control
+from tests.llm.conftest import NOW, Run, Step, World, add_run, query, set_control
 
 ANTHROPIC_REF = "/".join(("llm", "anthropic", "default"))
 
@@ -746,7 +746,10 @@ async def test_borrar_la_tarea_durante_la_llamada_no_borra_el_gasto_del_dia(
             world.database.run_sync(lambda c: c.execute("DELETE FROM agent_runs"))
             return await FakeLLM.complete(self, call, api_key)
 
-    llm = Deleting(needs_key=True, responses={"test.prompt": FakeReply(text="ok", tokens_in=1000, tokens_out=200)})
+    llm = Deleting(
+        needs_key=True,
+        responses={"test.prompt": FakeReply(text="ok", tokens_in=1000, tokens_out=200)},
+    )
     service = world.service(client=llm)
     with pytest.raises(MissingRecordError):
         await service.call(Run(), Step(), make_request())
@@ -787,7 +790,8 @@ async def test_doble_cancelacion_no_suelta_la_reserva_antes_del_registro(
     record_gate.set()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert seen and seen[0] > 0
+    assert seen
+    assert seen[0] > 0
     assert world.usage_rows() == [(ANTHROPIC_REF, "2026-10-09", 1, 7, 100, 51)]
     assert world.step_row()["cost_estimated"] == 1
     assert service.limiter.reserved(ANTHROPIC_REF) == 0

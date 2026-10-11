@@ -22,7 +22,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from datetime import UTC, date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Final, Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -125,7 +125,7 @@ def apscheduler_timer() -> Timer:
     """`AsyncIOScheduler` con `MemoryJobStore` y fechas en UTC."""
     timer: Timer = AsyncIOScheduler(
         jobstores={"default": MemoryJobStore()},
-        timezone=timezone.utc,  # noqa: UP017 - APScheduler 3 espera un `tzinfo`
+        timezone=UTC,  # APScheduler 3 acepta cualquier `tzinfo`
         job_defaults={"coalesce": True, "misfire_grace_time": None, "max_instances": 1},
     )
     return timer
@@ -212,7 +212,9 @@ class Scheduler:
         try:
             await self.fire(schedule_id)
         except Exception as exc:  # noqa: BLE001 - un disparo fallido no tumba el motor
-            log.error("jobs.schedule_fire_failed", schedule_id=schedule_id, error_type=type(exc).__name__)
+            log.error(
+                "jobs.schedule_fire_failed", schedule_id=schedule_id, error_type=type(exc).__name__
+            )
 
     async def fire(self, schedule_id: str, *, trigger: str = "schedule") -> str | None:
         """Encola la tarea de la programación y calcula el siguiente `next_run_at`."""

@@ -5,20 +5,30 @@ from __future__ import annotations
 import pytest
 
 from faro_engine.core.jobs.control import AgentsControlState
-from faro_engine.core.jobs.runner import AgentCatalog, AgentEstimate, RunStopped, StopSignal
+from faro_engine.core.jobs.runner import (
+    AgentCatalog,
+    AgentEstimate,
+    RunStopped,
+    StopReason,
+    StopSignal,
+)
 from tests.fakes.agents import StepAgent
 from tests.jobs.world import set_control
+
+
+def reason_of(stop: StopSignal) -> StopReason | None:
+    return stop.reason
 
 
 def test_motivo_de_parada_por_prioridad() -> None:
     control = AgentsControlState()
     stop = StopSignal(control)
-    assert stop.reason == "agents_paused"  # sin `agents_control`, pausado
+    assert reason_of(stop) == "agents_paused"  # sin `agents_control`, pausado
     set_control(control, paused=False, providers=[])
-    assert stop.reason is None
+    assert reason_of(stop) is None
     stop.check()
     stop.request_shutdown()
-    assert stop.reason == "shutdown"
+    assert reason_of(stop) == "shutdown"
     stop.request_cancel()
     with pytest.raises(RunStopped) as info:
         stop.check()

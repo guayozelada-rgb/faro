@@ -204,9 +204,7 @@ class JobSystem:
         log.info("jobs.stopped")
 
 
-async def serve_with_jobs(
-    serve: Callable[[], Coroutine[Any, Any, None]], jobs: JobSystem
-) -> None:
+async def serve_with_jobs(serve: Callable[[], Coroutine[Any, Any, None]], jobs: JobSystem) -> None:
     """`server.serve()` con el sistema de tareas alrededor (ver la cabecera del módulo).
     Recibe la función: si el bucle falla durante `start`, no queda una corrutina sin
     esperar."""

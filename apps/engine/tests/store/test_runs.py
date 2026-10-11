@@ -417,7 +417,8 @@ def test_set_and_clear_status_reason(conn: Connection) -> None:
     assert runs.clear_status_reason(conn, status="queued", reason="daily_limit", now=T2) == 2
     assert runs.clear_status_reason(conn, status="queued", reason="daily_limit", now=T2) == 0
     cleared = runs.get_run(conn, "run-2")
-    assert cleared is not None and cleared.status_reason is None
+    assert cleared is not None
+    assert cleared.status_reason is None
     with pytest.raises(ValueError, match="estado"):
         runs.set_status_reason(conn, "run-1", status="otro", reason=None, now=T1)
     with pytest.raises(ValueError, match="estado"):

@@ -51,7 +51,7 @@ class HangingLLM(FakeLLM):
         super().__init__()
         self.entered = asyncio.Event()
 
-    async def complete(self, call: ResolvedCall, api_key: str | None) -> RawCompletion:
+    async def complete(self, call: ResolvedCall, api_key: str | None) -> RawCompletion:  # noqa: ARG002
         self.calls.append(call)
         self.entered.set()
         await asyncio.Event().wait()
@@ -302,7 +302,8 @@ async def test_apagado_con_llamada_en_curso_registra_su_maximo(world: JobWorld) 
     # La tarea se queda `running`; la recuperación del siguiente arranque la retoma.
     assert world.run(R1).status == "running"
     assert world.grants.releases == [(R1, "paused")]
-    assert world.jobs.worker_task is not None and world.jobs.worker_task.done()
+    assert world.jobs.worker_task is not None
+    assert world.jobs.worker_task.done()
 
 
 async def test_serve_with_jobs_arranca_y_para_alrededor_del_servidor(world: JobWorld) -> None:
@@ -313,4 +314,56 @@ async def test_serve_with_jobs_arranca_y_para_alrededor_del_servidor(world: JobW
 
     await serve_with_jobs(serve, world.jobs)
     assert events == ["serve:True"]
-    assert world.jobs.worker_task is not None and world.jobs.worker_task.done()
+    assert world.jobs.worker_task is not None
+    assert world.jobs.worker_task.done()
+
+
+async def test_recuperacion_tolera_cambios_concurrentes(
+    world: JobWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ramas defensivas: otro camino cambió la tarea entre la lectura y la escritura."""
+    from faro_engine.core.jobs import recovery
+    from faro_engine.core.store.run_control import CancelResult
+
+    for rid, site in ((R1, SITE), (run_id(2), None)):
+        await world.add_run(rid, site_id=site)
+        await world.jobs.queue.claim(rid)
+    await world.jobs.queue.cancel(R1)  # `cancel_requested`
+    queue = world.jobs.queue
+
+    async def lost_cancel(*_args: Any, **_kwargs: Any) -> CancelResult:
+        return CancelResult("not_found", None)
+
+    async def lost_transition(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(queue, "cancel", lost_cancel)
+    monkeypatch.setattr(queue, "transition", lost_transition)
+    assert await recovery.recover_interrupted(queue) == ([], [])
+
+
+async def test_caducidad_con_la_tarea_aun_en_curso_o_borrada(
+    world: JobWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from faro_engine.core.jobs import recovery
+
+    await world.add_run(R1)
+    await world.jobs.queue.claim(R1)  # entre el nodo que propone y la espera
+    add_approval(world.database, run_id(90), R1, expires_at="2026-10-09T14:00:00Z")
+    expired = await recovery.expire_approvals(world.jobs.queue)
+    assert [(e.approval_id, e.run_cancelled) for e in expired] == [(run_id(90), False)]
+    assert world.run(R1).status == "running"
+
+    await world.add_run(run_id(2), site_id=None)
+    await world.jobs.queue.claim(run_id(2))
+    await world.jobs.queue.transition(
+        run_id(2), from_status="running", to_status="waiting_approval"
+    )
+    add_approval(world.database, run_id(91), run_id(2), expires_at="2026-10-09T14:00:00Z")
+
+    async def gone(_run_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(world.jobs.queue, "get", gone)
+    expired = await recovery.expire_approvals(world.jobs.queue)
+    assert [e.run_cancelled for e in expired] == [True]

@@ -271,6 +271,7 @@ async def start_agent_run(body: StartAgentRunIn, jobs: Jobs, database: Db) -> Ag
 )
 async def list_agent_runs(
     database: Db,
+    *,
     status: RunStatus | None = None,
     site_id: Annotated[str | None, Query(pattern=RUN_ID_PATTERN)] = None,
     notice_pending: bool | None = None,

@@ -161,7 +161,8 @@ async def test_estimado(world: AgentsApp) -> None:
         "blocking_code": None,
     }
     [data] = world.agent.estimates
-    assert data.site is not None and data.site.id == SITE
+    assert data.site is not None
+    assert data.site.id == SITE
     assert data.provider == "anthropic"
 
 
@@ -202,7 +203,8 @@ async def test_estimado_con_bloqueos(
     assert body["provider"] == provider
     assert body["blocking_code"] == code
     if setup == "no_keys":
-        assert body["models"] == [] and body["max_cost_micros"] == 0
+        assert body["models"] == []
+        assert body["max_cost_micros"] == 0
     if setup == "limit":
         assert body["fits_daily_limit"] is False
         assert body["spent_today_micros"] == 4_995_000

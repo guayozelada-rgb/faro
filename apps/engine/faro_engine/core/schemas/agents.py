@@ -29,7 +29,8 @@ BlockingCode = Literal[
 UUID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 SiteIdField = Annotated[str, Field(pattern=UUID_PATTERN, description="UUID del sitio.")]
 AgentKindField = Annotated[
-    str, Field(min_length=1, max_length=64, description="Tipo de agente.", examples=["site_summary"])
+    str,
+    Field(min_length=1, max_length=64, description="Tipo de agente.", examples=["site_summary"]),
 ]
 
 
@@ -219,8 +220,7 @@ class CreateScheduleIn(_Out):
 class UpdateScheduleIn(_Out):
     enabled: StrictBool | None = None
     cadence: (
-        Annotated[str, Field(max_length=16, json_schema_extra={"enum": ["daily", "weekly"]})]
-        | None
+        Annotated[str, Field(max_length=16, json_schema_extra={"enum": ["daily", "weekly"]})] | None
     ) = None
     weekday: StrictInt | None = None
     time_local: Annotated[str, Field(max_length=5)] | None = None
