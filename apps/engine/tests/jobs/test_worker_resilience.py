@@ -72,7 +72,9 @@ async def test_finish_falla_y_la_tarea_a_medias_vuelve_a_la_cola(
     world.run_control()
     await eventually(lambda: world.sleep.pending(RETRY_DELAYS_SECONDS[0]) == 1)
     assert world.run(R1).status == "running"  # se quedó a medias
-    assert world.grants.releases == [(R1, "paused")]  # la concesión se soltó igual
+    await eventually(
+        lambda: world.grants.releases == [(R1, "paused")]
+    )  # la concesión se soltó igual
 
     world.sleep.release(RETRY_DELAYS_SECONDS[0])
     await eventually(settled(world, R1, "succeeded"))

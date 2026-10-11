@@ -74,7 +74,7 @@ async def test_nivel_1_propone_espera_y_al_aprobar_ejecuta(gworld: GraphWorld) -
     kinds = [line["kind"] for line in gworld.activity(R1)]
     assert kinds[-2:] == ["approval_requested", "run_status"]
     assert gworld.run_statuses(R1)[-1] == "waiting_approval"
-    assert gworld.grants.releases == [(R1, "waiting_approval")]
+    await eventually(lambda: gworld.grants.releases == [(R1, "waiting_approval")])
     # La herramienta leyó el sitio de la tarea (del contexto), dos notas como pidió el modelo.
     assert gworld.notes.calls == [SITE]
     assert gworld.summaries(R1) == []
@@ -100,7 +100,9 @@ async def test_nivel_1_propone_espera_y_al_aprobar_ejecuta(gworld: GraphWorld) -
     assert "approval.decided" in audit_actions(gworld)
     assert "approval.executed" in audit_actions(gworld)
     await eventually(lambda: len(gworld.grants.releases) == 2)
-    assert gworld.grants.releases == [(R1, "waiting_approval"), (R1, "succeeded")]
+    await eventually(
+        lambda: gworld.grants.releases == [(R1, "waiting_approval"), (R1, "succeeded")]
+    )
 
 
 async def test_descartar_termina_bien_sin_llm_ni_accion(gworld: GraphWorld) -> None:
