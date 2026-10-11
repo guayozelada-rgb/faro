@@ -131,13 +131,18 @@ class ActivityEmitter:
         run_tokens: int = 0,
         error_code: str | None = None,
         occurred_at: datetime | None = None,
+        seq: int | None = None,
     ) -> bool:
-        """Emite un evento. `False` si no hay canal (`--dev`) o stdout está cerrado."""
+        """Emite un evento. `False` si no hay canal (`--dev`) o stdout está cerrado.
+
+        `seq` lo da quien llama cuando lo guarda en la base (`agent_runs.activity_seq`, que
+        devuelve `getAgentRun`); sin él, se usa el contador en memoria de la tarea.
+        """
         if self._writer is None:
             return False
         line = build_activity_line(
             run_id=run_id,
-            seq=self.next_seq(run_id),
+            seq=self.next_seq(run_id) if seq is None else seq,
             occurred_at=occurred_at if occurred_at is not None else datetime.now(UTC),
             kind=kind,
             agent=agent,

@@ -142,3 +142,20 @@ def test_wake_on_finished_future_is_a_no_op() -> None:
         assert future.cancelled()
     finally:
         loop.close()
+
+
+async def test_wait_for_change_espera_otro_estado() -> None:
+    state = AgentsControlState()
+    state.handle_message(message(False))
+    before = state.snapshot()
+    waiter = asyncio.create_task(state.wait_for_change(before))
+    await asyncio.sleep(0)
+    state.handle_message(message(False))  # igual: sigue esperando
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not waiter.done()
+    state.handle_message(message(False, ["anthropic", "openai"]))
+    after = await asyncio.wait_for(waiter, 1)
+    assert after.llm_providers == ("anthropic", "openai")
+    # Si ya cambió, vuelve al momento.
+    assert await asyncio.wait_for(state.wait_for_change(before), 1) == after

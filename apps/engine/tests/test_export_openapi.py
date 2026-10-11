@@ -28,6 +28,17 @@ def test_export_writes_openapi_json() -> None:
         "getLlmUsage",
         "setLlmDailyLimit",
         "setLlmPreferences",
+        "listAgents",
+        "estimateAgentRun",
+        "startAgentRun",
+        "listAgentRuns",
+        "getAgentRun",
+        "cancelAgentRun",
+        "acknowledgeAgentNotices",
+        "listSchedules",
+        "createSchedule",
+        "updateSchedule",
+        "deleteSchedule",
     ]
     assert {"ErrorOut", "HealthOut", "SiteOut", "SiteContentPage"} <= set(
         schema["components"]["schemas"]

@@ -52,17 +52,29 @@ def test_engine_operations_are_exactly_the_f1a_operations() -> None:
     # igual que `concesiones_exactas_por_operacion` en el núcleo.
     site = "wp/{site_id}/token"
     assert _load("engine-operations.json") == [
+        # Cola, tareas y programaciones (spec F1b §5.2, T7): ninguna pide secretos.
+        _op("acknowledgeAgentNotices", "POST", "/agent-runs/notices/ack", 10, []),
+        _op("cancelAgentRun", "POST", "/agent-runs/{run_id}/cancel", 10, []),
         _op("checkSiteConnection", "POST", "/sites/{site_id}/check", 45, _wp(site, "get")),
         _op("connectSite", "POST", "/sites", 60, _wp("wp/{new}/token", "create", "delete")),
+        _op("createSchedule", "POST", "/schedules", 10, []),
+        _op("deleteSchedule", "DELETE", "/schedules/{schedule_id}", 10, []),
+        _op("estimateAgentRun", "POST", "/agent-runs/estimate", 10, []),
+        _op("getAgentRun", "GET", "/agent-runs/{run_id}", 10, []),
         _op("getHealth", "GET", "/health", 10, []),
         # Capa de IA (spec F1b §5.2): ninguna pide secretos.
         _op("getLlmUsage", "GET", "/llm/usage", 10, []),
+        _op("listAgentRuns", "GET", "/agent-runs", 10, []),
+        _op("listAgents", "GET", "/agents", 10, []),
+        _op("listSchedules", "GET", "/schedules", 10, []),
         _op("listSiteContent", "GET", "/sites/{site_id}/content", 45, _wp(site, "get")),
         _op("listSites", "GET", "/sites", 10, []),
         _op("reconnectSite", "PUT", "/sites/{site_id}/connection", 60, _wp(site, "set")),
         _op("removeSite", "DELETE", "/sites/{site_id}", 45, _wp(site, "get", "delete")),
         _op("setLlmDailyLimit", "PUT", "/llm/limits/{provider}", 10, []),
         _op("setLlmPreferences", "PUT", "/llm/preferences", 10, []),
+        _op("startAgentRun", "POST", "/agent-runs", 10, []),
+        _op("updateSchedule", "PATCH", "/schedules/{schedule_id}", 10, []),
     ]
 
 

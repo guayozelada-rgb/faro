@@ -102,9 +102,27 @@ def run_budget(conn: Connection, run_id: str) -> RunBudget:
 
 
 def record_attempt(conn: Connection, record: AttemptRecord) -> None:
-    """Paso, tarea y uso del día en una transacción. Sin la tarea o el paso, nada."""
+    """Uso del día de la clave, paso y tarea en una transacción.
+
+    El uso del día (`credential_usage`) se escribe **siempre**, aunque la tarea o el paso ya
+    no existan (borrados mientras se llamaba al proveedor): lo ya cobrado cuenta para el
+    tope diario (condición T6-C2 de la revisión de T6). Si falta el paso o la tarea, se
+    confirma lo demás y después se lanza `MissingRecordError`.
+    """
     with atomic(conn):
-        if not runs.add_step_usage(
+        credentials.add_usage(
+            conn,
+            usage_id=record.usage_id,
+            secret_ref=record.secret_ref,
+            provider=record.provider,
+            usage_date=record.usage_date,
+            tokens_in=record.tokens_in,
+            tokens_out=record.tokens_out,
+            cost_micros=record.cost_micros,
+            now=record.now,
+            requests=1 if record.reached_provider else 0,
+        )
+        step_found = runs.add_step_usage(
             conn,
             record.step_id,
             tokens_in=record.tokens_in,
@@ -118,29 +136,19 @@ def record_attempt(conn: Connection, record: AttemptRecord) -> None:
             secret_ref=record.secret_ref,
             prompt_id=record.prompt_id,
             prompt_version=record.prompt_version,
-        ):
-            raise MissingRecordError("paso")
-        if not runs.add_run_usage(
+        )
+        run_found = runs.add_run_usage(
             conn,
             record.run_id,
             tokens_in=record.tokens_in,
             tokens_out=record.tokens_out,
             cost_micros=record.cost_micros,
             now=record.now,
-        ):
-            raise MissingRecordError("tarea")
-        credentials.add_usage(
-            conn,
-            usage_id=record.usage_id,
-            secret_ref=record.secret_ref,
-            provider=record.provider,
-            usage_date=record.usage_date,
-            tokens_in=record.tokens_in,
-            tokens_out=record.tokens_out,
-            cost_micros=record.cost_micros,
-            now=record.now,
-            requests=1 if record.reached_provider else 0,
         )
+    if not step_found:
+        raise MissingRecordError("paso")
+    if not run_found:
+        raise MissingRecordError("tarea")
 
 
 def preferred_provider(conn: Connection) -> Provider | None:

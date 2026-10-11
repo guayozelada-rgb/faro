@@ -1,5 +1,19 @@
 [
   {
+    "operationId": "acknowledgeAgentNotices",
+    "method": "POST",
+    "path": "/agent-runs/notices/ack",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
+    "operationId": "cancelAgentRun",
+    "method": "POST",
+    "path": "/agent-runs/{run_id}/cancel",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
     "operationId": "checkSiteConnection",
     "method": "POST",
     "path": "/sites/{site_id}/check",
@@ -29,6 +43,34 @@
     ]
   },
   {
+    "operationId": "createSchedule",
+    "method": "POST",
+    "path": "/schedules",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
+    "operationId": "deleteSchedule",
+    "method": "DELETE",
+    "path": "/schedules/{schedule_id}",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
+    "operationId": "estimateAgentRun",
+    "method": "POST",
+    "path": "/agent-runs/estimate",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
+    "operationId": "getAgentRun",
+    "method": "GET",
+    "path": "/agent-runs/{run_id}",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
     "operationId": "getHealth",
     "method": "GET",
     "path": "/health",
@@ -39,6 +81,27 @@
     "operationId": "getLlmUsage",
     "method": "GET",
     "path": "/llm/usage",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
+    "operationId": "listAgentRuns",
+    "method": "GET",
+    "path": "/agent-runs",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
+    "operationId": "listAgents",
+    "method": "GET",
+    "path": "/agents",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
+    "operationId": "listSchedules",
+    "method": "GET",
+    "path": "/schedules",
     "timeout_seconds": 10,
     "secrets": []
   },
@@ -103,6 +166,20 @@
     "operationId": "setLlmPreferences",
     "method": "PUT",
     "path": "/llm/preferences",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
+    "operationId": "startAgentRun",
+    "method": "POST",
+    "path": "/agent-runs",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
+    "operationId": "updateSchedule",
+    "method": "PATCH",
+    "path": "/schedules/{schedule_id}",
     "timeout_seconds": 10,
     "secrets": []
   }

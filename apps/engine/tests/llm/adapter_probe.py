@@ -120,7 +120,10 @@ def error_body(provider: str, status: int, code: str, message: str) -> dict[str,
                 "status": code or status_name.get(status, "INTERNAL"),
             }
         }
-    return {"error": {"message": message, "type": code, "code": code}}
+    # OpenAI manda `code: null` con `type: invalid_request_error` (p. ej. un 401 por una
+    # clave mal copiada): es la forma que LiteLLM 1.104 reescribe como un 400 (T6-C6).
+    openai_code = None if code == "invalid_request_error" else code
+    return {"error": {"message": message, "type": code, "param": None, "code": openai_code}}
 
 
 # Casos: nombre → (estado, código del proveedor, mensaje, cabeceras, efecto especial).
@@ -138,7 +141,16 @@ CASES: dict[str, tuple[int, str, str, dict[str, str], str | None]] = {
     "redirect": (307, "", "", {}, "redirect"),
 }
 QUOTA_CASES: dict[str, dict[str, tuple[int, str, str]]] = {
-    "openai": {"quota": (429, "insufficient_quota", "You exceeded your current quota")},
+    "openai": {
+        "quota": (429, "insufficient_quota", "You exceeded your current quota"),
+        # 401 real de OpenAI: `type: invalid_request_error`, `code: null` (T6-C6).
+        "bad_key": (
+            401,
+            "invalid_request_error",
+            "You didn't provide an API key. You need to provide your API key in an "
+            "Authorization header using Bearer auth.",
+        ),
+    },
     "anthropic": {
         "quota": (400, "invalid_request_error", "Your credit balance is too low to access the API"),
         "billing": (402, "billing_error", "payment issue"),

@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -127,11 +127,19 @@ class AgentsControlState:
 
     async def wait_until_runnable(self) -> ControlSnapshot:
         """Espera a que haya un `agents_control` válido sin pausa (para el trabajador)."""
+        return await self.wait_for(lambda snapshot: snapshot.can_run)
+
+    async def wait_for_change(self, previous: ControlSnapshot) -> ControlSnapshot:
+        """Espera a que el estado sea distinto de `previous` (otra pausa o proveedores)."""
+        return await self.wait_for(lambda snapshot: snapshot != previous)
+
+    async def wait_for(self, condition: Callable[[ControlSnapshot], bool]) -> ControlSnapshot:
+        """Espera a que el estado cumpla `condition` (se comprueba en cada `agents_control`)."""
         loop = asyncio.get_running_loop()
         while True:
             future: asyncio.Future[None] = loop.create_future()
             with self._lock:
-                if self._snapshot.can_run:
+                if condition(self._snapshot):
                     return self._snapshot
                 self._waiters.append((loop, future))
             try:

@@ -9,6 +9,7 @@ aparece en la base, en los logs ni en el resultado.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import sys
 import types
 from datetime import UTC, datetime
@@ -709,12 +710,13 @@ def test_jitter_dentro_del_veinte_por_ciento() -> None:
     assert len(set(values)) > 1
 
 
-def test_registro_sin_la_tarea_no_escribe_nada(world: World) -> None:
+def test_registro_sin_la_tarea_escribe_igual_el_uso_del_dia(world: World) -> None:
+    """T6-C2: lo ya cobrado cuenta para el tope aunque la tarea ya no exista."""
     from faro_engine.llm.usage import AttemptRecord, MissingRecordError, record_attempt
 
     record = AttemptRecord(
         run_id="no-existe",
-        step_id=STEP_ID,
+        step_id="tampoco",
         provider="anthropic",
         model="claude-haiku-5-5",
         tier="economy",
@@ -723,12 +725,111 @@ def test_registro_sin_la_tarea_no_escribe_nada(world: World) -> None:
         usage_date="2026-10-09",
         tokens_in=1,
         tokens_out=1,
-        cost_micros=1,
+        cost_micros=7,
         estimated=False,
         now="2026-10-09T15:00:00Z",
         usage_id="u-1",
     )
-    with pytest.raises(MissingRecordError):
+    with pytest.raises(MissingRecordError, match="paso"):
         world.database.run_sync(lambda c: record_attempt(c, record))
-    assert world.step_row()["attempts"] == 0  # la transacción se deshizo
-    assert world.usage_rows() == []
+    assert world.step_row()["attempts"] == 0
+    assert world.usage_rows() == [(ANTHROPIC_REF, "2026-10-09", 1, 1, 1, 7)]
+    # Con el paso y sin la tarea: el paso y el uso del día quedan, y se avisa igual.
+    only_step = dataclasses.replace(record, step_id=STEP_ID, usage_id="u-2")
+    with pytest.raises(MissingRecordError, match="tarea"):
+        world.database.run_sync(lambda c: record_attempt(c, only_step))
+    assert world.step_row()["attempts"] == 1
+    assert world.usage_rows() == [(ANTHROPIC_REF, "2026-10-09", 2, 2, 2, 14)]
+
+
+async def test_borrar_la_tarea_durante_la_llamada_no_borra_el_gasto_del_dia(
+    world: World,
+) -> None:
+    """T6-C2: la tarea (y su paso, en cascada) se borran mientras el proveedor responde."""
+    from faro_engine.llm.usage import MissingRecordError
+
+    class Deleting(FakeLLM):
+        async def complete(self, call: ResolvedCall, api_key: str | None) -> RawCompletion:
+            world.database.run_sync(lambda c: c.execute("DELETE FROM agent_runs"))
+            return await FakeLLM.complete(self, call, api_key)
+
+    llm = Deleting(
+        needs_key=True,
+        responses={"test.prompt": FakeReply(text="ok", tokens_in=1000, tokens_out=200)},
+    )
+    service = world.service(client=llm)
+    with pytest.raises(MissingRecordError):
+        await service.call(Run(), Step(), make_request())
+    assert world.usage_rows() == [(ANTHROPIC_REF, "2026-10-09", 1, 1000, 200, 200)]
+    spent, reserved, _ = await service.daily_state("anthropic")
+    assert (spent, reserved) == (200, 0)
+
+
+# --- Doble cancelación (T6-C1) ------------------------------------------------------------
+
+
+async def test_doble_cancelacion_no_suelta_la_reserva_antes_del_registro(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gated = GatedLLM()
+    service = world.service(client=gated)
+    record_started = asyncio.Event()
+    record_gate = asyncio.Event()
+    seen: list[int] = []
+    original = LlmService._record
+
+    async def slow_record(self: LlmService, call: Any, **kwargs: Any) -> None:
+        record_started.set()
+        await record_gate.wait()
+        seen.append(self.limiter.reserved(ANTHROPIC_REF))
+        await original(self, call, **kwargs)
+
+    monkeypatch.setattr(LlmService, "_record", slow_record)
+    task = asyncio.create_task(service.call(Run(), Step(), make_request()))
+    await gated.started.wait()
+    task.cancel()
+    await record_started.wait()
+    task.cancel()  # segunda cancelación mientras se guarda el registro
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not task.done()
+    assert service.limiter.reserved(ANTHROPIC_REF) > 0  # la reserva sigue tomada
+    record_gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert seen
+    assert seen[0] > 0
+    assert world.usage_rows() == [(ANTHROPIC_REF, "2026-10-09", 1, 7, 100, 51)]
+    assert world.step_row()["cost_estimated"] == 1
+    assert service.limiter.reserved(ANTHROPIC_REF) == 0
+
+
+async def test_finish_despite_cancel_propaga_errores_y_registros_cancelados() -> None:
+    from faro_engine.llm.service import finish_despite_cancel
+
+    async def boom() -> None:
+        raise RuntimeError("registro")
+
+    with pytest.raises(RuntimeError):
+        await finish_despite_cancel(boom())
+
+    blocker = asyncio.Event()
+
+    async def blocked() -> None:
+        await blocker.wait()
+
+    inner = asyncio.ensure_future(blocked())
+    waiter = asyncio.create_task(finish_despite_cancel(inner))
+    await asyncio.sleep(0)
+    inner.cancel()  # el bucle se cierra: el propio registro se cancela
+    await waiter  # sale sin error
+    assert inner.cancelled()
+
+
+async def test_clave_con_caracteres_no_validos_en_una_cabecera_no_se_envia(
+    world: World,
+) -> None:
+    for value in (b"sk-test con espacio", b"sk-test-abc\n", b"sk-test-\x7f", b"", b"\tsk-test"):
+        world.secrets.value = value
+        await expect_error(world, "llm.invalid_key")
+    assert world.llm.calls == []

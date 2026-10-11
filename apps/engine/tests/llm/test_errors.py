@@ -137,6 +137,45 @@ def test_la_causa_encadenada_tambien_cuenta() -> None:
     assert kind(outer) == "unreachable"
 
 
+class BadRequestError(ProviderError):
+    pass
+
+
+class OpenAIError(ProviderError):
+    pass
+
+
+OPENAI_401_BODY = {
+    "error": {
+        "message": "You didn't provide an API key.",
+        "type": "invalid_request_error",
+        "param": None,
+        "code": None,
+    }
+}
+
+
+def test_un_401_interno_gana_al_400_con_el_que_litellm_lo_reescribe() -> None:
+    """T6-C6: LiteLLM 1.104 reescribe el 401 de OpenAI con `type: invalid_request_error`
+    como `BadRequestError(400)`; el 401 de la excepción encadenada decide."""
+    inner = OpenAIError(401, body=OPENAI_401_BODY, message="You didn't provide an API key.")
+    outer = BadRequestError(400, body=OPENAI_401_BODY, message="OpenAIException - bad request")
+    outer.__cause__ = inner
+    assert kind(outer) == "invalid_key"
+
+
+def test_un_401_en_la_respuesta_real_gana_al_status_code_reescrito() -> None:
+    error = BadRequestError(400, body=OPENAI_401_BODY)
+    error.response = httpx.Response(401, json=OPENAI_401_BODY)
+    assert kind(error) == "invalid_key"
+
+
+def test_sin_401_manda_el_primer_estado_de_la_cadena() -> None:
+    outer = ProviderError(429, message="lento")
+    outer.__cause__ = ProviderError(500)
+    assert kind(outer) == "rate_limited"
+
+
 def test_estado_en_la_respuesta_si_no_hay_status_code() -> None:
     request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
     error = httpx.HTTPStatusError("x", request=request, response=httpx.Response(503))
