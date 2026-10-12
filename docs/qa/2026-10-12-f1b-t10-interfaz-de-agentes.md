@@ -3,7 +3,7 @@
 - **Spec:** [F1b](../specs/2026-10-05-f1b-capa-ia-y-motor-de-agentes.md) §3, §4.6, §5.1–§5.5, §9.4 y fila T10 de §8.3.
 - **ADR:** 0002 (errores), 0006 (CSP), 0007 (paleta), [0014](../adr/0014-tareas-de-agentes-en-el-protocolo-nucleo-motor.md) §2–§3, [0016](../adr/0016-autonomia-guardarrailes-y-aprobaciones.md).
 - **Contexto usado:** informes de [T7](2026-10-11-f1b-t7-cola-y-programador.md), [T8](2026-10-11-f1b-t8-marco-de-agentes.md) y [T9](2026-10-11-f1b-t9-agente-resumen-del-sitio.md); `packages/shared/{engine.d.ts,engine-operations.json,agent-grants.json}` (28 operaciones); `apps/engine/faro_engine/core/routes/*`; núcleo `src/commands/agents.rs` y `src/agents/activity.rs`.
-- **Estado:** implementado y verificado con `mockIPC`; pendiente de `revisor-seguridad` (presentación como texto, ningún secreto en la interfaz) y de la prueba manual con `--fake-llm` en Windows (§9).
+- **Estado:** implementado y verificado con `mockIPC`; `revisor-seguridad`: **aprobado con cambios**, los cuatro hallazgos corregidos en el árbol (§11). Pendiente de la prueba manual con `--fake-llm` en Windows (§9).
 - **Núcleo Rust:** sin cambios. Todo lo que la interfaz necesita ya existe desde T5 (§4).
 
 ## 1. Qué se construyó
@@ -163,9 +163,33 @@ Requisitos: build de depuración (`npm run dev`), wp-env con el plugin y una cla
 
 ## 10. Pendiente
 
-- **`revisor-seguridad` (T10, spec §7):** presentación como texto (resumen y propuestas), ningún secreto en la interfaz, eventos validados antes de usarlos, guarda `noHtml.test.ts`.
+- **`revisor-seguridad`:** confirmar las correcciones de §11.
 - **Prueba manual en Windows** (§9): no se pudo ejecutar aquí.
 - **T11 (`devops-release`):** `.env.local.example` con `FARO_FAKE_LLM` (los pasos de §9 lo usan); README con el flujo de agentes en desarrollo; nada de la interfaz bloquea la CI.
 - **T12 (`qa-pruebas`):** lista manual de la spec §10 con clave real (pasos 3, 5 y 13) y con `--fake-llm`; medir en un equipo real la cadencia de eventos de una tarea (no debería haber resincronizaciones salvo saltos de `seq`); revisar con lector de pantalla (NVDA) los anuncios de la actividad (`aria-live="polite"` en la lista: cada cambio de costo se anuncia; si resulta ruidoso, limitarlo a cambios de estado es un cambio de spec).
-- **T14 (`arquitecto`):** la skill `sistema-diseno-faro` gana `RunStatusChip`, `SiteSummaryText` y `Switch`; anotar en la spec las decisiones de §2 (formato de `Intl` "0,12 US$", "Listo · descartado" vía `listApprovals?status=rejected`, botón de límite sin menú, acción desconocida solo descartable) y el reintento acotado de §7.
+- **T14 (`arquitecto`):** corregir en la spec §5.5 (y en `locales/es/errors.json`) el texto de `agents.control_unavailable`: hoy dice "Reinicia Faro", lo que deshace una pausa no guardada (§11, hallazgo 1); la interfaz ya no lo muestra al pausar ni al reanudar. La skill `sistema-diseno-faro` gana `RunStatusChip`, `SiteSummaryText` y `Switch`; anotar en la spec las decisiones de §2 (formato de `Intl` "0,12 US$", "Listo · descartado" vía `listApprovals?status=rejected`, botón de límite sin menú, acción desconocida solo descartable) y el reintento acotado de §7.
 - **Traducciones** `en` y `pt-BR`: siguen con `[TODO] `.
+
+## 11. Revisión de seguridad (2026-10-12)
+
+Veredicto de `revisor-seguridad` sobre el commit `3243651`: **aprobado con cambios**, con cuatro hallazgos. Los cuatro están corregidos en el árbol (sin commit), cada uno con su prueba.
+
+| # | Hallazgo | Corrección | Pruebas |
+| --- | --- | --- | --- |
+| 1 | **(Medio)** Si `agents_pause_all` falla con `agents.control_unavailable`, el núcleo pausa en memoria pero no guarda `agents-control.json`; el mensaje del catálogo decía "Reinicia Faro" y, al reiniciar, los agentes volvían a trabajar | `features/agents/pauseNotSaved.ts`: la interfaz recuerda **solo en memoria** que la pausa no se guardó (se olvida al pausar o reanudar con éxito). El aviso de pausa (`app/TopBar.tsx`) añade, con icono `critical`: "La pausa no se pudo guardar: si cierras Faro, los agentes volverán a trabajar." El toast de ese caso usa un texto propio sin "Reinicia" (`common:agentsControl.pauseNotSavedToast`); el de reanudar con ese código, también (`resumeFailedToast`). Otros códigos siguen con el catálogo | `PauseAgentsButton.test.tsx`: "pausa aplicada pero no guardada…: aviso extra y nunca 'Reinicia'" (`agents_pause_all` rechaza, `agents_control_state` → `paused: true`; ningún texto de la página contiene "Reinicia"), "al reanudar con éxito se olvida…", "otro error al pausar…" y "error al reanudar…" (sin "Reinicia") |
+| 2 | **(Bajo)** Autonomía ofrecía los niveles 0–3 a cualquier agente | `maxLevelFor` en `AutonomySection.tsx`, con `listAgents`: 3 si todas las acciones son `internal`; 1 si no, o si el agente no está en la lista (o aún no se leyó). No se pintan opciones por encima del máximo, ni en la fila ni en "Agregar regla para un sitio"; una regla ya guardada por encima se muestra deshabilitada para no mentir. El motor sigue rechazando lo que pase del máximo | `AutonomySection.test.tsx`: "un agente con una acción publish solo ofrece hasta el nivel 1 (fila y regla de sitio)", "un agente desconocido para listAgents también se limita al nivel 1", "una regla guardada por encima del máximo se muestra, deshabilitada" |
+| 3 | **(Bajo)** Un identificador inesperado del motor podía tumbar la ventana (`STEP_ICON[step.status]` indefinido, sin `errorElement`) o mostrar claves de i18n en crudo (`trigger`, `step.status`, `model.tier`, `provider`) | Listas cerradas con genéricos: estado de paso → icono `CircleHelp` y "Sin información"; origen → "Origen desconocido"; nivel de modelo → "Modelo: …"; proveedor → `knownProviderShortName` (diálogo: "Hoy llevas … de …."; gasto: "Otro proveedor de IA"). `app/RouteError.tsx` como `errorElement` de una ruta sin camino alrededor de las secciones: el error se pinta dentro del `<Outlet/>` y la barra lateral y la superior (**Pausar agentes**) siguen vivas; no muestra el error (podría traer datos) | `RunDetailSheet.test.tsx`: "estado, origen y estado de paso desconocidos: textos genéricos y la app sigue en pie" (`status: "weird"`, `trigger: "weird"`, paso `weird`; sin claves en crudo; **Pausar agentes** presente). `LaunchAgentDialog.test.tsx`: "proveedor y nivel de modelo desconocidos…". `app/RouteError.test.tsx`: una sección que lanza al dibujarse → aviso, **Pausar agentes** y barra lateral visibles, el mensaje del error no aparece, **Ir a Inicio** funciona |
+| 4 | **(Bajo)** La guarda no prohibía enlaces ni imágenes construidos con datos | `test/noHtml.test.ts`: patrón por línea `href={`, `src={` y `<a`, con lista permitida explícita (las dos líneas del enlace "Saltar al contenido" de `app/AppShell.tsx`, que apunta a un ancla fija) | `noHtml.test.ts`: "ningún enlace ni imagen con datos…", "la lista permitida existe tal cual…" y el control "el patrón de enlaces detecta lo prohibido" (`<a href={summary.url}>`, `<img src={…} />`, `<a`, `href={\`https://${site}\`}`; no confunde `<article>`, `<abbr>`, `data-href`, `hrefLang`) |
+
+Textos nuevos en `es` (`common:agentsControl.{pauseNotSaved,pauseNotSavedToast,resumeFailedToast}`, `common:sectionError.*`, `agents:detail.trigger.unknown`, `agents:detail.stepStatus.unknown`, `agents:launch.{usageNoProvider,detailModelUnknown}`, `agents:spend.otherProvider`); `en` y `pt-BR` con `[TODO] `.
+
+**Para T14:** el texto del catálogo §5.5 de `agents.control_unavailable` ("Reinicia Faro; si se repite, escríbenos.") debe dejar de pedir reiniciar; la interfaz ya no lo usa en la barra de pausa.
+
+Verificaciones tras las correcciones, desde la raíz:
+
+| Comando | Resultado |
+| --- | --- |
+| `npm run format:check` | `All matched files use Prettier code style!`; `cargo fmt --check` sin diferencias; `264 files already formatted` |
+| `npm run lint -w apps/desktop` | `eslint . --max-warnings 0` sin errores |
+| `npm run typecheck` | `tsc --noEmit` sin errores; mypy `Success: no issues found in 259 source files` |
+| `npm run test -w apps/desktop` | `Test Files 33 passed (33)`, `Tests 680 passed (680)`; cobertura: líneas 96,1 %, sentencias 96,19 %, ramas 88,84 %, funciones 95,25 % |
