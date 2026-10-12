@@ -172,7 +172,7 @@ Requisitos: build de depuración (`npm run dev`), wp-env con el plugin y una cla
 
 ## 11. Revisión de seguridad (2026-10-12)
 
-Veredicto de `revisor-seguridad` sobre el commit `3243651`: **aprobado con cambios**, con cuatro hallazgos. Los cuatro están corregidos en el árbol (sin commit), cada uno con su prueba.
+Veredicto de `revisor-seguridad` sobre el commit `3243651`: **aprobado con cambios**, con cuatro hallazgos. Los cuatro están corregidos en `1075d43` y `6b50b7f`, cada uno con su prueba.
 
 | # | Hallazgo | Corrección | Pruebas |
 | --- | --- | --- | --- |
@@ -193,3 +193,5 @@ Verificaciones tras las correcciones, desde la raíz:
 | `npm run lint -w apps/desktop` | `eslint . --max-warnings 0` sin errores |
 | `npm run typecheck` | `tsc --noEmit` sin errores; mypy `Success: no issues found in 259 source files` |
 | `npm run test -w apps/desktop` | `Test Files 33 passed (33)`, `Tests 680 passed (680)`; cobertura: líneas 96,1 %, sentencias 96,19 %, ramas 88,84 %, funciones 95,25 % |
+
+**Confirmación del revisor (commit `6b50b7f`): APROBADO.** Los cuatro hallazgos quedan cerrados y las correcciones no introducen nada nuevo: `RouteError` no muestra el contenido del error, la regla guardada por encima del máximo aparece deshabilitada y el aviso de pausa no guardada se borra solo al pausar o reanudar con éxito. Para T14, junto con el texto de §5.5: el aviso vive en la memoria de la ventana y se pierde si se recarga (F5 en WebView2); para cerrarlo, `agents_control_state` devolvería `saved: boolean` y la interfaz lo leería de ahí (cambio del núcleo y de la spec), con una prueba de que `saved:false` en el estado inicial muestra el aviso.
