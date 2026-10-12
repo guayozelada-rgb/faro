@@ -1,5 +1,1 @@
-import { ComingSoonSection } from "./ComingSoonSection";
-
-export function AgentsPage() {
-  return <ComingSoonSection sectionId="agents" />;
-}
+export { AgentsPage } from "@/features/agents/AgentsPage";

@@ -63,12 +63,38 @@
       "added": "[TODO] Clave de {{provider}} guardada y funcionando.",
       "testValid": "[TODO] La clave funciona.",
       "deleted": "[TODO] Clave de {{provider}} borrada."
+    },
+    "usage": {
+      "preferredLabel": "[TODO] Clave que usan los agentes",
+      "preferredHelp": "[TODO] Elige qué IA hace el trabajo de tus agentes.",
+      "automatic": "[TODO] Automática (la primera que tengas)",
+      "today": "[TODO] Hoy: {{spent}} de {{limit}}",
+      "limitReached": "[TODO] Límite de hoy alcanzado",
+      "changeLimit": "[TODO] Cambiar límite diario",
+      "changeLimitLabel": "[TODO] Cambiar límite diario de {{provider}}",
+      "error": "[TODO] No pudimos leer el gasto de hoy.",
+      "retry": "[TODO] Intentar de nuevo",
+      "toast": {
+        "preference": "[TODO] Los agentes usarán tu clave de {{provider}}.",
+        "preferenceAuto": "[TODO] Los agentes usarán la primera clave que tengas.",
+        "limit": "[TODO] Guardamos el límite de {{provider}}."
+      },
+      "limitDialog": {
+        "title": "[TODO] Límite diario de {{provider}}",
+        "label": "[TODO] Límite de gasto por día (US$)",
+        "help": "[TODO] Cuando esta clave llega a su límite, los agentes que la usan esperan hasta mañana.",
+        "dayNote": "[TODO] El día es el de tu computadora: empieza a medianoche.",
+        "submit": "[TODO] Guardar límite",
+        "submitting": "[TODO] Guardando el límite…",
+        "cancel": "[TODO] Cancelar"
+      }
     }
   },
   "tabs": {
     "label": "[TODO] Secciones de Configuración",
     "sites": "[TODO] Sitios conectados",
-    "aiKeys": "[TODO] Claves de IA"
+    "aiKeys": "[TODO] Claves de IA",
+    "autonomy": "[TODO] Autonomía"
   },
   "sites": {
     "title": "[TODO] Sitios conectados",
@@ -199,6 +225,61 @@
       "removeConfirm": "[TODO] Quitar de Faro",
       "removing": "[TODO] Quitando el sitio…",
       "cancel": "[TODO] Cancelar"
+    }
+  },
+  "autonomy": {
+    "title": "[TODO] Autonomía",
+    "titleHelpLabel": "[TODO] Qué es la autonomía",
+    "titleTooltip": "[TODO] Decide cuánto pueden hacer los agentes sin preguntarte.",
+    "loadingLabel": "[TODO] Cargando las reglas de autonomía",
+    "retry": "[TODO] Intentar de nuevo",
+    "retrying": "[TODO] Intentando de nuevo…",
+    "allSites": "[TODO] Todos tus sitios",
+    "levelLabel": "[TODO] Nivel de {{agent}} en {{target}}",
+    "levels": {
+      "suggest": {
+        "title": "[TODO] Solo sugerir",
+        "description": "[TODO] Te muestra lo que haría. No guarda nada."
+      },
+      "ask": {
+        "title": "[TODO] Preparar y pedirte OK (recomendado)",
+        "description": "[TODO] Prepara el resultado y espera tu OK en la Bandeja."
+      },
+      "limits": {
+        "title": "[TODO] Actuar con límites",
+        "description": "[TODO] Guarda el resultado si cumple tus límites; si no, te pregunta."
+      },
+      "autopilot": {
+        "title": "[TODO] Piloto automático",
+        "description": "[TODO] Guarda el resultado sin preguntarte."
+      }
+    },
+    "addSiteRule": "[TODO] Agregar regla para un sitio",
+    "addSiteTitle": "[TODO] Regla para un sitio",
+    "addSiteDescription": "[TODO] Esta regla reemplaza a la general en el sitio que elijas.",
+    "siteLabel": "[TODO] Sitio",
+    "levelField": "[TODO] Nivel",
+    "addSubmit": "[TODO] Guardar regla",
+    "noMoreSites": "[TODO] Todos tus sitios conectados ya tienen su propia regla.",
+    "siteMore": "[TODO] Más acciones para {{site}}",
+    "useGeneral": "[TODO] Usar la regla general",
+    "removedSite": "[TODO] Sitio quitado",
+    "autopilotTitle": "[TODO] ¿Activar el piloto automático?",
+    "autopilotDescription": "[TODO] {{agent}} guardará resultados sin preguntarte. Nunca publicará, borrará ni gastará más de tu límite.",
+    "autopilotConfirm": "[TODO] Activar piloto automático",
+    "back": "[TODO] Volver",
+    "cancel": "[TODO] Cancelar",
+    "saving": "[TODO] Guardando…",
+    "guardrailsTitle": "[TODO] Lo que ningún agente hace nunca",
+    "guardrails": {
+      "noDelete": "[TODO] Borrar contenido o campañas.",
+      "dailySpendCap": "[TODO] Gastar más de tu límite diario.",
+      "publishSpendNeedRules": "[TODO] Publicar o gastar dinero sin pasar por estas reglas.",
+      "adsPaused": "[TODO] Crear campañas activas: siempre se crean en pausa."
+    },
+    "toast": {
+      "saved": "[TODO] Guardamos la regla.",
+      "removed": "[TODO] El sitio vuelve a usar la regla general."
     }
   }
 }

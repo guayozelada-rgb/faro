@@ -18,14 +18,23 @@ const homeSection = getSection("home");
  */
 export type SitesStepState = "loading" | "unavailable" | "pending" | "done";
 
+/**
+ * Estado del paso "Conoce tu sitio con IA" (spec F1b §3.8): `loading` mientras se leen los
+ * resúmenes guardados, `done` si algún sitio activo tiene uno y `pending` si no.
+ */
+export type SummaryStepState = "loading" | "pending" | "done";
+
 export interface NextStepsProps {
   sites: SitesStepState;
   /** `true` si la Bóveda tiene al menos una clave de IA. */
   hasKeys: boolean;
+  summary: SummaryStepState;
+  /** Abre "Lanzar Resumen del sitio". */
+  onLaunchSummary: () => void;
 }
 
-/** Bloque "Qué hacer ahora" de Inicio (spec F1a §3.6). */
-export function NextSteps({ sites, hasKeys }: NextStepsProps) {
+/** Bloque "Qué hacer ahora" de Inicio (spec F1a §3.6 y F1b §3.8). */
+export function NextSteps({ sites, hasKeys, summary, onLaunchSummary }: NextStepsProps) {
   const { t } = useTranslation("home");
   const navigate = useNavigate();
   const titleId = useId();
@@ -46,8 +55,26 @@ export function NextSteps({ sites, hasKeys }: NextStepsProps) {
     />
   );
 
+  const summaryStep =
+    summary === "loading" ? (
+      <li
+        aria-busy="true"
+        aria-label={t("nextSteps.knowSite.loading")}
+        className="flex items-center gap-3 rounded-lg border border-border bg-card p-4"
+      >
+        <Skeleton className="size-5 rounded-full" />
+        <Skeleton className="h-5 w-48" />
+      </li>
+    ) : (
+      <Step
+        done={summary === "done"}
+        title={t("nextSteps.knowSite.title")}
+        action={{ label: t("nextSteps.knowSite.action"), onClick: onLaunchSummary }}
+      />
+    );
+
   let content;
-  if (sites === "done" && hasKeys) {
+  if (sites === "done" && hasKeys && summary === "done") {
     content = (
       <p className="flex items-center gap-3 rounded-lg border border-border bg-card p-6 text-base">
         <CircleCheck
@@ -69,7 +96,10 @@ export function NextSteps({ sites, hasKeys }: NextStepsProps) {
           description={t("emptyState.description")}
           action={{ label: t("emptyState.action"), onClick: goToSites }}
         />
-        <ol className="flex flex-col gap-3">{keyStep}</ol>
+        <ol className="flex flex-col gap-3">
+          {keyStep}
+          {summaryStep}
+        </ol>
       </>
     );
   } else {
@@ -77,6 +107,7 @@ export function NextSteps({ sites, hasKeys }: NextStepsProps) {
       <ol className="flex flex-col gap-3">
         <SitesStep state={sites} onConnect={goToSites} />
         {keyStep}
+        {summaryStep}
       </ol>
     );
   }

@@ -31,6 +31,32 @@
     "addKey": {
       "title": "Agrega una clave de IA",
       "action": "Agregar clave de IA"
+    },
+    "knowSite": {
+      "title": "Conoce tu sitio con IA",
+      "action": "Lanzar Resumen del sitio",
+      "loading": "Buscando el resumen de tu sitio"
     }
+  },
+  "notices": {
+    "label": "Avisos de tus agentes",
+    "catchUp": "Mientras Faro estaba cerrado no se hizo «{{agent}}» de {{site}}. Lo estamos haciendo ahora.",
+    "dailyLimit": "«{{agent}}» espera a mañana porque llegaste a tu límite de gasto de hoy.",
+    "acknowledge": "Entendido",
+    "acknowledging": "Guardando…"
+  },
+  "approvals": {
+    "pending_one": "Tienes {{count}} propuesta por revisar.",
+    "pending_other": "Tienes {{count}} propuestas por revisar.",
+    "goToInbox": "Ir a la Bandeja"
+  },
+  "summaryCard": {
+    "title": "Tu sitio en pocas palabras",
+    "site": "{{site}}",
+    "savedOn": "Guardado el {{date}}",
+    "view": "Ver resumen",
+    "viewLabel": "Ver resumen de {{site}}",
+    "update": "Actualizar",
+    "updateLabel": "Actualizar el resumen de {{site}}"
   }
 }

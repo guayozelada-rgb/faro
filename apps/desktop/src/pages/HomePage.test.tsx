@@ -4,19 +4,35 @@ import { createMemoryRouter, RouterProvider } from "react-router";
 import { describe, expect, it } from "vitest";
 
 import { AppProviders } from "@/App";
-import { NextSteps, type SitesStepState } from "@/features/home/NextSteps";
+import { NextSteps, type SitesStepState, type SummaryStepState } from "@/features/home/NextSteps";
 import { deferred } from "@/test/engineIpc";
 import { renderApp } from "@/test/renderApp";
 import { mockSitesIpc, READY_STATUS, revokedSite, siteFixture } from "@/test/sitesIpc";
+import { RUN_ID, summaryFixture } from "@/test/agentsIpc";
 import { faroError, keySummary, rejectWith } from "@/test/vaultIpc";
 
 const ALL_SET = "Todo listo por ahora. Pronto los agentes empezarán a trabajar en tu sitio.";
 const WELCOME = "Te damos la bienvenida a Faro";
 const UNAVAILABLE = "Aún no podemos ver tus sitios.";
 
-function renderSteps(sites: SitesStepState, hasKeys: boolean) {
+function renderSteps(
+  sites: SitesStepState,
+  hasKeys: boolean,
+  summary: SummaryStepState = "done",
+  onLaunchSummary: () => void = () => undefined,
+) {
   const router = createMemoryRouter([
-    { path: "/", element: <NextSteps sites={sites} hasKeys={hasKeys} /> },
+    {
+      path: "/",
+      element: (
+        <NextSteps
+          sites={sites}
+          hasKeys={hasKeys}
+          summary={summary}
+          onLaunchSummary={onLaunchSummary}
+        />
+      ),
+    },
     { path: "/settings", element: null },
   ]);
   render(
@@ -90,6 +106,28 @@ describe("Inicio", () => {
       expect(within(nextSteps).queryByRole("button")).not.toBeInTheDocument();
     });
 
+    it("paso 3 pendiente: 'Conoce tu sitio con IA' con su acción; cargando: esqueleto", async () => {
+      const user = userEvent.setup();
+      let launched = 0;
+      const { nextSteps } = renderSteps("done", true, "pending", () => {
+        launched += 1;
+      });
+      const summaryStep = step(nextSteps, "Conoce tu sitio con IA");
+      expect(within(summaryStep).getByText("Pendiente")).toBeInTheDocument();
+      expect(within(nextSteps).queryByText(ALL_SET)).not.toBeInTheDocument();
+      await user.click(
+        within(summaryStep).getByRole("button", { name: "Lanzar Resumen del sitio" }),
+      );
+      expect(launched).toBe(1);
+    });
+
+    it("paso 3 cargando: esqueleto con su propia etiqueta", () => {
+      const { nextSteps } = renderSteps("done", true, "loading");
+      expect(
+        within(nextSteps).getByRole("listitem", { name: "Buscando el resumen de tu sitio" }),
+      ).toHaveAttribute("aria-busy", "true");
+    });
+
     it("cargando sitios: esqueleto en el paso 1 y el paso 2 disponible", () => {
       const { nextSteps } = renderSteps("loading", false);
 
@@ -135,10 +173,18 @@ describe("Inicio", () => {
   });
 
   describe("con la app completa", () => {
-    it("un sitio activo y una clave: todo listo (sin comprobar sitios ni probar claves)", async () => {
+    it("un sitio activo, una clave y su resumen: todo listo (sin comprobar sitios ni probar claves)", async () => {
       const ipc = mockSitesIpc({
         listSites: () => ({ items: [siteFixture()], next_cursor: null }),
         listKeys: () => [keySummary("openai", "untested")],
+        operations: {
+          getSiteSummary: () => ({
+            site_id: siteFixture().id,
+            summary: summaryFixture(),
+            run_id: RUN_ID,
+            created_at: "2026-10-12T12:00:00Z",
+          }),
+        },
       });
       renderApp("/");
 

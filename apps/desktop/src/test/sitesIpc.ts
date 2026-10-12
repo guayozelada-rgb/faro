@@ -25,7 +25,24 @@ export interface SitesIpcHandlers {
   engineStatus?: Handler;
   /** `vault_list_keys` (por defecto, sin claves). */
   listKeys?: Handler;
+  /**
+   * Otras operaciones del motor (F1b). Sin simular: listas de tareas y propuestas vacías y
+   * ningún resumen guardado; el resto falla como operación inesperada.
+   */
+  operations?: Partial<Record<string, Handler<EngineRequest>>>;
 }
+
+/** Respuestas por defecto de las operaciones de agentes que Inicio y la barra lateral leen. */
+const AGENT_DEFAULTS: Record<string, Handler<EngineRequest>> = {
+  listAgentRuns: () => ({ items: [], next_cursor: null }),
+  listApprovals: () => ({ items: [], next_cursor: null }),
+  getSiteSummary: (request) => ({
+    site_id: request.path?.site_id ?? "",
+    summary: null,
+    run_id: null,
+    created_at: null,
+  }),
+};
 
 export interface SitesIpcCall {
   cmd: string;
@@ -153,8 +170,14 @@ export function mockSitesIpc(handlers: SitesIpcHandlers = {}): SitesIpcMock {
             return need(handlers.listSiteContent, "listSiteContent")(request);
           case "removeSite":
             return need(handlers.removeSite, "removeSite")(request);
-          default:
-            throw new Error(`operación inesperada: ${request.operation}`);
+          default: {
+            const other =
+              handlers.operations?.[request.operation] ?? AGENT_DEFAULTS[request.operation];
+            if (!other) {
+              throw new Error(`operación inesperada: ${request.operation}`);
+            }
+            return other(request);
+          }
         }
       }
       case "wp_plugin_export":
@@ -163,6 +186,8 @@ export function mockSitesIpc(handlers: SitesIpcHandlers = {}): SitesIpcMock {
         return handlers.engineStatus ? handlers.engineStatus(undefined) : READY_STATUS;
       case "vault_list_keys":
         return handlers.listKeys ? handlers.listKeys(undefined) : [];
+      case "agents_control_state":
+        return { paused: false, changed_at: null };
       case "plugin:event|listen":
         return 1;
       case "plugin:event|unlisten":

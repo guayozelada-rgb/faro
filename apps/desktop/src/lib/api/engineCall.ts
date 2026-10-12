@@ -26,12 +26,14 @@ type RequestBody<K extends OperationId> =
 
 type Responses<K extends OperationId> = Operation<K>["responses"];
 
-/** Cuerpo de la respuesta correcta (200, 201 o 204 → `null`). */
+/** Cuerpo de la respuesta correcta (200, 201, 202 o 204 → `null`). */
 export type EngineResponse<K extends OperationId> = 200 extends keyof Responses<K>
   ? JsonOf<Responses<K>[200]>
   : 201 extends keyof Responses<K>
     ? JsonOf<Responses<K>[201]>
-    : null;
+    : 202 extends keyof Responses<K>
+      ? JsonOf<Responses<K>[202]>
+      : null;
 
 /** Parámetros de `api.call`: ruta, consulta y cuerpo, tipados por operación. */
 export interface EngineCallArgs<K extends OperationId> {

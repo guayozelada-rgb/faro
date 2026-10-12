@@ -5,7 +5,9 @@
   "sidebar": {
     "label": "Secciones de Faro",
     "collapse": "Contraer barra lateral",
-    "expand": "Expandir barra lateral"
+    "expand": "Expandir barra lateral",
+    "pendingApprovals_one": "{{count}} propuesta pendiente",
+    "pendingApprovals_other": "{{count}} propuestas pendientes"
   },
   "connection": {
     "disconnected": "Sin conectar",
@@ -16,5 +18,21 @@
   },
   "toasts": {
     "label": "Notificaciones"
+  },
+  "agentsControl": {
+    "pause": "Pausar agentes",
+    "pauseTooltip": "Detiene a todos los agentes al momento. Nada se ejecuta hasta que los reanudes.",
+    "pausing": "Pausando…",
+    "resume": "Reanudar agentes",
+    "resuming": "Reanudando…",
+    "pausedBanner": "Los agentes están en pausa. No se ejecuta ninguna tarea, tampoco las programadas.",
+    "resumedToast": "Los agentes vuelven a trabajar."
+  },
+  "money": {
+    "lessThan": "menos de {{amount}}"
+  },
+  "aiBadge": "Hecho por IA",
+  "providers": {
+    "unknown": "tu proveedor de IA"
   }
 }

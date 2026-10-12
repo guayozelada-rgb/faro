@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { NavLink } from "react-router";
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { usePendingApprovals } from "@/features/agents/queries";
 import { cn } from "@/lib/utils";
 
 import { type Section, SECTIONS } from "./sections";
@@ -13,12 +14,31 @@ const NAV_ID = "faro-sidebar-nav";
 interface SidebarLinkProps {
   section: Section;
   collapsed: boolean;
+  /** Número junto al nombre (propuestas pendientes de la Bandeja); 0 = sin número. */
+  count?: number;
 }
 
-function SidebarLink({ section, collapsed }: SidebarLinkProps) {
+function SidebarLink({ section, collapsed, count = 0 }: SidebarLinkProps) {
   const { t } = useTranslation(section.namespace);
+  const { t: tCommon } = useTranslation("common");
   const label = t("title");
   const Icon = section.icon;
+  // El número se ve como texto y se lee como "1 propuesta pendiente" (spec F1b §3.5).
+  const badge =
+    count > 0 ? (
+      <span
+        data-testid="sidebar-count"
+        className={cn(
+          "rounded-md border border-border bg-background px-1.5 text-xs font-semibold text-foreground",
+          collapsed ? "absolute top-0.5 right-1" : "ml-auto",
+        )}
+      >
+        <span aria-hidden="true">{count}</span>
+        <span className="sr-only">
+          {tCommon("sidebar.pendingApprovals", { count })}
+        </span>
+      </span>
+    ) : null;
 
   // `className` debe ser siempre una cadena: en modo contraído el enlace va dentro de
   // `<TooltipTrigger asChild>` y el Slot de Radix convertiría una función en texto.
@@ -34,11 +54,12 @@ function SidebarLink({ section, collapsed }: SidebarLinkProps) {
         // (sombra interior, no ocupa ancho). `primary` sobre `muted` cumple 4,5:1 (tokens.test.ts).
         "aria-[current=page]:bg-muted aria-[current=page]:font-semibold aria-[current=page]:text-primary",
         "aria-[current=page]:shadow-[inset_4px_0_0_0_var(--color-primary)]",
-        collapsed ? "w-full justify-center px-0" : "pr-3 pl-4",
+        collapsed ? "relative w-full justify-center px-0" : "pr-3 pl-4",
       )}
     >
       <Icon aria-hidden="true" className="size-5 shrink-0" strokeWidth={1.5} />
       <span className={cn(collapsed && "sr-only")}>{label}</span>
+      {badge}
     </NavLink>
   );
 
@@ -58,6 +79,8 @@ function SidebarLink({ section, collapsed }: SidebarLinkProps) {
 export function Sidebar() {
   const { t } = useTranslation("common");
   const [collapsed, toggleCollapsed] = useSidebarCollapsed();
+  const pending = usePendingApprovals();
+  const pendingCount = pending.data?.items.length ?? 0;
   const toggleLabel = collapsed ? t("sidebar.expand") : t("sidebar.collapse");
   const ToggleIcon = collapsed ? PanelLeftOpen : PanelLeftClose;
 
@@ -96,7 +119,11 @@ export function Sidebar() {
         <ul className="flex flex-col gap-1">
           {SECTIONS.map((section) => (
             <li key={section.id}>
-              <SidebarLink section={section} collapsed={collapsed} />
+              <SidebarLink
+                section={section}
+                collapsed={collapsed}
+                count={section.id === "inbox" ? pendingCount : 0}
+              />
             </li>
           ))}
         </ul>

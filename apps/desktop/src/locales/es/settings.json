@@ -63,12 +63,38 @@
       "added": "Clave de {{provider}} guardada y funcionando.",
       "testValid": "La clave funciona.",
       "deleted": "Clave de {{provider}} borrada."
+    },
+    "usage": {
+      "preferredLabel": "Clave que usan los agentes",
+      "preferredHelp": "Elige qué IA hace el trabajo de tus agentes.",
+      "automatic": "Automática (la primera que tengas)",
+      "today": "Hoy: {{spent}} de {{limit}}",
+      "limitReached": "Límite de hoy alcanzado",
+      "changeLimit": "Cambiar límite diario",
+      "changeLimitLabel": "Cambiar límite diario de {{provider}}",
+      "error": "No pudimos leer el gasto de hoy.",
+      "retry": "Intentar de nuevo",
+      "toast": {
+        "preference": "Los agentes usarán tu clave de {{provider}}.",
+        "preferenceAuto": "Los agentes usarán la primera clave que tengas.",
+        "limit": "Guardamos el límite de {{provider}}."
+      },
+      "limitDialog": {
+        "title": "Límite diario de {{provider}}",
+        "label": "Límite de gasto por día (US$)",
+        "help": "Cuando esta clave llega a su límite, los agentes que la usan esperan hasta mañana.",
+        "dayNote": "El día es el de tu computadora: empieza a medianoche.",
+        "submit": "Guardar límite",
+        "submitting": "Guardando el límite…",
+        "cancel": "Cancelar"
+      }
     }
   },
   "tabs": {
     "label": "Secciones de Configuración",
     "sites": "Sitios conectados",
-    "aiKeys": "Claves de IA"
+    "aiKeys": "Claves de IA",
+    "autonomy": "Autonomía"
   },
   "sites": {
     "title": "Sitios conectados",
@@ -199,6 +225,61 @@
       "removeConfirm": "Quitar de Faro",
       "removing": "Quitando el sitio…",
       "cancel": "Cancelar"
+    }
+  },
+  "autonomy": {
+    "title": "Autonomía",
+    "titleHelpLabel": "Qué es la autonomía",
+    "titleTooltip": "Decide cuánto pueden hacer los agentes sin preguntarte.",
+    "loadingLabel": "Cargando las reglas de autonomía",
+    "retry": "Intentar de nuevo",
+    "retrying": "Intentando de nuevo…",
+    "allSites": "Todos tus sitios",
+    "levelLabel": "Nivel de {{agent}} en {{target}}",
+    "levels": {
+      "suggest": {
+        "title": "Solo sugerir",
+        "description": "Te muestra lo que haría. No guarda nada."
+      },
+      "ask": {
+        "title": "Preparar y pedirte OK (recomendado)",
+        "description": "Prepara el resultado y espera tu OK en la Bandeja."
+      },
+      "limits": {
+        "title": "Actuar con límites",
+        "description": "Guarda el resultado si cumple tus límites; si no, te pregunta."
+      },
+      "autopilot": {
+        "title": "Piloto automático",
+        "description": "Guarda el resultado sin preguntarte."
+      }
+    },
+    "addSiteRule": "Agregar regla para un sitio",
+    "addSiteTitle": "Regla para un sitio",
+    "addSiteDescription": "Esta regla reemplaza a la general en el sitio que elijas.",
+    "siteLabel": "Sitio",
+    "levelField": "Nivel",
+    "addSubmit": "Guardar regla",
+    "noMoreSites": "Todos tus sitios conectados ya tienen su propia regla.",
+    "siteMore": "Más acciones para {{site}}",
+    "useGeneral": "Usar la regla general",
+    "removedSite": "Sitio quitado",
+    "autopilotTitle": "¿Activar el piloto automático?",
+    "autopilotDescription": "{{agent}} guardará resultados sin preguntarte. Nunca publicará, borrará ni gastará más de tu límite.",
+    "autopilotConfirm": "Activar piloto automático",
+    "back": "Volver",
+    "cancel": "Cancelar",
+    "saving": "Guardando…",
+    "guardrailsTitle": "Lo que ningún agente hace nunca",
+    "guardrails": {
+      "noDelete": "Borrar contenido o campañas.",
+      "dailySpendCap": "Gastar más de tu límite diario.",
+      "publishSpendNeedRules": "Publicar o gastar dinero sin pasar por estas reglas.",
+      "adsPaused": "Crear campañas activas: siempre se crean en pausa."
+    },
+    "toast": {
+      "saved": "Guardamos la regla.",
+      "removed": "El sitio vuelve a usar la regla general."
     }
   }
 }

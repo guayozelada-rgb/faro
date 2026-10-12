@@ -1,5 +1,5 @@
 import { CircleX, Info } from "lucide-react";
-import { useId } from "react";
+import { type ReactNode, useId } from "react";
 import { useTranslation } from "react-i18next";
 
 import { type ConnectionState, ConnectionChip } from "@/components/faro/ConnectionChip";
@@ -19,6 +19,8 @@ export interface ProviderKeyRowProps {
   onReplace: () => void;
   onTest: () => void;
   onDelete: () => void;
+  /** Gasto de hoy y límite de la clave (spec F1b §3.6); solo filas con clave. */
+  usage?: ReactNode;
 }
 
 function connectionState(summary: KeySummary | undefined, testing: boolean): ConnectionState {
@@ -47,6 +49,7 @@ export function ProviderKeyRow({
   onReplace,
   onTest,
   onDelete,
+  usage,
 }: ProviderKeyRowProps) {
   const { t, i18n } = useTranslation("settings");
   const nameId = useId();
@@ -144,6 +147,7 @@ export function ProviderKeyRow({
         </div>
         <div className="flex flex-wrap items-center gap-2">{actions}</div>
       </div>
+      {summary && usage ? usage : null}
       <div aria-live="polite" aria-atomic="true">
         {message !== null ? (
           <p className="flex items-start gap-2 text-sm">

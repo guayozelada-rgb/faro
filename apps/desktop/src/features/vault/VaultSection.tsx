@@ -13,9 +13,14 @@ import { FaroError, getErrorMessage, toFaroError } from "@/lib/api/errors";
 import type { Provider } from "@/lib/api/types";
 import { PROVIDERS, testKey } from "@/lib/api/vault";
 
+import { useLlmUsage } from "@/features/agents/queries";
+
+import { AgentKeyPreference } from "./AgentKeyPreference";
+import { DailyLimitDialog } from "./DailyLimitDialog";
 import { DeleteKeyDialog } from "./DeleteKeyDialog";
 import { KeyDialog, type KeyDialogMode } from "./KeyDialog";
 import { finishKeyTest, getKeyActivity, startKeyTest, useKeyActivity } from "./keyActivity";
+import { KeyUsageLine } from "./KeyUsageLine";
 import { ProviderKeyRow } from "./ProviderKeyRow";
 import { useAutoTestKeys } from "./useAutoTestKeys";
 import { refreshVaultKeys, updateKeySummary, useVaultKeys } from "./useVaultKeys";
@@ -23,6 +28,7 @@ import { refreshVaultKeys, updateKeySummary, useVaultKeys } from "./useVaultKeys
 type OpenDialog =
   | { kind: "key"; provider: Provider | null; mode: KeyDialogMode }
   | { kind: "delete"; provider: Provider }
+  | { kind: "limit"; provider: Provider }
   | null;
 
 const settingsSection = getSection("settings");
@@ -35,8 +41,23 @@ export function VaultSection() {
   const query = useVaultKeys();
   const activity = useKeyActivity();
   const [dialog, setDialog] = useState<OpenDialog>(null);
+  const usage = useLlmUsage();
 
   const keys = query.data;
+  const usageOf = (provider: Provider) =>
+    usage.data?.providers.find((item) => item.provider === provider);
+
+  function usageLine(provider: Provider) {
+    const providerUsage = usageOf(provider);
+    return providerUsage ? (
+      <KeyUsageLine
+        usage={providerUsage}
+        onChangeLimit={() => {
+          setDialog({ kind: "limit", provider });
+        }}
+      />
+    ) : null;
+  }
   // Si listar falla, no se prueba nada (spec §4.2).
   useAutoTestKeys(query.isError ? undefined : keys);
 
@@ -134,6 +155,7 @@ export function VaultSection() {
 
       {keys ? (
         <>
+          <AgentKeyPreference keys={keys} />
           {keys.length === 0 ? (
             <EmptyState
               icon={settingsSection.icon}
@@ -167,6 +189,7 @@ export function VaultSection() {
                 onDelete={() => {
                   setDialog({ kind: "delete", provider });
                 }}
+                usage={usageLine(provider)}
               />
             ))}
           </ul>
@@ -182,6 +205,13 @@ export function VaultSection() {
       {dialog?.kind === "delete" ? (
         <DeleteKeyDialog open onOpenChange={closeDialog} provider={dialog.provider} />
       ) : null}
+      <DailyLimitDialog
+        provider={dialog?.kind === "limit" ? dialog.provider : null}
+        currentLimitMicros={
+          dialog?.kind === "limit" ? (usageOf(dialog.provider)?.daily_limit_micros ?? 0) : 0
+        }
+        onOpenChange={closeDialog}
+      />
     </section>
   );
 }
