@@ -12,6 +12,8 @@ from faro_engine.agents.framework.untrusted import (
     TRUNCATION_MARK,
     DataBlock,
     UntrustedText,
+    fit_items,
+    item_text,
     llm_item,
     new_nonce,
     normalize,
@@ -190,3 +192,23 @@ def test_salida_del_modelo_como_datos() -> None:
     assert isinstance(nothing, UntrustedText)
     assert nothing.value == "none"
     DataBlock("llm", [item])  # entra en un bloque como cualquier dato
+
+
+def test_elementos_acotados_por_bytes() -> None:
+    """Condición T6-C3: `fit_items` cuenta bytes UTF-8 (no caracteres) y se para en el
+    primero que no cabe; el bloque resultante nunca se recorta."""
+    wide = chr(0x4E2D) * 10  # 10 caracteres de 3 bytes
+    items = [UntrustedText("site", wide) for _ in range(5)]
+    line = len(item_text(items[0]).encode("utf-8")) + 1  # "- " + 30 bytes + salto
+    assert line == 33
+    assert fit_items(items, 33 * 3) == items[:3]
+    assert fit_items(items, 33 * 3 - 1) == items[:2]
+    assert fit_items(items, 10) == []
+    big = [UntrustedText("site", "x" * 50), UntrustedText("site", "y")]
+    assert fit_items(big, 10) == []  # el orden lo decide quien llama: no se salta ninguno
+    block = DataBlock("site", fit_items(items, 99), max_chars=99)
+    assert TRUNCATION_MARK not in render_block(block, new_nonce())
+    with pytest.raises(ValueError, match="max_bytes"):
+        fit_items(items, 0)
+    with pytest.raises(TypeError):
+        item_text(object())  # type: ignore[arg-type]

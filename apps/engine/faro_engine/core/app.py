@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from faro_engine.agents.registry import agent_catalog, agent_grants_table
+from faro_engine.agents.registry import agent_catalog, agent_grants_table, dev_fake_replies
 from faro_engine.core.audit import AuditLog
 from faro_engine.core.config import Settings
 from faro_engine.core.db.database import Database
@@ -12,7 +12,7 @@ from faro_engine.core.errors import DB_UNAVAILABLE, install_error_handlers
 from faro_engine.core.jobs.activity import ActivityEmitter
 from faro_engine.core.jobs.control import AgentsControlState
 from faro_engine.core.jobs.grants import RunGrantClient
-from faro_engine.core.jobs.runner import AgentCatalog
+from faro_engine.core.jobs.runner import AgentCatalog, AgentServices
 from faro_engine.core.jobs.runtime import JobSystem
 from faro_engine.core.logging import RequestLoggingMiddleware
 from faro_engine.core.operations import validate_app_operations
@@ -30,6 +30,8 @@ from faro_engine.llm.fake import dev_fake_llm, fake_catalog
 from faro_engine.llm.service import LazyLiteLlmClient, LlmService
 from faro_engine.net.client import NetSettings
 from faro_engine.net.urls import NetPolicy
+from faro_engine.sites.reader import ServiceSiteReader
+from faro_engine.sites.service import SitesContext
 
 
 def default_net_settings(settings: Settings) -> NetSettings:
@@ -52,7 +54,7 @@ def default_llm_service(
     catalog = default_catalog()
     client: LlmClient = LazyLiteLlmClient()
     if settings.fake_llm:
-        client = dev_fake_llm()
+        client = dev_fake_llm(dev_fake_replies())
         catalog = fake_catalog()
     return LlmService(
         database=database, control=control, secrets=secrets, client=client, catalog=catalog
@@ -61,9 +63,21 @@ def default_llm_service(
 
 def default_agent_catalog() -> AgentCatalog:
     """Agentes del producto: el registro (`agents/registry.py`), validado al arrancar (si no
-    cumple, el motor no arranca). Vacío hasta que T9 registre `site_summary`. Los agentes de
-    prueba se registran solo en las pruebas."""
+    cumple, el motor no arranca). Desde T9, `site_summary`. Los agentes de prueba se
+    registran solo en las pruebas."""
     return agent_catalog()
+
+
+def default_agent_services(
+    settings: Settings, database: Database, secrets: SecretBroker, audit: AuditLog, net: NetSettings
+) -> AgentServices:
+    """Servicios de los agentes (`core/jobs/runner.py`): el lector de sitios de `read_site`,
+    con la misma base, canal de secretos, auditoría y red que las rutas `/sites*`. El token
+    del sitio lo pide por la concesión de la ejecución (ADR 0014)."""
+    context = SitesContext(
+        database=database, secrets=secrets, audit=audit, net=net, app_version=settings.version
+    )
+    return AgentServices(sites=ServiceSiteReader(context))
 
 
 def create_app(
@@ -134,6 +148,9 @@ def create_app(
             activity=app.state.activity,
             llm=app.state.llm,
             agents=agents if agents is not None else default_agent_catalog(),
+            services=default_agent_services(
+                settings, app.state.database, app.state.secrets, app.state.audit, app.state.net
+            ),
         )
     )
     install_error_handlers(app)

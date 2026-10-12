@@ -5,7 +5,7 @@ esta prueba lo detecta antes y sin git: los archivos versionados siguen al día 
 la lista permitida contiene exactamente las 7 operaciones de la spec F1a §5.2 con sus
 `timeout_seconds` y `secrets` (§9.6) y cada operación lleva lo que declara su ruta
 (ADR 0010 §3, spec F1a §4.5). `agent-grants.json` coincide con el registro de agentes y,
-en T3, está vacío (ADR 0014 §1, spec F1b T3).
+desde T9, solo concede a `site_summary` sus cuatro referencias (ADR 0014 §1, spec F1b §9.5).
 """
 
 from __future__ import annotations
@@ -68,6 +68,8 @@ def test_engine_operations_are_exactly_the_f1a_operations() -> None:
         _op("getHealth", "GET", "/health", 10, []),
         # Capa de IA (spec F1b §5.2): ninguna pide secretos.
         _op("getLlmUsage", "GET", "/llm/usage", 10, []),
+        # Resumen guardado del sitio (spec F1b §5.2, T9): solo lee la base.
+        _op("getSiteSummary", "GET", "/sites/{site_id}/summary", 10, []),
         _op("listAgentRuns", "GET", "/agent-runs", 10, []),
         _op("listAgents", "GET", "/agents", 10, []),
         _op("listApprovals", "GET", "/approvals", 10, []),
@@ -144,10 +146,22 @@ def test_engine_d_ts_declares_the_operations() -> None:
     assert '"/sites/{site_id}/content"' in text
 
 
-def test_agent_grants_are_exactly_the_t3_table() -> None:
+def test_agent_grants_are_exactly_the_t9_table() -> None:
     # Concesiones exactas de los agentes: cambiar esta tabla requiere revisor-seguridad.
-    # T9 la cambia a `site_summary` con exactamente sus cuatro referencias (spec F1b §9.5).
-    assert _load("agent-grants.json") == []
+    # T9: `site_summary` con exactamente sus cuatro referencias, solo `get` (spec F1b §9.5).
+    assert _load("agent-grants.json") == [
+        {
+            "kind": "site_summary",
+            "max_grant_seconds": 900,
+            "requires_site": True,
+            "secrets": [
+                {"access": ["get"], "ref": "llm/anthropic/default"},
+                {"access": ["get"], "ref": "llm/gemini/default"},
+                {"access": ["get"], "ref": "llm/openai/default"},
+                {"access": ["get"], "ref": "wp/{site_id}/token"},
+            ],
+        }
+    ]
 
 
 def test_agent_grants_match_the_registry() -> None:

@@ -106,6 +106,13 @@
     "secrets": []
   },
   {
+    "operationId": "getSiteSummary",
+    "method": "GET",
+    "path": "/sites/{site_id}/summary",
+    "timeout_seconds": 10,
+    "secrets": []
+  },
+  {
     "operationId": "listAgentRuns",
     "method": "GET",
     "path": "/agent-runs",

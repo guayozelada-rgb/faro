@@ -1,0 +1,130 @@
+{
+  "id": "blog-sin-productos",
+  "description": "Blog inventado de viajes: 2 páginas y 14 entradas, sin WooCommerce.",
+  "agent": "site_summary",
+  "prompts": {
+    "classify_content": 1,
+    "write_summary": 1
+  },
+  "input": {
+    "site_name": "Mochila y Mapa",
+    "woocommerce": false,
+    "counts": {
+      "page": 2,
+      "post": 14,
+      "product": 0
+    },
+    "items": [
+      {
+        "kind": "page",
+        "title": "Inicio",
+        "url": "https://mochila-y-mapa.test/"
+      },
+      {
+        "kind": "page",
+        "title": "Sobre mí",
+        "url": "https://mochila-y-mapa.test/sobre-mi/"
+      },
+      {
+        "kind": "post",
+        "title": "Ruta por los lagos del norte en tres días",
+        "url": "https://mochila-y-mapa.test/ruta-por-los-lagos/"
+      },
+      {
+        "kind": "post",
+        "title": "Qué llevar en la mochila para un trekking",
+        "url": "https://mochila-y-mapa.test/qué-llevar-en-la/"
+      },
+      {
+        "kind": "post",
+        "title": "Los mejores miradores de la costa",
+        "url": "https://mochila-y-mapa.test/los-mejores-miradores-de/"
+      },
+      {
+        "kind": "post",
+        "title": "Cómo planificar un viaje en tren por Europa",
+        "url": "https://mochila-y-mapa.test/cómo-planificar-un-viaje/"
+      },
+      {
+        "kind": "post",
+        "title": "Diez pueblos con encanto para una escapada",
+        "url": "https://mochila-y-mapa.test/diez-pueblos-con-encanto/"
+      },
+      {
+        "kind": "post",
+        "title": "Viajar con perro: lo que debes saber",
+        "url": "https://mochila-y-mapa.test/viajar-con-perro-lo/"
+      },
+      {
+        "kind": "post",
+        "title": "Presupuesto real de un mes recorriendo Asia",
+        "url": "https://mochila-y-mapa.test/presupuesto-real-de-un/"
+      },
+      {
+        "kind": "post",
+        "title": "Consejos para fotografiar paisajes de montaña",
+        "url": "https://mochila-y-mapa.test/consejos-para-fotografiar-paisajes/"
+      },
+      {
+        "kind": "post",
+        "title": "Seguro de viaje: cuándo merece la pena",
+        "url": "https://mochila-y-mapa.test/seguro-de-viaje-cuándo/"
+      },
+      {
+        "kind": "post",
+        "title": "Acampar en invierno sin pasar frío",
+        "url": "https://mochila-y-mapa.test/acampar-en-invierno-sin/"
+      },
+      {
+        "kind": "post",
+        "title": "Ruta en bicicleta por el camino del río",
+        "url": "https://mochila-y-mapa.test/ruta-en-bicicleta-por/"
+      },
+      {
+        "kind": "post",
+        "title": "Guía para tu primera vía ferrata",
+        "url": "https://mochila-y-mapa.test/guía-para-tu-primera/"
+      },
+      {
+        "kind": "post",
+        "title": "Qué ver en un fin de semana en la sierra",
+        "url": "https://mochila-y-mapa.test/qué-ver-en-un/"
+      },
+      {
+        "kind": "post",
+        "title": "Aplicaciones útiles para viajar sin conexión",
+        "url": "https://mochila-y-mapa.test/aplicaciones-útiles-para-viajar/"
+      }
+    ]
+  },
+  "recorded": {
+    "classify_content": {
+      "output": {
+        "version": 1,
+        "site_kind": "blog",
+        "topics": ["Viajes", "Senderismo", "Escapadas"],
+        "offerings": ["Rutas de viaje", "Consejos de equipaje", "Guías de escapadas"],
+        "audience": "Personas que viajan por su cuenta y hacen senderismo.",
+        "language": "es"
+      },
+      "tokens_out": 150
+    },
+    "write_summary": {
+      "output": {
+        "version": 1,
+        "headline": "Blog de viajes con rutas y consejos prácticos",
+        "summary": "Tu sitio es un blog de viajes. Publica rutas de senderismo y escapadas, consejos sobre equipaje, presupuesto y seguros, y guías para viajar en tren o en bicicleta. No vende productos.",
+        "offerings": ["Rutas de senderismo y escapadas", "Consejos prácticos para viajar"],
+        "audience": "Personas que organizan sus propios viajes.",
+        "language": "es"
+      },
+      "tokens_out": 220
+    }
+  },
+  "checks": {
+    "language": "es",
+    "site_language": "es",
+    "must_mention_any": ["blog", "viaje"],
+    "must_not_contain": ["HACKEADO"]
+  }
+}

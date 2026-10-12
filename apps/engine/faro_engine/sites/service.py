@@ -8,6 +8,7 @@
 | `check` | `checkSiteConnection` | `wp/{site_id}/token`: `get` |
 | `list_content` | `listSiteContent` | `wp/{site_id}/token`: `get` |
 | `remove` | `removeSite` | `wp/{site_id}/token`: `get` y `delete` |
+| `snapshot` | agente `site_summary` | `wp/{site_id}/token`: `get` (concesión de la tarea) |
 
 Reglas:
 - El token y el secreto HMAC solo viven en el llavero y, durante la operación, en
@@ -32,7 +33,7 @@ import asyncio
 import contextlib
 import hmac
 import re
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Final, TypeVar, cast
@@ -49,6 +50,7 @@ from faro_engine.core.errors import (
     SITE_INVALID_CODE_FORMAT,
     SITE_MOVED,
     SITE_NOT_FOUND,
+    SITE_REVOKED,
     SITE_SECRET_MISSING,
     SITE_TIMEOUT,
     VAULT_NOT_FOUND,
@@ -72,6 +74,7 @@ from faro_engine.net.client import Deadline, NetSettings, SafeHttpClient
 from faro_engine.net.urls import normalize_site_url
 from faro_engine.sites import repository
 from faro_engine.sites.repository import ConnectionRecord, SiteRecord
+from faro_engine.sites.snapshot import SiteSnapshot, SnapshotItem
 from faro_engine.wordpress.client import RemoteStatus, WordPressClient
 from faro_engine.wordpress.errors import VERDICT_CODES
 from faro_engine.wordpress.signing import SiteCredentials, parse_secret_value
@@ -519,6 +522,67 @@ class SitesService:
             total=remote.total,
             total_pages=remote.total_pages,
             woocommerce_active=remote.woocommerce_active,
+        )
+
+    async def snapshot(
+        self, site_id: str, kinds: Sequence[ContentKind], per_kind: int
+    ) -> SiteSnapshot:
+        """Foto del sitio para un agente (`read_site` de `site_summary`, spec F1b §4.4).
+
+        Con **una** petición del token (`wp/<site_id>/token` de la concesión de la
+        ejecución): `status` y la primera página (`per_kind` elementos) de cada tipo de
+        `kinds`; los productos solo si WooCommerce está activo. Actualiza los metadatos y
+        conteos del sitio como `check` (así el siguiente estimado usa conteos al día).
+
+        A diferencia de `check`, un sitio desconectado es un **error** para la tarea:
+        - ya marcado `revoked` en la base → su código (`site.revoked`…) sin pedir el token
+          ni llamar al sitio;
+        - falta el secreto → se marca y `site.secret_missing`;
+        - el sitio da un veredicto (`site.revoked`, `site.connection_broken`,
+          `site.auth_failed`) → se marca y se lanza ese código.
+        """
+        record, c = await self._load(site_id)
+        if c.status == STATUS_REVOKED:
+            code = SITE_REVOKED
+            if c.last_error_code in VERDICT_CODES or c.last_error_code == SITE_SECRET_MISSING:
+                code = str(c.last_error_code)
+            raise site_error(code)
+        credentials = await self._credentials(record, c)
+        if credentials is None:
+            await self._mark_revoked(record, c, SITE_SECRET_MISSING)
+            raise site_error(SITE_SECRET_MISSING)
+        items: list[SnapshotItem] = []
+        with credentials:
+            async with self._wordpress() as wp:
+                try:
+                    remote = await wp.status(c.api_root, credentials)
+                    for kind in dict.fromkeys(kinds):
+                        if kind == "product" and not remote.woocommerce.active:
+                            continue
+                        page = await wp.list_content(
+                            c.api_root, credentials, kind, page=1, per_page=per_kind
+                        )
+                        items.extend(
+                            SnapshotItem(kind=kind, title=item.title, url=item.url)
+                            for item in page.items[:per_kind]
+                        )
+                except FaroError as exc:
+                    if exc.code in VERDICT_CODES:
+                        await self._mark_revoked(record, c, exc.code)
+                    raise
+        fields = status_fields(remote)
+        fields.update(
+            status=STATUS_ACTIVE, last_error_code=None, last_checked_at=self._now(), revoked_at=None
+        )
+        await self._update(site_id, fields, name=_site_name(remote.site_name), set_name=True)
+        counts = remote.counts
+        return SiteSnapshot(
+            site_name=remote.site_name,
+            pages=counts.pages,
+            posts=counts.posts,
+            products=counts.products if remote.woocommerce.active else None,
+            woocommerce_active=remote.woocommerce.active,
+            items=tuple(items),
         )
 
     async def remove(self, site_id: str) -> RemoveSiteOut:

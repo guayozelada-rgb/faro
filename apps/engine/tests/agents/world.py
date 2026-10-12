@@ -12,7 +12,7 @@ from faro_engine.agents.framework.orchestrator import Objective
 from faro_engine.agents.registry import AgentSpec
 from faro_engine.core import protocol
 from faro_engine.core.jobs.activity import ActivityEmitter
-from faro_engine.core.jobs.runner import AgentCatalog, AgentDefinition
+from faro_engine.core.jobs.runner import AgentCatalog, AgentDefinition, AgentServices
 from faro_engine.core.jobs.runtime import JobSystem
 from faro_engine.core.store import approvals, autonomy_rules, checkpoints, runs, site_summaries
 from faro_engine.core.store.approvals import ApprovalRecord
@@ -29,6 +29,7 @@ class GraphWorld(JobWorld):
     spec: AgentSpec | None = None
     extra_agents: tuple[AgentDefinition, ...] = ()
     objectives: tuple[Objective, ...] = ()
+    services: AgentServices = field(default_factory=AgentServices)
 
     def __post_init__(self) -> None:
         self.notes.by_site.setdefault(SITE, ["Nota uno", "Nota dos", "Nota tres"])
@@ -57,6 +58,7 @@ class GraphWorld(JobWorld):
                 stop_wait=0.5,
                 cancel_wait=2.0,
                 objectives=self.objectives,
+                services=self.services,
             )
         return self._jobs
 

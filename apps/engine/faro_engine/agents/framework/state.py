@@ -24,13 +24,27 @@ from pydantic import BaseModel, ConfigDict
 from faro_engine.core.errors import AGENT_SITE_REQUIRED, jobs_error
 from faro_engine.core.jobs.runner import RunContext
 
-__all__ = ["AgentState", "RunContext", "StateSchemaError", "check_state_schema", "require_site"]
+__all__ = [
+    "AgentState",
+    "NodeKindError",
+    "RunContext",
+    "StateSchemaError",
+    "check_state_schema",
+    "require_site",
+]
 
 Outcome = Literal["suggested", "approved", "rejected", "executed"]
 
 
 class StateSchemaError(TypeError):
     """El estado de un agente tiene un campo que no es JSON (el agente no arranca)."""
+
+
+class NodeKindError(RuntimeError):
+    """Un nodo hizo algo que su tipo no permite (condición T8-C2 de la revisión de T8): el
+    nodo que propone (`approval`) no llama al modelo ni a herramientas, porque se vuelve a
+    ejecutar entero al reanudarse, también al rechazar (ADR 0016, actualización B). Es un
+    error de programación del agente: la tarea falla con `internal.unexpected`."""
 
 
 class AgentState(BaseModel):

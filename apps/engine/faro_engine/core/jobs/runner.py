@@ -23,6 +23,10 @@ Qué recibe un agente (`RunInvocation`):
 - `queue`: la cola del trabajador (base, reloj y eventos `agent_activity` con el `seq` de
   la base): `StepRecorder` emite con ella `step_started`, `step_finished` y
   `approval_requested`.
+- `services`: servicios de dominio que los agentes usan por cierre al construir su grafo
+  (`AgentServices`; desde T9, el lector de sitios de `read_site`). Los construye
+  `create_app` una vez por motor; nunca llevan secretos (los piden por la concesión de la
+  ejecución) ni deciden alcance (el sitio sale del `RunContext`).
 
 Qué devuelve: `RunResult("succeeded", result)` al terminar (`result` = JSON validado del
 esquema del agente, nunca secretos ni respuestas crudas), `RunResult("waiting_approval")`
@@ -48,6 +52,7 @@ from faro_engine.llm.client import Provider, Tier
 if TYPE_CHECKING:
     from faro_engine.core.jobs.queue import RunQueue
     from faro_engine.llm.service import LlmService
+    from faro_engine.sites.reader import SiteReader
     from faro_engine.sites.repository import SiteRecord
 
 StopReason = Literal["agents_paused", "user_cancelled", "shutdown"]
@@ -115,6 +120,18 @@ class StopSignal:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentServices:
+    """Servicios de dominio para los agentes (ver la cabecera del módulo).
+
+    `sites`: lee el sitio **de la tarea** con el cliente de F1a (`sites/reader.py`); el
+    token `wp/<site_id>/token` se pide por la concesión de la ejecución. `None` en las
+    pruebas que no lo necesitan y al validar la forma de un grafo en el registro.
+    """
+
+    sites: SiteReader | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RunInvocation:
     ctx: RunContext
     first_start: bool
@@ -122,6 +139,7 @@ class RunInvocation:
     stop: StopSignal
     llm: LlmService
     queue: RunQueue
+    services: AgentServices = field(default_factory=AgentServices)
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,0 +1,90 @@
+{
+  "id": "tienda-emojis",
+  "description": "Tienda inventada de artículos de fiesta con muchos emojis (secuencias con unión de anchura cero, banderas y tonos de piel).",
+  "agent": "site_summary",
+  "prompts": {
+    "classify_content": 1,
+    "write_summary": 1
+  },
+  "input": {
+    "site_name": "Fiesta Feliz 🎉🎈🎂",
+    "woocommerce": true,
+    "counts": {
+      "page": 2,
+      "post": 0,
+      "product": 6
+    },
+    "items": [
+      {
+        "kind": "page",
+        "title": "🎉 Inicio 🎉",
+        "url": "https://fiesta-feliz.test/"
+      },
+      {
+        "kind": "page",
+        "title": "Cómo pedir 👍🏽",
+        "url": "https://fiesta-feliz.test/como-pedir/"
+      },
+      {
+        "kind": "product",
+        "title": "Tarta de cumpleaños 🎂🎂🎂",
+        "url": "https://fiesta-feliz.test/p/tarta/"
+      },
+      {
+        "kind": "product",
+        "title": "Pack de globos 🎈🎈 x20",
+        "url": "https://fiesta-feliz.test/p/globos/"
+      },
+      {
+        "kind": "product",
+        "title": "Caja sorpresa 🎁⭐⭐⭐",
+        "url": "https://fiesta-feliz.test/p/caja/"
+      },
+      {
+        "kind": "product",
+        "title": "Fiesta familiar 👨\u200d👩\u200d👧\u200d👦❤\ufe0f",
+        "url": "https://fiesta-feliz.test/p/fiesta/"
+      },
+      {
+        "kind": "product",
+        "title": "Piñata mexicana 🇲🇽🎉",
+        "url": "https://fiesta-feliz.test/p/pinata/"
+      },
+      {
+        "kind": "product",
+        "title": "Velas mágicas ⭐⭐ ❤\ufe0f❤\ufe0f",
+        "url": "https://fiesta-feliz.test/p/velas/"
+      }
+    ]
+  },
+  "recorded": {
+    "classify_content": {
+      "output": {
+        "version": 1,
+        "site_kind": "store",
+        "topics": ["Fiestas", "Cumpleaños"],
+        "offerings": ["Tartas de cumpleaños", "Globos y piñatas", "Velas y cajas sorpresa"],
+        "audience": "Familias que organizan cumpleaños y fiestas.",
+        "language": "es"
+      },
+      "tokens_out": 140
+    },
+    "write_summary": {
+      "output": {
+        "version": 1,
+        "headline": "Tienda en línea de artículos para cumpleaños y fiestas",
+        "summary": "Tu sitio vende artículos para fiestas y cumpleaños: tartas, globos, piñatas, velas y cajas sorpresa. Tiene una página que explica cómo hacer un pedido.",
+        "offerings": ["Tartas de cumpleaños", "Globos, piñatas y velas", "Cajas sorpresa"],
+        "audience": "Familias que organizan cumpleaños y fiestas.",
+        "language": "es"
+      },
+      "tokens_out": 200
+    }
+  },
+  "checks": {
+    "language": "es",
+    "site_language": "es",
+    "must_mention_any": ["fiesta", "cumpleaños"],
+    "must_not_contain": ["HACKEADO"]
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "id": "tienda-china",
+  "description": "Tienda inventada de té y teteras en chino (caracteres CJK): 3 páginas y 8 productos.",
+  "agent": "site_summary",
+  "prompts": {
+    "classify_content": 1,
+    "write_summary": 1
+  },
+  "input": {
+    "site_name": "清风茶舍",
+    "woocommerce": true,
+    "counts": {
+      "page": 3,
+      "post": 0,
+      "product": 8
+    },
+    "items": [
+      {
+        "kind": "page",
+        "title": "首页",
+        "url": "https://qingfeng-tea.test/"
+      },
+      {
+        "kind": "page",
+        "title": "关于我们",
+        "url": "https://qingfeng-tea.test/about/"
+      },
+      {
+        "kind": "page",
+        "title": "配送与退换",
+        "url": "https://qingfeng-tea.test/shipping/"
+      },
+      {
+        "kind": "product",
+        "title": "手工青花瓷茶杯（四件套）",
+        "url": "https://qingfeng-tea.test/p/1/"
+      },
+      {
+        "kind": "product",
+        "title": "宜兴紫砂茶壶 300 毫升",
+        "url": "https://qingfeng-tea.test/p/2/"
+      },
+      {
+        "kind": "product",
+        "title": "竹制茶盘与茶具收纳盒",
+        "url": "https://qingfeng-tea.test/p/3/"
+      },
+      {
+        "kind": "product",
+        "title": "西湖龙井绿茶 250 克礼盒装",
+        "url": "https://qingfeng-tea.test/p/4/"
+      },
+      {
+        "kind": "product",
+        "title": "云南普洱熟茶饼 357 克",
+        "url": "https://qingfeng-tea.test/p/5/"
+      },
+      {
+        "kind": "product",
+        "title": "安溪铁观音乌龙茶 100 克",
+        "url": "https://qingfeng-tea.test/p/6/"
+      },
+      {
+        "kind": "product",
+        "title": "便携旅行茶具套装",
+        "url": "https://qingfeng-tea.test/p/7/"
+      },
+      {
+        "kind": "product",
+        "title": "玻璃公道杯与过滤网",
+        "url": "https://qingfeng-tea.test/p/8/"
+      }
+    ]
+  },
+  "recorded": {
+    "classify_content": {
+      "output": {
+        "version": 1,
+        "site_kind": "store",
+        "topics": ["Té chino", "Juegos de té"],
+        "offerings": [
+          "Té verde, oolong y pu-erh",
+          "Teteras y tazas de cerámica",
+          "Accesorios para el té"
+        ],
+        "audience": "Personas que compran té chino y utensilios para prepararlo.",
+        "language": "zh"
+      },
+      "tokens_out": 150
+    },
+    "write_summary": {
+      "output": {
+        "version": 1,
+        "headline": "Tienda en chino de té y juegos de té tradicionales",
+        "summary": "Tu sitio está en chino y vende tés como longjing, pu-erh y tieguanyin, además de teteras de barro, tazas de porcelana y accesorios para preparar té.",
+        "offerings": ["Té verde, oolong y pu-erh", "Teteras, tazas y accesorios"],
+        "audience": "Personas que compran té chino y sus utensilios.",
+        "language": "zh"
+      },
+      "tokens_out": 210
+    }
+  },
+  "checks": {
+    "language": "zh",
+    "site_language": "zh",
+    "must_mention_any": ["té"],
+    "must_not_contain": ["HACKEADO"]
+  }
+}

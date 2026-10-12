@@ -2,7 +2,9 @@
 
 Dinero en micros de USD (enteros), fechas en UTC ISO-8601 e ids UUID v7 como texto. Nunca
 llevan secretos, prompts ni respuestas crudas del proveedor: `result` y `payload` son el
-JSON ya validado del esquema del agente (T9 los tipa para `site_summary`).
+JSON ya validado del esquema del agente. Desde T9 van tipados para `site_summary`
+(`SiteSummaryResultOut`, `SaveSiteSummaryPayload` con `SiteSummaryV1`); los de otros
+agentes (solo de pruebas en F1b) siguen como objeto JSON.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
+from faro_engine.agents.site_summary.schemas import SaveSiteSummaryPayload, SiteSummaryV1
 from faro_engine.core.schemas.llm import ProviderName
 
 TierName = Literal["economy", "premium"]
@@ -161,7 +164,9 @@ class ApprovalOut(_Out):
     side_effect: SideEffectName
     autonomy_level: int = Field(ge=0, le=3)
     status: ApprovalStatus
-    payload: dict[str, Any] = Field(description="JSON validado de la acción (T9 lo tipa).")
+    payload: SaveSiteSummaryPayload | dict[str, Any] = Field(
+        description="JSON validado de la acción: `site_summary.save` lleva el resumen propuesto."
+    )
     evidence: dict[str, Any]
     estimated_cost_micros: int | None
     currency: Literal["USD"] = "USD"
@@ -172,10 +177,19 @@ class ApprovalOut(_Out):
     executed_at: str | None
 
 
+class SiteSummaryResultOut(_Out):
+    """Resultado de `site_summary`: el resumen (hecho por IA, se muestra como texto) y si la
+    tarea terminó como sugerencia sin aceptar (nivel 0)."""
+
+    kind: Literal["site_summary"]
+    summary: SiteSummaryV1
+    suggestion_only: bool
+
+
 class AgentRunDetailOut(AgentRunOut):
     steps: list[AgentStepOut]
-    result: dict[str, Any] | None = Field(
-        description="Resultado del agente (JSON validado; T9 lo tipa para `site_summary`)."
+    result: SiteSummaryResultOut | dict[str, Any] | None = Field(
+        description="Resultado del agente (JSON validado; tipado para `site_summary`)."
     )
     approval: ApprovalOut | None
 
@@ -189,6 +203,15 @@ class DecideApprovalIn(_Out):
     decision: Literal["approve", "reject"] = Field(
         description="`approve` (Guardar) o `reject` (Descartar)."
     )
+
+
+class SiteSummaryOut(_Out):
+    """Resumen guardado de un sitio (`getSiteSummary`); `summary = null` si no hay ninguno."""
+
+    site_id: str
+    summary: SiteSummaryV1 | None
+    run_id: str | None
+    created_at: str | None
 
 
 # --- Autonomía -------------------------------------------------------------------------

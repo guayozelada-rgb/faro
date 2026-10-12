@@ -22,6 +22,7 @@ Grafo (`test_graph`):
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, Literal
@@ -30,12 +31,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from faro_engine.agents.framework.actions import ActionInput, ActionSpec
 from faro_engine.agents.framework.budget import PlannedCall, estimate_calls
-from faro_engine.agents.framework.graph import AgentGraph, NodeContext
+from faro_engine.agents.framework.graph import NodeContext
 from faro_engine.agents.framework.prompts import PromptLibrary
+from faro_engine.agents.framework.spec import AgentSpec, GraphBuilder
 from faro_engine.agents.framework.state import AgentState, RunContext, require_site
 from faro_engine.agents.framework.tools import Tool, ToolInput, ToolOutput
 from faro_engine.agents.framework.untrusted import DataBlock, UntrustedText
-from faro_engine.agents.registry import AgentSpec
 from faro_engine.core.db.connection import Connection
 from faro_engine.core.errors import SITE_REVOKED, site_error
 from faro_engine.core.ids import new_id
@@ -150,7 +151,7 @@ SAVE_ACTION: Final = ActionSpec(
 # --- Grafo ------------------------------------------------------------------------------
 
 
-def build(tool: Tool[NotesIn, NotesOut]) -> Any:
+def build(tool: Tool[NotesIn, NotesOut]) -> Callable[[GraphBuilder], None]:
     async def gather(state: NotesGraphState, n: NodeContext) -> dict[str, Any]:
         prompt = n.render(GATHER, 1, instructions_vars={"max_notes": 3})
         result = await n.call_llm(prompt, tools=[tool])
@@ -175,7 +176,7 @@ def build(tool: Tool[NotesIn, NotesOut]) -> Any:
     async def save(_state: NotesGraphState, n: NodeContext) -> dict[str, Any]:
         return await n.execute(ACTION)
 
-    def build_graph(g: AgentGraph) -> None:
+    def build_graph(g: GraphBuilder) -> None:
         g.node("gather", "tool_call", gather)
         g.node("write", "llm_call", write)
         g.node("propose", "approval", propose)

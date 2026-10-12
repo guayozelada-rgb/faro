@@ -194,8 +194,8 @@ fn plantillas_y_proveedores() {
     assert_eq!(SecretTemplate::WpSiteToken.provider(), None);
 }
 
-/// Condición 6 de T3: lo incrustado coincide con el archivo del repositorio, y hasta T9
-/// la tabla es `[]`.
+/// Condición 6 de T3: lo incrustado coincide con el archivo del repositorio. Desde T9 la
+/// tabla tiene exactamente `site_summary` con sus cuatro plantillas (spec F1b §4.4).
 #[test]
 fn paridad_entre_lo_incrustado_y_el_archivo() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -208,9 +208,19 @@ fn paridad_entre_lo_incrustado_y_el_archivo() {
         canonical(&parsed),
         serde_json::from_str::<Value>(&on_disk).unwrap()
     );
-    assert!(
-        embedded().is_empty(),
-        "agent-grants.json está fijado a [] hasta T9"
+    let table = embedded();
+    assert_eq!(table.agents().len(), 1, "solo site_summary en F1b");
+    let spec = table.find("site_summary").expect("site_summary registrado");
+    assert!(spec.requires_site);
+    assert_eq!(spec.max_grant_seconds, 900);
+    assert_eq!(
+        spec.secrets,
+        vec![
+            SecretTemplate::LlmAnthropic,
+            SecretTemplate::LlmGemini,
+            SecretTemplate::LlmOpenai,
+            SecretTemplate::WpSiteToken,
+        ]
     );
 }
 

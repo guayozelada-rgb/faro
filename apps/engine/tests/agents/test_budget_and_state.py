@@ -79,6 +79,28 @@ def test_llamadas_previstas_invalidas(args: tuple[int, int, int, int]) -> None:
         PlannedCall("classify", *args)
 
 
+def test_limite_de_entrada_explicito() -> None:
+    """Condición T6-C3: un agente puede reservar más tokens de entrada que
+    `ceil(caracteres / 3)` (p. ej. uno por byte); nunca menos."""
+    catalog = default_catalog()
+    plain = PlannedCall("write", 100, 50, 3_000, 400)
+    bounded = PlannedCall("write", 100, 50, 3_000, 400, input_tokens_bound=9_000)
+    below = PlannedCall("write", 100, 50, 3_000, 400, input_tokens_bound=10)
+    assert (plain.max_input_tokens, bounded.max_input_tokens, below.max_input_tokens) == (
+        1_000,
+        9_000,
+        1_000,
+    )
+    model = catalog.model_for("anthropic", tier_for("write"))
+    estimate = estimate_calls([bounded], catalog=catalog, provider="anthropic", day=DAY, retries=0)
+    assert estimate.max_cost_micros == cost_micros(
+        9_000, model.input_micros_per_mtok
+    ) + cost_micros(400, model.output_micros_per_mtok)
+    assert estimate.token_budget == 9_400
+    with pytest.raises(ValueError, match="límite de entrada"):
+        PlannedCall("write", 100, 50, 3_000, 400, input_tokens_bound=-1)
+
+
 def test_sin_llamadas() -> None:
     with pytest.raises(ValueError, match="sin llamadas"):
         estimate_calls([], catalog=default_catalog(), provider="anthropic", day=DAY)

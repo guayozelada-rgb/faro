@@ -1,0 +1,134 @@
+{
+  "id": "tienda-ropa",
+  "description": "Tienda inventada de ropa infantil: 3 páginas y 12 productos, sin entradas.",
+  "agent": "site_summary",
+  "prompts": {
+    "classify_content": 1,
+    "write_summary": 1
+  },
+  "input": {
+    "site_name": "Ropa Pequeña",
+    "woocommerce": true,
+    "counts": {
+      "page": 3,
+      "post": 0,
+      "product": 12
+    },
+    "items": [
+      {
+        "kind": "page",
+        "title": "Inicio",
+        "url": "https://ropa-pequena.test/"
+      },
+      {
+        "kind": "page",
+        "title": "Guía de tallas",
+        "url": "https://ropa-pequena.test/guia-de-tallas/"
+      },
+      {
+        "kind": "page",
+        "title": "Envíos y devoluciones",
+        "url": "https://ropa-pequena.test/envios/"
+      },
+      {
+        "kind": "product",
+        "title": "Pijama de algodón talla 2",
+        "url": "https://ropa-pequena.test/producto/pijama-de-algodón-talla-2/"
+      },
+      {
+        "kind": "product",
+        "title": "Pijama de algodón talla 4",
+        "url": "https://ropa-pequena.test/producto/pijama-de-algodón-talla-4/"
+      },
+      {
+        "kind": "product",
+        "title": "Body de manga larga",
+        "url": "https://ropa-pequena.test/producto/body-de-manga-larga/"
+      },
+      {
+        "kind": "product",
+        "title": "Gorro de lana para bebé",
+        "url": "https://ropa-pequena.test/producto/gorro-de-lana-para-bebé/"
+      },
+      {
+        "kind": "product",
+        "title": "Calcetines antideslizantes (pack de 3)",
+        "url": "https://ropa-pequena.test/producto/calcetines-antideslizantes/"
+      },
+      {
+        "kind": "product",
+        "title": "Vestido de lino para niña",
+        "url": "https://ropa-pequena.test/producto/vestido-de-lino-para-niña/"
+      },
+      {
+        "kind": "product",
+        "title": "Pantalón de pana",
+        "url": "https://ropa-pequena.test/producto/pantalón-de-pana/"
+      },
+      {
+        "kind": "product",
+        "title": "Chaqueta acolchada",
+        "url": "https://ropa-pequena.test/producto/chaqueta-acolchada/"
+      },
+      {
+        "kind": "product",
+        "title": "Babero impermeable",
+        "url": "https://ropa-pequena.test/producto/babero-impermeable/"
+      },
+      {
+        "kind": "product",
+        "title": "Manta de muselina",
+        "url": "https://ropa-pequena.test/producto/manta-de-muselina/"
+      },
+      {
+        "kind": "product",
+        "title": "Sudadera con capucha",
+        "url": "https://ropa-pequena.test/producto/sudadera-con-capucha/"
+      },
+      {
+        "kind": "product",
+        "title": "Conjunto de verano",
+        "url": "https://ropa-pequena.test/producto/conjunto-de-verano/"
+      }
+    ]
+  },
+  "recorded": {
+    "classify_content": {
+      "output": {
+        "version": 1,
+        "site_kind": "store",
+        "topics": ["Ropa infantil", "Pijamas", "Ropa de bebé"],
+        "offerings": [
+          "Pijamas de algodón",
+          "Bodies y baberos",
+          "Gorros y mantas",
+          "Ropa de abrigo para niños"
+        ],
+        "audience": "Madres, padres y familias con bebés y niños pequeños.",
+        "language": "es"
+      },
+      "tokens_out": 160
+    },
+    "write_summary": {
+      "output": {
+        "version": 1,
+        "headline": "Tienda en línea de ropa para bebés y niños pequeños",
+        "summary": "Tu sitio vende ropa infantil: pijamas de algodón, bodies, gorros, mantas y ropa de abrigo. Tiene una guía de tallas y una página con la información de envíos y devoluciones.",
+        "offerings": [
+          "Pijamas de algodón",
+          "Bodies, baberos y mantas",
+          "Ropa de abrigo para niños"
+        ],
+        "audience": "Familias con bebés y niños pequeños que compran ropa en línea.",
+        "language": "es"
+      },
+      "tokens_out": 230
+    }
+  },
+  "checks": {
+    "language": "es",
+    "site_language": "es",
+    "must_mention_any": ["ropa", "pijama"],
+    "must_not_contain": ["HACKEADO"]
+  }
+}

@@ -10,7 +10,9 @@ La cola **es** la tabla: una tarea en espera es una fila `queued`. Este módulo 
   vez, solo una gana;
 - el resto de transiciones (`UPDATE … WHERE status = ?`), cada una con su evento
   `run_status` por `agent_activity`. El `seq` del evento sale de la base
-  (`agent_runs.activity_seq`), el mismo que devuelve `getAgentRun`.
+  (`agent_runs.activity_seq`), el mismo que devuelve `getAgentRun`. Pasar a `failed`
+  cancela en la misma transacción las propuestas abiertas de la tarea (T8-C1);
+  cancelarla lo hace `cancel` (`run_control.cancel_run`).
 - despertar al trabajador (`notify`) cuando entra trabajo;
 - planes del orquestador (`enqueue_plan`): todas sus tareas en una transacción; una tarea
   con `parent_run_id` (la tarea del plan de la que depende) solo se toma cuando esa terminó
@@ -40,7 +42,7 @@ import structlog
 from faro_engine.core.db.connection import Connection
 from faro_engine.core.db.database import Database
 from faro_engine.core.jobs.activity import ActivityEmitter, ActivityKind
-from faro_engine.core.store import run_control, runs
+from faro_engine.core.store import approvals, run_control, runs
 from faro_engine.core.store.common import atomic, format_utc, to_json
 from faro_engine.core.store.run_control import CancelResult
 from faro_engine.core.store.runs import PRIORITY_RESUMED, NewRun, RunRecord
@@ -53,6 +55,8 @@ INTERRUPTED: Final = "interrupted"
 CANCEL_REQUESTED: Final = "cancel_requested"
 # Tarea de un plan cuya tarea previa falló o se canceló (spec F1b §4.2, orquestador).
 DEPENDENCY_FAILED: Final = "dependency_failed"
+# Estado final de una tarea que falló: cierra sus propuestas abiertas (`transition`).
+FAILED: Final = "failed"
 # Tareas en pausa que vuelven a la cola cuando los agentes pueden trabajar.
 RESUMABLE_REASONS: Final = (AGENTS_PAUSED_REASON, INTERRUPTED)
 
@@ -184,10 +188,15 @@ class RunQueue:
     ) -> RunRecord | None:
         """Transición condicional con su evento. `None` si la tarea ya no estaba en
         `from_status`. `result` (JSON del agente) y `fields` se guardan en la misma
-        transacción."""
+        transacción.
+
+        A `failed`, en la **misma** transacción, sus propuestas abiertas (`pending`, o
+        `approved` sin ejecutar) pasan a `cancelled` (condición T8-C1 de la revisión de
+        seguridad de T8, ADR 0016 actualización A): una tarea que falló no se reanuda, así
+        que nunca queda una aprobación ejecutable colgada de ella."""
         now = self.now()
 
-        def write(conn: Connection) -> RunRecord | None:
+        def write(conn: Connection) -> tuple[RunRecord | None, int]:
             with atomic(conn):
                 changed = runs.transition_run(
                     conn,
@@ -200,15 +209,20 @@ class RunQueue:
                     priority=priority,
                 )
                 if not changed:
-                    return None
+                    return None, 0
                 extra = dict(fields or {})
                 if result is not None:
                     extra["result"] = to_json(result)
                 if extra:
                     runs.update_run(conn, run_id, extra, now=now)
-                return runs.get_run(conn, run_id)
+                closed = 0
+                if to_status == FAILED:
+                    closed = approvals.cancel_open_approvals(conn, run_id, now=now)
+                return runs.get_run(conn, run_id), closed
 
-        record = await self._database.run(write)
+        record, closed = await self._database.run(write)
+        if closed:
+            log.info("jobs.approvals_cancelled", run_id=run_id, count=closed, reason="run_failed")
         if record is not None:
             record = await self.emit(record)
         return record

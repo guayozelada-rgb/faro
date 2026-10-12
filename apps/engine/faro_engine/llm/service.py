@@ -33,6 +33,9 @@ clave** (hay una prueba de cada uno):
 10. **Salida estructurada inválida**: un reintento con el mismo prompt (cuenta en el
     presupuesto y el tope); si vuelve a fallar, `llm.bad_output`.
 
+Antes de todo, un paso de tipo `approval` (el nodo que propone) se rechaza con
+`ValueError` (condición T8-C2 de la revisión de T8).
+
 Quien llama dice solo `task_kind`; no elige modelo, no reintenta y no registra tokens.
 Nunca se registran prompts, respuestas ni la clave: solo identificadores, códigos, tokens
 y costos.
@@ -98,6 +101,8 @@ MAX_RETRY_AFTER_SECONDS: Final = 20.0
 BAD_OUTPUT_RETRIES: Final = 1
 CONTENT_FILTER_REASONS: Final = frozenset({"content_filter", "safety", "refusal"})
 ADAPTER_MODULE: Final = "faro_engine.llm.litellm_client"
+# Tipo de paso del nodo que propone (`agents/framework/steps.py`): nunca llama al modelo.
+APPROVAL_STEP_KIND: Final = "approval"
 
 Sleep = Callable[[float], Awaitable[None]]
 
@@ -245,6 +250,11 @@ class LlmService:
         *,
         deadline: Deadline | None = None,
     ) -> LlmResult:
+        # 0. El nodo que propone nunca llama al modelo (condición T8-C2 de la revisión de
+        # T8): se vuelve a ejecutar al reanudarse, también al rechazar. Error de programación
+        # del agente, antes de reservar nada ni pedir la clave.
+        if getattr(step, "kind", None) == APPROVAL_STEP_KIND:
+            raise ValueError("un paso de aprobación no llama al modelo")
         # 1. Pausa.
         snapshot = self.control.snapshot()
         if not snapshot.can_run:

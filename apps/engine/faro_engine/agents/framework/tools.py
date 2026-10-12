@@ -28,6 +28,9 @@ modelo no se validaban):
 4. La salida debe ser `Out`; un `FaroError` del dominio (p. ej. `site.revoked`) sube tal
    cual; otra excepción → `internal.unexpected` (en el log, solo la clase).
 
+Un `ToolRunner` desactivado (`enabled=False`, el de los nodos `approval`) no ejecuta
+ninguna herramienta: `NodeKindError` (condición T8-C2).
+
 `tool_spec(tool)` es lo que se ofrece al modelo (`LlmRequest.tools`) y `result_block`
 convierte la salida en un `DataBlock` acotado a `max_output_chars` para devolverla a un
 prompt como datos, nunca como instrucciones.
@@ -44,7 +47,7 @@ from typing import Any, Final, Literal
 import structlog
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from faro_engine.agents.framework.state import RunContext
+from faro_engine.agents.framework.state import NodeKindError, RunContext
 from faro_engine.agents.framework.untrusted import DataBlock, Item, Source, UntrustedText
 from faro_engine.core.errors import (
     INTERNAL_UNEXPECTED,
@@ -223,14 +226,19 @@ def result_block[Out: ToolOutput](tool: Tool[Any, Out], output: Out) -> DataBloc
 
 @dataclass(slots=True)
 class ToolRunner:
-    """Ejecuta herramientas para una tarea. `counts` empieza con lo guardado en el estado."""
+    """Ejecuta herramientas para una tarea. `counts` empieza con lo guardado en el estado.
+    `enabled=False` en los nodos que proponen (ver la cabecera del módulo)."""
 
     counts: dict[str, int] = field(default_factory=dict)
     changed: bool = False
+    enabled: bool = True
 
     async def invoke[In: ToolInput, Out: ToolOutput](
         self, ctx: RunContext, tool: Tool[In, Out], raw_args: Mapping[str, Any]
     ) -> Out:
+        if not self.enabled:
+            log.error("agents.tool_in_approval_node", run_id=ctx.run_id, tool=tool.name)
+            raise NodeKindError("un nodo que propone no llama a herramientas")
         check_tool(tool)
         used = self.counts.get(tool.name, 0)
         if used >= tool.max_calls_per_run:

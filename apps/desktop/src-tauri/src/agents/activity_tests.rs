@@ -59,17 +59,12 @@ fn un_agente_fuera_de_la_tabla_se_descarta() {
     let text = logs.text();
     assert!(text.contains("field=\"agent\""), "{text}");
     assert!(!text.contains("agente_inventado"), "{text}");
-    // Con la tabla incrustada (vacía hasta T9) no se emite nada.
+    // Con la tabla vacía (tabla inválida: falla cerrado) no se emite nada.
     let empty = ActivityRelay::new(
         Arc::new(|_: &AgentActivity| panic!("no debe emitirse")),
-        crate::agents::manifest::embedded(),
+        Arc::new(crate::agents::manifest::AgentTable::default()),
     );
-    if crate::agents::manifest::embedded()
-        .find("site_summary")
-        .is_none()
-    {
-        assert_eq!(empty.relay(&valid().to_string()), Relayed::Invalid);
-    }
+    assert_eq!(empty.relay(&valid().to_string()), Relayed::Invalid);
 }
 
 #[test]

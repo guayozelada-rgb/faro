@@ -6,7 +6,10 @@ token_budget` (`agent.budget_exhausted`). Este módulo calcula esos límites par
 de cada agente (`estimate.py`) con el **mismo** cálculo que hace `LlmService` al reservar:
 
 - tokens de entrada máximos = `ceil(caracteres máximos del prompt / 3)`
-  (`pricing.estimate_input_tokens`), y salida máxima = `max_output_tokens` del prompt;
+  (`pricing.estimate_input_tokens`), lo que reserva `LlmService`, **o más** si el agente lo
+  pide con `input_tokens_bound` (p. ej. un token por byte UTF-8 de sus datos más la
+  sobrecarga de la salida estructurada: condición T6-C3, el texto no latino tiene más tokens
+  por carácter); salida máxima = `max_output_tokens` del prompt;
 - **estimado** = tokens esperados x precios del catálogo;
 - **máximo** = tokens máximos de cada llamada **con sus reintentos por salida inválida**
   (uno, `BAD_OUTPUT_RETRIES`) x precios;
@@ -41,6 +44,9 @@ class PlannedCall:
     expected_output_tokens: int
     max_prompt_chars: int
     max_output_tokens: int
+    # Tokens de entrada que reserva el estimado si son más que `ceil(max_prompt_chars / 3)`
+    # (ver la cabecera del módulo).
+    input_tokens_bound: int | None = None
 
     def __post_init__(self) -> None:
         values = (
@@ -51,6 +57,8 @@ class PlannedCall:
         )
         if min(values) < 0 or self.max_output_tokens == 0:
             raise ValueError("tokens y caracteres no pueden ser negativos")
+        if self.input_tokens_bound is not None and self.input_tokens_bound < 0:
+            raise ValueError("el límite de entrada no puede ser negativo")
         if self.expected_output_tokens > self.max_output_tokens:
             raise ValueError("la salida esperada no puede pasar de la máxima")
         if self.expected_input_tokens > self.max_input_tokens:
@@ -58,8 +66,9 @@ class PlannedCall:
 
     @property
     def max_input_tokens(self) -> int:
-        """Lo mismo que reserva `LlmService` para este prompt."""
-        return estimate_input_tokens(self.max_prompt_chars)
+        """Lo que reserva `LlmService` para este prompt o, si es mayor, `input_tokens_bound`."""
+        reserved = estimate_input_tokens(self.max_prompt_chars)
+        return max(reserved, self.input_tokens_bound or 0)
 
 
 def estimate_calls(
@@ -82,8 +91,8 @@ def estimate_calls(
             call.expected_input_tokens, expected_prices.input_micros_per_mtok
         ) + cost_micros(call.expected_output_tokens, expected_prices.output_micros_per_mtok)
         # Peor caso para el umbral de contexto largo: un token por carácter (como
-        # `pricing.max_call_cost`).
-        max_prices = prices_for(model, day, call.max_prompt_chars)
+        # `pricing.max_call_cost`) o el límite de entrada, el mayor.
+        max_prices = prices_for(model, day, max(call.max_prompt_chars, call.max_input_tokens))
         one = cost_micros(call.max_input_tokens, max_prices.input_micros_per_mtok) + cost_micros(
             call.max_output_tokens, max_prices.output_micros_per_mtok
         )

@@ -76,6 +76,7 @@ from faro_engine.core.jobs.recovery import recover_interrupted
 from faro_engine.core.jobs.runner import (
     AgentCatalog,
     AgentDefinition,
+    AgentServices,
     RunContext,
     RunInvocation,
     RunResult,
@@ -148,8 +149,10 @@ class Worker:
         clock: Callable[[], datetime] = _utc_now,
         grant_paused_backoff: float = GRANT_PAUSED_BACKOFF_SECONDS,
         sleep: Sleep = asyncio.sleep,
+        services: AgentServices | None = None,
     ) -> None:
         self._queue = queue
+        self._services = services if services is not None else AgentServices()
         self._control = control
         self._grants = grants
         self._llm = llm
@@ -431,6 +434,7 @@ class Worker:
                 stop=stop,
                 llm=self._llm,
                 queue=self._queue,
+                services=self._services,
             )
             try:
                 with use_run_id(run.id):

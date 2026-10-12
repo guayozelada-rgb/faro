@@ -128,11 +128,20 @@ async def test_lista_de_agentes(world: AgentsApp) -> None:
     }
 
 
-async def test_en_produccion_no_hay_agentes_todavia(
+async def test_en_produccion_solo_site_summary(
     client: httpx.AsyncClient, auth_headers: dict[str, str]
 ) -> None:
     response = await client.get("/agents", headers=auth_headers)
-    assert response.json() == {"items": []}
+    assert response.json() == {
+        "items": [
+            {
+                "kind": "site_summary",
+                "version": 1,
+                "requires_site": True,
+                "actions": [{"action_kind": "site_summary.save", "side_effect": "internal"}],
+            }
+        ]
+    }
 
 
 # --- Estimado ------------------------------------------------------------------------------

@@ -1,12 +1,21 @@
 """Plantilla de agente con LangGraph y su ejecución (skill `agentes-langgraph`, spec F1b §4.2).
 
-**Construir.** Cada agente define `build_graph(g: AgentGraph)`: nodos con `g.node(nombre,
-tipo, fn)` (cada uno envuelto por `StepRecorder`) y aristas con `g.edge` / `g.branch`. Un
-nodo es `async def fn(state, n: NodeContext) -> dict` y recibe por `NodeContext` el alcance
-(`n.ctx`, solo del `RunContext`), su paso (`n.step`), las herramientas (`n.tools`) y las
-dependencias (`n.deps`). Las dependencias llegan por cierre al construir el grafo para cada
-ejecución; en `config["configurable"]` solo va `thread_id` (LangGraph copia los demás
-valores de `configurable` a los metadatos del checkpoint: verificado en T8).
+**Construir.** Cada agente define `build_graph(g: GraphBuilder)` (`spec.py`): nodos con
+`g.node(nombre, tipo, fn)` (cada uno envuelto por `StepRecorder`) y aristas con `g.edge` /
+`g.branch`. Un nodo es `async def fn(state, n: NodeContext) -> dict` y recibe por
+`NodeContext` el alcance (`n.ctx`, solo del `RunContext`), su paso (`n.step`), las
+herramientas (`n.tools`) y las dependencias (`n.deps`). Las dependencias y los servicios de
+dominio (`g.services`, p. ej. el lector de sitios) llegan por cierre al construir el grafo
+para cada ejecución; en `config["configurable"]` solo va `thread_id` (LangGraph copia los
+demás valores de `configurable` a los metadatos del checkpoint: verificado en T8).
+
+**El nodo que propone no gasta** (condición T8-C2 de la revisión de T8): LangGraph lo
+vuelve a ejecutar entero al reanudarse, también al rechazar (ADR 0016, actualización B). Por
+eso `call_llm` y `run_tool_calls` lanzan `NodeKindError` si el paso es `approval`, el
+`ToolRunner` de ese paso está desactivado y `LlmService` rechaza un paso `approval`.
+`AgentSpec.validate` exige que `proposal_node` sea de tipo `approval`, y una prueba
+(`tests/agents/test_agent_modules.py`) comprueba que ningún módulo de `agents/<agente>/`
+arma un `LlmRequest` ni un `LlmMessage` a mano: los mensajes solo los arma `render`.
 
 **Proponer y ejecutar** (ADR 0016 §5), con los nodos estándar del marco:
 
@@ -41,7 +50,7 @@ nodo usa la decisión **de la base**, nunca la del valor de `resume`.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 import structlog
@@ -61,7 +70,7 @@ from faro_engine.agents.framework.checkpoint import (
     FaroCheckpointSaver,
 )
 from faro_engine.agents.framework.prompts import InstructionValue, PromptLibrary, RenderedPrompt
-from faro_engine.agents.framework.state import AgentState, RunContext
+from faro_engine.agents.framework.state import AgentState, NodeKindError, RunContext
 from faro_engine.agents.framework.steps import StepHandle, StepKind, StepRecorder
 from faro_engine.agents.framework.tools import Tool, ToolOutput, ToolRunner, tool_spec
 from faro_engine.agents.framework.tracing import disable_langsmith
@@ -76,13 +85,13 @@ from faro_engine.core.errors import (
     jobs_error,
 )
 from faro_engine.core.jobs.queue import RunQueue
-from faro_engine.core.jobs.runner import RunInvocation, RunResult, RunStopped
+from faro_engine.core.jobs.runner import AgentServices, RunInvocation, RunResult, RunStopped
 from faro_engine.core.store.approvals import ApprovalRecord
 from faro_engine.llm.client import LlmResult
 from faro_engine.llm.service import LlmService
 
 if TYPE_CHECKING:
-    from faro_engine.agents.registry import AgentSpec
+    from faro_engine.agents.framework.spec import AgentSpec
 
 log = structlog.get_logger(__name__)
 
@@ -111,6 +120,7 @@ class AgentDeps:
     prompts: PromptLibrary | None
     checkpointer: FaroCheckpointSaver
     queue: RunQueue
+    services: AgentServices = field(default_factory=AgentServices)
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +151,9 @@ class NodeContext:
         self, prompt: RenderedPrompt, *, tools: Sequence[Tool[Any, Any]] = ()
     ) -> LlmResult:
         """Llamada al modelo por `LlmService` (pausa, clave, presupuesto, tope, reintentos y
-        registro en el paso). Solo se ofrecen herramientas de lectura (`tool_spec`)."""
+        registro en el paso). Solo se ofrecen herramientas de lectura (`tool_spec`). Nunca
+        desde el nodo que propone (`NodeKindError`, ver la cabecera del módulo)."""
+        self._not_in_proposal("llm")
         request = prompt.request(tuple(tool_spec(tool) for tool in tools))
         return await self.deps.llm.call(self.ctx, self.step, request)
 
@@ -149,13 +161,20 @@ class NodeContext:
         self, result: LlmResult, tools: Sequence[Tool[Any, Any]]
     ) -> list[tuple[Tool[Any, Any], ToolOutput]]:
         """Ejecuta las llamadas a herramientas que pidió el modelo con `ToolRunner.invoke`
-        (argumentos validados con `In`; el alcance sale del `RunContext`)."""
+        (argumentos validados con `In`; el alcance sale del `RunContext`). Nunca desde el
+        nodo que propone."""
+        self._not_in_proposal("tools")
         offered = {tool.name: tool for tool in tools}
         done: list[tuple[Tool[Any, Any], ToolOutput]] = []
         for call in result.tool_calls:
             output = await self.tools.invoke_call(self.ctx, offered, call)
             done.append((offered[call.name], output))
         return done
+
+    def _not_in_proposal(self, what: str) -> None:
+        if self.step.kind == "approval":
+            log.error("agents.spend_in_approval_node", run_id=self.ctx.run_id, what=what)
+            raise NodeKindError("el nodo que propone no llama al modelo ni a herramientas")
 
     async def propose(
         self,
@@ -166,7 +185,12 @@ class NodeContext:
     ) -> dict[str, Any]:
         """Nodo estándar que propone una acción (ver la cabecera del módulo). Devuelve la
         actualización del estado: `outcome` (`suggested` | `approved` | `rejected`),
-        `approval_id` y, con nivel 0, `suggestion`."""
+        `approval_id` y, con nivel 0, `suggestion`. Solo desde el nodo `approval`: si otro
+        nodo propusiera después de llamar al modelo, al reanudar o rechazar volvería a pagar
+        esa llamada (ADR 0016 B; revisión de seguridad de T9, hallazgo 2)."""
+        if self.step.kind != "approval":
+            log.error("agents.propose_outside_approval_node", run_id=self.ctx.run_id)
+            raise NodeKindError("solo el nodo que propone puede proponer")
         deps, ctx = self.deps, self.ctx
         action = deps.action_catalog.require(action_kind)
         decision = await deps.autonomy.decide(ctx.agent_kind, ctx.site_id, action_kind)
@@ -229,6 +253,11 @@ class AgentGraph:
         self._ctx = ctx
         self._graph: StateGraph[Any] = StateGraph(spec.state_schema)
 
+    @property
+    def services(self) -> AgentServices:
+        """Servicios de dominio de esta ejecución (se usan al construir, por cierre)."""
+        return self._deps.services
+
     def _context(self, handle: StepHandle, tools: ToolRunner) -> NodeContext:
         return NodeContext(ctx=self._ctx, step=handle, tools=tools, deps=self._deps)
 
@@ -272,6 +301,7 @@ def build_deps(spec: AgentSpec, invocation: RunInvocation) -> AgentDeps:
         prompts=spec.prompts,
         checkpointer=FaroCheckpointSaver(database, clock=invocation.llm.clock),
         queue=queue,
+        services=invocation.services,
     )
 
 
