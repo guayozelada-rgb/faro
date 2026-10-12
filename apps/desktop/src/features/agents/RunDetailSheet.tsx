@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   CircleAlert,
   CircleCheck,
+  CircleHelp,
   CircleMinus,
   CircleX,
   Info,
@@ -148,7 +149,9 @@ function RunDetailContent({
 function startedLine(t: TFunction<"agents">, language: string, run: AgentRunDetail): string {
   const when = run.started_at ?? run.created_at;
   const relative = relativeTime(language, when);
-  const origin = t(`detail.trigger.${run.trigger}`);
+  const origin = (KNOWN_TRIGGERS as readonly string[]).includes(run.trigger)
+    ? t(`detail.trigger.${run.trigger}`)
+    : t("detail.trigger.unknown");
   if (relative === null) {
     return origin;
   }
@@ -368,6 +371,18 @@ const STEP_ICON_CLASS = {
   cancelled: "text-muted-foreground",
 } satisfies Record<AgentStep["status"], string>;
 
+const UNKNOWN_STEP_ICON_CLASS = "text-muted-foreground";
+
+/** Orígenes con texto en `agents:detail.trigger.*`. */
+const KNOWN_TRIGGERS = ["user", "schedule", "catch_up"] as const;
+
+type StepStatus = AgentStep["status"];
+
+/** Un estado de paso que no está en la lista cerrada usa icono y texto genéricos. */
+function knownStepStatus(status: string): StepStatus | null {
+  return Object.hasOwn(STEP_ICON, status) ? (status as StepStatus) : null;
+}
+
 function StepsList({ run }: { run: AgentRunDetail }) {
   const { t, i18n } = useTranslation("agents");
   const titleId = useId();
@@ -384,7 +399,9 @@ function StepsList({ run }: { run: AgentRunDetail }) {
       ) : (
         <ol aria-labelledby={titleId} className="flex flex-col gap-2">
           {steps.map((step) => {
-            const Icon = STEP_ICON[step.status];
+            const status = knownStepStatus(step.status);
+            const Icon = status === null ? CircleHelp : STEP_ICON[status];
+            const iconClass = status === null ? UNKNOWN_STEP_ICON_CLASS : STEP_ICON_CLASS[status];
             return (
               <li
                 key={step.id}
@@ -394,11 +411,15 @@ function StepsList({ run }: { run: AgentRunDetail }) {
                 <span className="flex items-center gap-2">
                   <Icon
                     aria-hidden="true"
-                    className={`size-4 shrink-0 ${STEP_ICON_CLASS[step.status]}`}
+                    className={`size-4 shrink-0 ${iconClass}`}
                     strokeWidth={1.5}
                   />
                   <span>{stepName(t, step.node)}</span>
-                  <span className="sr-only">{t(`detail.stepStatus.${step.status}`)}</span>
+                  <span className="sr-only">
+                    {status === null
+                      ? t("detail.stepStatus.unknown")
+                      : t(`detail.stepStatus.${status}`)}
+                  </span>
                 </span>
                 <span className="text-muted-foreground">
                   {formatUsdMicros(step.cost_micros, i18n)}

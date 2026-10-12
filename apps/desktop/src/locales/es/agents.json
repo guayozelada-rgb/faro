@@ -65,7 +65,8 @@
     "viewLimits": "Ver límites",
     "loadingLabel": "Cargando el gasto de hoy",
     "error": "No pudimos leer el gasto de hoy.",
-    "retry": "Intentar de nuevo"
+    "retry": "Intentar de nuevo",
+    "otherProvider": "Otro proveedor de IA"
   },
   "feed": {
     "title": "Actividad",
@@ -115,8 +116,10 @@
     "calculating": "Calculando el costo…",
     "expected": "Costo estimado: unos {{expected}}. Como mucho: {{max}}.",
     "usage": "Usará tu clave de {{provider}}. Hoy llevas {{spent}} de {{limit}}.",
+    "usageNoProvider": "Hoy llevas {{spent}} de {{limit}}.",
     "detailLabel": "Ver el desglose del costo",
     "detailModel": "Modelo {{tier}}: {{model}}",
+    "detailModelUnknown": "Modelo: {{model}}",
     "tiers": {
       "economy": "económico",
       "premium": "potente"
@@ -154,7 +157,8 @@
     "trigger": {
       "user": "La lanzaste tú",
       "schedule": "Programada",
-      "catch_up": "Al abrir Faro: no corrió a su hora"
+      "catch_up": "Al abrir Faro: no corrió a su hora",
+      "unknown": "Origen desconocido"
     },
     "close": "Cerrar",
     "loadingLabel": "Cargando la tarea",
@@ -167,7 +171,8 @@
       "succeeded": "Hecho",
       "failed": "Falló",
       "skipped": "Omitido",
-      "cancelled": "Cancelado"
+      "cancelled": "Cancelado",
+      "unknown": "Sin información"
     },
     "total": "Costo total: {{amount}}",
     "totalLabel": "Ver el detalle del costo",

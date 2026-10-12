@@ -65,7 +65,8 @@
     "viewLimits": "[TODO] Ver límites",
     "loadingLabel": "[TODO] Cargando el gasto de hoy",
     "error": "[TODO] No pudimos leer el gasto de hoy.",
-    "retry": "[TODO] Intentar de nuevo"
+    "retry": "[TODO] Intentar de nuevo",
+    "otherProvider": "[TODO] Otro proveedor de IA"
   },
   "feed": {
     "title": "[TODO] Actividad",
@@ -115,8 +116,10 @@
     "calculating": "[TODO] Calculando el costo…",
     "expected": "[TODO] Costo estimado: unos {{expected}}. Como mucho: {{max}}.",
     "usage": "[TODO] Usará tu clave de {{provider}}. Hoy llevas {{spent}} de {{limit}}.",
+    "usageNoProvider": "[TODO] Hoy llevas {{spent}} de {{limit}}.",
     "detailLabel": "[TODO] Ver el desglose del costo",
     "detailModel": "[TODO] Modelo {{tier}}: {{model}}",
+    "detailModelUnknown": "[TODO] Modelo: {{model}}",
     "tiers": {
       "economy": "[TODO] económico",
       "premium": "[TODO] potente"
@@ -154,7 +157,8 @@
     "trigger": {
       "user": "[TODO] La lanzaste tú",
       "schedule": "[TODO] Programada",
-      "catch_up": "[TODO] Al abrir Faro: no corrió a su hora"
+      "catch_up": "[TODO] Al abrir Faro: no corrió a su hora",
+      "unknown": "[TODO] Origen desconocido"
     },
     "close": "[TODO] Cerrar",
     "loadingLabel": "[TODO] Cargando la tarea",
@@ -167,7 +171,8 @@
       "succeeded": "[TODO] Hecho",
       "failed": "[TODO] Falló",
       "skipped": "[TODO] Omitido",
-      "cancelled": "[TODO] Cancelado"
+      "cancelled": "[TODO] Cancelado",
+      "unknown": "[TODO] Sin información"
     },
     "total": "[TODO] Costo total: {{amount}}",
     "totalLabel": "[TODO] Ver el detalle del costo",

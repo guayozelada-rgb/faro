@@ -23,11 +23,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/sonner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { agentName, LEVEL_KEYS } from "@/features/agents/labels";
-import { canRetry, useAutonomyRules } from "@/features/agents/queries";
+import { canRetry, useAgentsCatalog, useAutonomyRules } from "@/features/agents/queries";
 import { AUTONOMY_RULES_QUERY_KEY } from "@/features/agents/queryKeys";
 import { useSiteNames } from "@/features/agents/siteHelpers";
 import { sortSites, useSites } from "@/features/sites/useSites";
 import {
+  type AgentOut,
   AUTONOMY_LEVELS,
   type AutonomyLevel,
   type AutonomyRule,
@@ -56,6 +57,31 @@ function levelOf(rule: AutonomyRule | undefined): AutonomyLevel {
   return rule && isAutonomyLevel(rule.level) ? rule.level : DEFAULT_LEVEL;
 }
 
+/** Nivel máximo cuando no se sabe qué hace el agente (o hace algo más que efectos internos). */
+const SAFE_MAX_LEVEL: AutonomyLevel = 1;
+
+/**
+ * Nivel máximo que se ofrece para un agente (hallazgo 2 de la revisión de seguridad de T10):
+ * 3 si todas sus acciones son `internal`; si no, o si el agente no está en `listAgents` (o aún no
+ * se leyó), 1. El motor rechaza igualmente lo que pase del máximo (`autonomy.invalid_level`).
+ */
+export function maxLevelFor(agents: readonly AgentOut[] | undefined, kind: string): AutonomyLevel {
+  const agent = agents?.find((item) => item.kind === kind);
+  if (!agent) {
+    return SAFE_MAX_LEVEL;
+  }
+  return agent.actions.every((action) => action.side_effect === "internal") ? 3 : SAFE_MAX_LEVEL;
+}
+
+/**
+ * Opciones del selector: de 0 al máximo. Si la regla guardada ya está por encima (de una versión
+ * anterior), se muestra para no mentir, pero deshabilitada.
+ */
+function levelOptions(max: AutonomyLevel, current: AutonomyLevel): AutonomyLevel[] {
+  const options = AUTONOMY_LEVELS.filter((option) => option <= max);
+  return current > max ? [...options, current] : options;
+}
+
 /** Tipos de agente con regla o con nivel por defecto, en el orden del motor. */
 function agentKinds(data: AutonomyRules): string[] {
   const kinds = data.defaults.map((item) => item.agent_kind);
@@ -73,6 +99,7 @@ export function AutonomySection() {
   const titleId = useId();
   const queryClient = useQueryClient();
   const query = useAutonomyRules();
+  const catalog = useAgentsCatalog();
   const [confirming, setConfirming] = useState<RuleChange | null>(null);
   const [adding, setAdding] = useState<string | null>(null);
 
@@ -182,6 +209,7 @@ export function AutonomySection() {
             <AgentRules
               key={kind}
               agentKind={kind}
+              maxLevel={maxLevelFor(catalog.data, kind)}
               rules={data.items.filter((rule) => rule.agent_kind === kind)}
               busy={busy}
               onChange={requestChange}
@@ -200,6 +228,7 @@ export function AutonomySection() {
       {adding !== null && data ? (
         <AddSiteRuleDialog
           agentKind={adding}
+          maxLevel={maxLevelFor(catalog.data, adding)}
           rules={data.items.filter((rule) => rule.agent_kind === adding)}
           saving={save.isPending}
           onCancel={() => {
@@ -255,6 +284,7 @@ export function AutonomySection() {
 
 interface AgentRulesProps {
   agentKind: string;
+  maxLevel: AutonomyLevel;
   rules: AutonomyRule[];
   busy: boolean;
   onChange: (change: RuleChange) => void;
@@ -264,6 +294,7 @@ interface AgentRulesProps {
 
 function AgentRules({
   agentKind,
+  maxLevel,
   rules,
   busy,
   onChange,
@@ -294,6 +325,7 @@ function AgentRules({
       <ul aria-labelledby={titleId} className="flex flex-col gap-4">
         <LevelRow
           agent={agent}
+          maxLevel={maxLevel}
           target={t("autonomy.allSites")}
           level={levelOf(general)}
           disabled={busy}
@@ -307,6 +339,7 @@ function AgentRules({
             <LevelRow
               key={rule.id}
               agent={agent}
+              maxLevel={maxLevel}
               target={target}
               level={levelOf(rule)}
               disabled={busy}
@@ -360,6 +393,7 @@ function AgentRules({
 
 interface LevelRowProps {
   agent: string;
+  maxLevel: AutonomyLevel;
   target: string;
   level: AutonomyLevel;
   disabled: boolean;
@@ -367,7 +401,7 @@ interface LevelRowProps {
   menu?: ReactNode;
 }
 
-function LevelRow({ agent, target, level, disabled, onChange, menu }: LevelRowProps) {
+function LevelRow({ agent, maxLevel, target, level, disabled, onChange, menu }: LevelRowProps) {
   const { t } = useTranslation("settings");
   const fieldId = useId();
   const helpId = useId();
@@ -386,14 +420,14 @@ function LevelRow({ agent, target, level, disabled, onChange, menu }: LevelRowPr
           aria-label={t("autonomy.levelLabel", { agent, target })}
           onChange={(event) => {
             const next = Number(event.target.value);
-            if (isAutonomyLevel(next) && next !== level) {
+            if (isAutonomyLevel(next) && next !== level && next <= maxLevel) {
               onChange(next);
             }
           }}
           className="h-10 w-full max-w-md rounded-md border border-input bg-background px-3 text-base text-foreground"
         >
-          {AUTONOMY_LEVELS.map((option) => (
-            <option key={option} value={option}>
+          {levelOptions(maxLevel, level).map((option) => (
+            <option key={option} value={option} disabled={option > maxLevel}>
               {t(`autonomy.levels.${LEVEL_KEYS[option]}.title`)}
             </option>
           ))}
@@ -409,6 +443,7 @@ function LevelRow({ agent, target, level, disabled, onChange, menu }: LevelRowPr
 
 interface AddSiteRuleDialogProps {
   agentKind: string;
+  maxLevel: AutonomyLevel;
   rules: AutonomyRule[];
   saving: boolean;
   onCancel: () => void;
@@ -417,6 +452,7 @@ interface AddSiteRuleDialogProps {
 
 function AddSiteRuleDialog({
   agentKind,
+  maxLevel,
   rules,
   saving,
   onCancel,
@@ -436,7 +472,7 @@ function AddSiteRuleDialog({
   );
   const general = levelOf(rules.find((rule) => rule.site_id === null));
   const [siteId, setSiteId] = useState<string>(available[0]?.id ?? "");
-  const [level, setLevel] = useState<AutonomyLevel>(general);
+  const [level, setLevel] = useState<AutonomyLevel>(general <= maxLevel ? general : maxLevel);
 
   function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
@@ -486,13 +522,13 @@ function AddSiteRuleDialog({
               disabled={saving}
               onChange={(event) => {
                 const next = Number(event.target.value);
-                if (isAutonomyLevel(next)) {
+                if (isAutonomyLevel(next) && next <= maxLevel) {
                   setLevel(next);
                 }
               }}
               className="h-10 rounded-md border border-input bg-background px-3 text-base text-foreground"
             >
-              {AUTONOMY_LEVELS.map((option) => (
+              {AUTONOMY_LEVELS.filter((option) => option <= maxLevel).map((option) => (
                 <option key={option} value={option}>
                   {t(`autonomy.levels.${LEVEL_KEYS[option]}.title`)}
                 </option>

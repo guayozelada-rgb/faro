@@ -6,7 +6,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { CostEstimate as CostEstimateData } from "@/lib/api/agents";
 import { FaroError, getErrorMessage } from "@/lib/api/errors";
+import { knownProviderShortName } from "@/features/vault/providerNames";
 import { formatUsdMicros } from "@/lib/format/money";
+
+/** Niveles de modelo con nombre en `agents:launch.tiers.*`; otro valor usa un texto genérico. */
+const KNOWN_TIERS: readonly string[] = ["economy", "premium"];
 
 export interface CostEstimateProps {
   estimate: CostEstimateData | undefined;
@@ -72,8 +76,7 @@ export function CostEstimate({
 
   const money = (micros: number) => formatUsdMicros(micros, i18n);
   const blocking = estimate.blocking_code;
-  const providerName =
-    estimate.provider === null ? null : tSettings(`vault.providerShort.${estimate.provider}`);
+  const providerName = knownProviderShortName(tSettings, estimate.provider);
 
   if (blocking !== null && blocking !== "llm.daily_limit_reached") {
     return (
@@ -113,11 +116,13 @@ export function CostEstimate({
           <TooltipContent>
             <ul className="flex flex-col gap-1">
               {estimate.models.map((model) => (
-                <li key={model.tier}>
-                  {t("launch.detailModel", {
-                    tier: t(`launch.tiers.${model.tier}`),
-                    model: model.model,
-                  })}
+                <li key={`${model.tier}-${model.model}`}>
+                  {KNOWN_TIERS.includes(model.tier)
+                    ? t("launch.detailModel", {
+                        tier: t(`launch.tiers.${model.tier}`),
+                        model: model.model,
+                      })
+                    : t("launch.detailModelUnknown", { model: model.model })}
                 </li>
               ))}
               <li>
@@ -137,7 +142,14 @@ export function CostEstimate({
             limit: money(estimate.daily_limit_micros),
           })}
         </p>
-      ) : null}
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          {t("launch.usageNoProvider", {
+            spent: money(estimate.spent_today_micros),
+            limit: money(estimate.daily_limit_micros),
+          })}
+        </p>
+      )}
       {blocking === "llm.daily_limit_reached" ? (
         <div role="alert" className="flex flex-col items-start gap-2" data-blocking={blocking}>
           <p className="flex items-start gap-2 text-sm">

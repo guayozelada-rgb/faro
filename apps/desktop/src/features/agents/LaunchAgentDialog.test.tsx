@@ -259,6 +259,29 @@ describe("Lanzar Resumen del sitio (spec F1b §3.3)", () => {
     );
   });
 
+  it("proveedor y nivel de modelo desconocidos: textos genéricos, nunca claves en crudo", async () => {
+    const { user, dialog } = await openDialog({
+      operations: {
+        estimateAgentRun: () =>
+          estimateFixture({
+            provider: "otro" as never,
+            models: [{ tier: "ultra" as never, model: "modelo-x" }],
+          }),
+      },
+    });
+    expect(
+      await within(dialog).findByText(/^Hoy llevas 0,12\sUS\$ de 5,00\sUS\$\.$/),
+    ).toBeInTheDocument();
+    within(dialog).getByRole("button", { name: "Ver el desglose del costo" }).focus();
+    await user.keyboard("{Shift>}{Tab}{/Shift}{Tab}");
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole("tooltip").some((tip) => tip.textContent.includes("Modelo: modelo-x")),
+      ).toBe(true);
+    });
+    expect(document.body.textContent).not.toMatch(/providerShort|tiers\.|undefined/);
+  });
+
   it("Cancelar cierra sin lanzar", async () => {
     const { user, ipc, dialog } = await openDialog();
     await user.click(within(dialog).getByRole("button", { name: "Cancelar" }));

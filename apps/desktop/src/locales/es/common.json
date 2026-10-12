@@ -26,7 +26,10 @@
     "resume": "Reanudar agentes",
     "resuming": "Reanudando…",
     "pausedBanner": "Los agentes están en pausa. No se ejecuta ninguna tarea, tampoco las programadas.",
-    "resumedToast": "Los agentes vuelven a trabajar."
+    "resumedToast": "Los agentes vuelven a trabajar.",
+    "pauseNotSaved": "La pausa no se pudo guardar: si cierras Faro, los agentes volverán a trabajar.",
+    "pauseNotSavedToast": "Pausamos a los agentes, pero no pudimos guardar la pausa. Si cierras Faro, volverán a trabajar.",
+    "resumeFailedToast": "No pudimos reanudar a los agentes. Intenta de nuevo."
   },
   "money": {
     "lessThan": "menos de {{amount}}"
@@ -34,5 +37,10 @@
   "aiBadge": "Hecho por IA",
   "providers": {
     "unknown": "tu proveedor de IA"
+  },
+  "sectionError": {
+    "title": "No pudimos mostrar esta sección.",
+    "description": "Algo salió mal al dibujarla. Tus datos y la pausa de los agentes no cambiaron. Ve a Inicio y vuelve a abrirla.",
+    "goHome": "Ir a Inicio"
   }
 }

@@ -8,7 +8,9 @@ import {
   pauseAllAgents,
   resumeAllAgents,
 } from "@/lib/api/agentsControl";
-import { getErrorMessage } from "@/lib/api/errors";
+import { getErrorMessage, toFaroError } from "@/lib/api/errors";
+
+import { setPauseNotSaved } from "./pauseNotSaved";
 
 import { AGENT_ESTIMATE_PREFIX, AGENT_RUNS_QUERY_KEY, AGENTS_CONTROL_QUERY_KEY } from "./queryKeys";
 
@@ -24,8 +26,8 @@ export function useAgentsPaused(): boolean {
 
 /**
  * Pausar y reanudar (spec F1b §3.1). Tras un error se vuelve a leer el estado del núcleo:
- * si guardar la pausa falló (`agents.control_unavailable`), la pausa en memoria sí se aplicó
- * y la barra lo muestra tal cual.
+ * si guardar la pausa falló (`agents.control_unavailable`), la pausa en memoria sí se aplicó,
+ * la barra lo muestra tal cual y avisa de que no sobrevivirá a cerrar Faro.
  */
 export function useAgentsControl() {
   const { t, i18n } = useTranslation("common");
@@ -33,20 +35,31 @@ export function useAgentsControl() {
   const state = useAgentsControlState();
 
   function settle(next: AgentsControlState) {
+    setPauseNotSaved(false);
     queryClient.setQueryData<AgentsControlState>(AGENTS_CONTROL_QUERY_KEY, next);
     void queryClient.invalidateQueries({ queryKey: AGENT_ESTIMATE_PREFIX });
     void queryClient.invalidateQueries({ queryKey: AGENT_RUNS_QUERY_KEY, exact: true });
   }
 
-  function fail(error: unknown) {
-    toast.error(getErrorMessage(error, i18n));
+  function refreshState() {
     void queryClient.invalidateQueries({ queryKey: AGENTS_CONTROL_QUERY_KEY });
+    void queryClient.invalidateQueries({ queryKey: AGENT_ESTIMATE_PREFIX });
   }
 
   const pause = useMutation({
     mutationFn: pauseAllAgents,
     onSuccess: settle,
-    onError: fail,
+    onError: (error) => {
+      if (toFaroError(error).code === "agents.control_unavailable") {
+        // La pausa sí se aplicó en memoria, pero no sobrevive a cerrar Faro. El texto del
+        // catálogo pide reiniciar, lo que la desharía: aquí se usa uno propio (T14 corrige §5.5).
+        setPauseNotSaved(true);
+        toast.error(t("agentsControl.pauseNotSavedToast"));
+      } else {
+        toast.error(getErrorMessage(error, i18n));
+      }
+      refreshState();
+    },
   });
 
   const resume = useMutation({
@@ -55,7 +68,16 @@ export function useAgentsControl() {
       settle(next);
       toast.success(t("agentsControl.resumedToast"));
     },
-    onError: fail,
+    onError: (error) => {
+      // Reanudar no se aplicó: los agentes siguen en pausa. Sin "Reinicia Faro": si la pausa no
+      // estaba guardada, reiniciar los pondría a trabajar sin que lo pidieras.
+      toast.error(
+        toFaroError(error).code === "agents.control_unavailable"
+          ? t("agentsControl.resumeFailedToast")
+          : getErrorMessage(error, i18n),
+      );
+      refreshState();
+    },
   });
 
   return { state, pause, resume };

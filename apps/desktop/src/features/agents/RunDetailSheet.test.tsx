@@ -263,6 +263,30 @@ describe("Detalle de la tarea (spec F1b §3.4)", () => {
     expect(ipc.engineCalls("cancelAgentRun")).toHaveLength(1);
   });
 
+  it("estado, origen y estado de paso desconocidos: textos genéricos y la app sigue en pie", async () => {
+    const weird = {
+      ...runDetailFixture({
+        approval: null,
+        result: null,
+        steps: [stepFixture(1, "read_site", "tool_call", 0, { status: "weird" as never })],
+      }),
+      status: "weird",
+      trigger: "weird",
+    } as unknown as AgentRunDetail;
+    await openDetail(() => weird);
+    const sheet = await findSheet();
+
+    expect(within(sheet).getByText("En proceso")).toBeInTheDocument();
+    expect(within(sheet).getByText(/Origen desconocido/)).toBeInTheDocument();
+    const steps = within(sheet).getByRole("list", { name: "Pasos" });
+    expect(within(steps).getByText("Sin información")).toBeInTheDocument();
+    expect(steps.querySelector("svg")).not.toBeNull();
+    expect(document.body.textContent).not.toMatch(/weird|detail\.|stepStatus|trigger\./);
+    expect(
+      screen.getByRole("button", { name: "Pausar agentes", hidden: true }),
+    ).toBeInTheDocument();
+  });
+
   it("Listo · descartado y origen al abrir Faro", async () => {
     await openDetail(() =>
       runDetailFixture({

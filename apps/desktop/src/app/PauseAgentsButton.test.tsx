@@ -10,8 +10,11 @@ import { SECTIONS } from "./sections";
 
 const BANNER = "Los agentes están en pausa. No se ejecuta ninguna tarea, tampoco las programadas.";
 const TOOLTIP = "Detiene a todos los agentes al momento. Nada se ejecuta hasta que los reanudes.";
-const CONTROL_UNAVAILABLE =
-  "No pudimos guardar el estado de los agentes. Reinicia Faro; si se repite, escríbenos.";
+const PAUSE_NOT_SAVED_TOAST =
+  "Pausamos a los agentes, pero no pudimos guardar la pausa. Si cierras Faro, volverán a trabajar.";
+const PAUSE_NOT_SAVED =
+  "La pausa no se pudo guardar: si cierras Faro, los agentes volverán a trabajar.";
+const RESUME_FAILED = "No pudimos reanudar a los agentes. Intenta de nuevo.";
 
 function header() {
   return screen.getByRole("banner");
@@ -84,7 +87,7 @@ describe("Pausar agentes (spec F1b §3.1)", () => {
     expect(screen.queryByTestId("agents-paused-banner")).not.toBeInTheDocument();
   });
 
-  it("error al pausar: toast con el mensaje y el estado real del núcleo (la pausa en memoria sí se aplicó)", async () => {
+  it("pausa aplicada pero no guardada (agents.control_unavailable): aviso extra y nunca 'Reinicia'", async () => {
     const user = userEvent.setup();
     let paused = false;
     mockAgentsIpc({
@@ -98,8 +101,50 @@ describe("Pausar agentes (spec F1b §3.1)", () => {
 
     await user.click(await within(header()).findByRole("button", { name: "Pausar agentes" }));
 
-    expect(await screen.findByText(CONTROL_UNAVAILABLE)).toBeInTheDocument();
+    expect(await screen.findByText(PAUSE_NOT_SAVED_TOAST)).toBeInTheDocument();
     expect(await within(header()).findByRole("button", { name: "Reanudar agentes" })).toBeEnabled();
+    const extra = await screen.findByTestId("agents-pause-not-saved");
+    expect(extra).toHaveTextContent(PAUSE_NOT_SAVED);
+    expect(extra.querySelector("svg")).not.toBeNull();
+    expect(screen.getByTestId("agents-paused-banner")).toHaveTextContent(BANNER);
+    expect(document.body.textContent).not.toMatch(/Reinicia/i);
+  });
+
+  it("al reanudar con éxito se olvida que la pausa no estaba guardada", async () => {
+    const user = userEvent.setup();
+    let paused = false;
+    mockAgentsIpc({
+      controlState: () => ({ paused, changed_at: null }),
+      pause: () => {
+        paused = true;
+        return rejectWith(faroError("agents.control_unavailable"))();
+      },
+      resume: () => {
+        paused = false;
+        return { paused: false, changed_at: null };
+      },
+    });
+    renderApp("/");
+
+    await user.click(await within(header()).findByRole("button", { name: "Pausar agentes" }));
+    await screen.findByTestId("agents-pause-not-saved");
+    await user.click(await within(header()).findByRole("button", { name: "Reanudar agentes" }));
+
+    expect(await within(header()).findByRole("button", { name: "Pausar agentes" })).toBeEnabled();
+    expect(screen.queryByTestId("agents-pause-not-saved")).not.toBeInTheDocument();
+  });
+
+  it("otro error al pausar: toast con el mensaje del código", async () => {
+    const user = userEvent.setup();
+    mockAgentsIpc({ pause: rejectWith(faroError("internal.unexpected")) });
+    renderApp("/");
+
+    await user.click(await within(header()).findByRole("button", { name: "Pausar agentes" }));
+
+    expect(
+      await screen.findByText("Algo salió mal. Intenta de nuevo; si se repite, reinicia Faro."),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("agents-pause-not-saved")).not.toBeInTheDocument();
   });
 
   it("error al reanudar: toast y el botón vuelve a Reanudar agentes", async () => {
@@ -112,7 +157,8 @@ describe("Pausar agentes (spec F1b §3.1)", () => {
 
     await user.click(await within(header()).findByRole("button", { name: "Reanudar agentes" }));
 
-    expect(await screen.findByText(CONTROL_UNAVAILABLE)).toBeInTheDocument();
+    expect(await screen.findByText(RESUME_FAILED)).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/Reinicia/i);
     expect(within(header()).getByRole("button", { name: "Reanudar agentes" })).toBeEnabled();
     expect(screen.getByTestId("agents-paused-banner")).toBeInTheDocument();
   });

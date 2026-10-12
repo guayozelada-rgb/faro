@@ -199,6 +199,88 @@ describe("Configuración → Autonomía (spec F1b §3.7)", () => {
     expect(await screen.findByText("Elige uno de los niveles de la lista.")).toBeInTheDocument();
   });
 
+  it("un agente con una acción publish solo ofrece hasta el nivel 1 (fila y regla de sitio)", async () => {
+    const user = userEvent.setup();
+    const second = siteFixture({ id: SITE_B_ID, name: "Otra Tienda", url: "https://otra.com" });
+    mockAgentsIpc({
+      operations: {
+        listSites: () => ({ items: [siteFixture(), second], next_cursor: null }),
+        listAgents: () => ({
+          items: [
+            {
+              kind: "site_summary",
+              version: 1,
+              requires_site: true,
+              actions: [
+                { action_kind: "site_summary.save", side_effect: "internal" },
+                { action_kind: "site_summary.publish", side_effect: "publish" },
+              ],
+            },
+          ],
+        }),
+      },
+    });
+    renderApp("/settings?tab=autonomy");
+    const block = await agentBlock();
+    const select = within(block).getByLabelText("Nivel de Resumen del sitio en Todos tus sitios");
+    await waitFor(() => {
+      expect(
+        within(select)
+          .getAllByRole("option")
+          .map((option) => option.textContent),
+      ).toEqual(LEVELS.slice(0, 2));
+    });
+
+    await user.click(within(block).getByRole("button", { name: "Agregar regla para un sitio" }));
+    const dialog = await screen.findByRole("dialog", { name: "Regla para un sitio" });
+    expect(
+      within(within(dialog).getByLabelText("Nivel"))
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual(LEVELS.slice(0, 2));
+  });
+
+  it("un agente desconocido para listAgents también se limita al nivel 1", async () => {
+    mockAgentsIpc({ operations: { listAgents: () => ({ items: [] }) } });
+    renderApp("/settings?tab=autonomy");
+    const select = within(await agentBlock()).getByLabelText(
+      "Nivel de Resumen del sitio en Todos tus sitios",
+    );
+    await waitFor(() => {
+      expect(within(select).getAllByRole("option")).toHaveLength(2);
+    });
+  });
+
+  it("una regla guardada por encima del máximo se muestra, deshabilitada", async () => {
+    mockAgentsIpc({
+      operations: {
+        listAgents: () => ({ items: [] }),
+        listAutonomyRules: () =>
+          autonomyFixture({
+            items: [
+              {
+                id: RULE_ID,
+                agent_kind: "site_summary",
+                site_id: null,
+                level: 3,
+                updated_at: "2026-10-12T12:00:00Z",
+              },
+            ],
+          }),
+      },
+    });
+    renderApp("/settings?tab=autonomy");
+    const select = within(await agentBlock()).getByLabelText(
+      "Nivel de Resumen del sitio en Todos tus sitios",
+    );
+    await waitFor(() => {
+      expect(within(select).getAllByRole("option")).toHaveLength(3);
+    });
+    expect(select).toHaveValue("3");
+    expect(within(select).getByRole("option", { name: "Piloto automático" })).toBeDisabled();
+    expect(within(select).queryByRole("option", { name: "Actuar con límites" })).toBeNull();
+  });
+
   it("Lo que ningún agente hace nunca: bloque fijo con icono", async () => {
     mockAgentsIpc();
     renderApp("/settings?tab=autonomy");

@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { type AgentOut, SITE_SUMMARY_KIND } from "@/lib/api/agents";
 import { getErrorMessage } from "@/lib/api/errors";
+import { knownProviderShortName } from "@/features/vault/providerNames";
 import { formatUsdMicros } from "@/lib/format/money";
 
 import { agentDescription, agentName } from "./labels";
@@ -302,7 +303,9 @@ function SpendToday() {
                     {withKey.map((provider) => (
                       <li key={provider.provider}>
                         {t("spend.provider", {
-                          provider: tSettings(`vault.providerShort.${provider.provider}`),
+                          provider:
+                            knownProviderShortName(tSettings, provider.provider) ??
+                            t("spend.otherProvider"),
                           spent: formatUsdMicros(provider.spent_today_micros, i18n),
                           limit: formatUsdMicros(provider.daily_limit_micros, i18n),
                         })}
