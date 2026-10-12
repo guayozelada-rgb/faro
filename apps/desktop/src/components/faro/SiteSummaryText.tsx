@@ -41,9 +41,7 @@ export function SiteSummaryText({ summary, headingLevel = 3 }: SiteSummaryTextPr
       {summary.audience ? (
         <div className="flex flex-col gap-1">
           <Heading className="text-sm font-semibold">{t("detail.audience")}</Heading>
-          <p className="whitespace-pre-line">
-            {summary.audience}
-          </p>
+          <p className="whitespace-pre-line">{summary.audience}</p>
         </div>
       ) : null}
     </div>

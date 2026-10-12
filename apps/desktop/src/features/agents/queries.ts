@@ -36,34 +36,52 @@ interface RefetchableQuery {
   refetch: () => Promise<unknown>;
 }
 
+/** Último estado "listo" del motor con el que ya se reintentó cada consulta (todas las vistas). */
+const retriedForReady = new Map<string, number>();
+
 /**
- * Si una lectura falló con `engine.not_ready`, la repite sola cuando el motor queda listo
- * (mismo patrón que `useSites`, sin otra suscripción a eventos).
+ * Si una lectura falló con `engine.not_ready`, la repite sola cuando el motor está listo
+ * (mismo patrón que `useSites`, sin otra suscripción a eventos). Como mucho una vez por cada
+ * estado "listo" del motor y consulta, aunque varias vistas la usen: si vuelve a fallar, no
+ * entra en un bucle (queda "Intentar de nuevo").
  */
-export function useRefetchWhenEngineReady(query: RefetchableQuery): void {
+export function useRefetchWhenEngineReady(
+  queryKey: readonly unknown[],
+  query: RefetchableQuery,
+): void {
   const engine = useQuery({ queryKey: ENGINE_STATUS_QUERY_KEY, queryFn: getEngineStatus });
-  const engineReady = engine.data?.state === "ready";
+  const readyAt = engine.data?.state === "ready" ? engine.dataUpdatedAt : 0;
+  const key = JSON.stringify(queryKey);
   const waiting =
-    query.isError && toFaroError(query.error).code === "engine.not_ready" && !query.isFetching;
+    readyAt > 0 &&
+    query.isError &&
+    toFaroError(query.error).code === "engine.not_ready" &&
+    !query.isFetching;
   const { refetch } = query;
   useEffect(() => {
-    if (engineReady && waiting) {
+    if (waiting && retriedForReady.get(key) !== readyAt) {
+      retriedForReady.set(key, readyAt);
       void refetch();
     }
-  }, [engineReady, waiting, refetch]);
+  }, [waiting, readyAt, key, refetch]);
+}
+
+/** Solo para pruebas: olvida los reintentos (cada prueba es una sesión nueva). */
+export function resetEngineReadyRetriesForTests(): void {
+  retriedForReady.clear();
 }
 
 /** Agentes disponibles. */
 export function useAgentsCatalog() {
   const query = useQuery({ queryKey: AGENTS_QUERY_KEY, queryFn: listAgents });
-  useRefetchWhenEngineReady(query);
+  useRefetchWhenEngineReady(AGENTS_QUERY_KEY, query);
   return query;
 }
 
 /** Últimas tareas (actividad). Los eventos `engine://agents` la mantienen al día. */
 export function useAgentRuns() {
   const query = useQuery({ queryKey: AGENT_RUNS_QUERY_KEY, queryFn: () => listAgentRuns() });
-  useRefetchWhenEngineReady(query);
+  useRefetchWhenEngineReady(AGENT_RUNS_QUERY_KEY, query);
   return query;
 }
 
@@ -82,7 +100,7 @@ export function usePendingApprovals() {
     queryKey: PENDING_APPROVALS_QUERY_KEY,
     queryFn: () => listApprovals("pending"),
   });
-  useRefetchWhenEngineReady(query);
+  useRefetchWhenEngineReady(PENDING_APPROVALS_QUERY_KEY, query);
   return query;
 }
 
@@ -101,19 +119,19 @@ const EMPTY_SET: ReadonlySet<string> = new Set();
 /** Gasto de hoy, límites y la clave que usan los agentes. */
 export function useLlmUsage() {
   const query = useQuery({ queryKey: LLM_USAGE_QUERY_KEY, queryFn: getLlmUsage });
-  useRefetchWhenEngineReady(query);
+  useRefetchWhenEngineReady(LLM_USAGE_QUERY_KEY, query);
   return query;
 }
 
 export function useSchedules() {
   const query = useQuery({ queryKey: SCHEDULES_QUERY_KEY, queryFn: listSchedules });
-  useRefetchWhenEngineReady(query);
+  useRefetchWhenEngineReady(SCHEDULES_QUERY_KEY, query);
   return query;
 }
 
 export function useAutonomyRules() {
   const query = useQuery({ queryKey: AUTONOMY_RULES_QUERY_KEY, queryFn: listAutonomyRules });
-  useRefetchWhenEngineReady(query);
+  useRefetchWhenEngineReady(AUTONOMY_RULES_QUERY_KEY, query);
   return query;
 }
 

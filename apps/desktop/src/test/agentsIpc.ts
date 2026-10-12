@@ -396,7 +396,6 @@ export function mockAgentsIpc(handlers: AgentsIpcHandlers = {}): AgentsIpcMock {
       });
     },
     activityListeners: () =>
-      [...listeners.values()].filter((listener) => listener.event === AGENT_ACTIVITY_EVENT)
-        .length,
+      [...listeners.values()].filter((listener) => listener.event === AGENT_ACTIVITY_EVENT).length,
   };
 }

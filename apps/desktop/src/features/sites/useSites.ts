@@ -1,5 +1,5 @@
 import { type QueryClient, useQuery } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import { ENGINE_STATUS_QUERY_KEY } from "@/features/engine/useEngineStatus";
 import { getEngineStatus } from "@/lib/api/engine";
@@ -23,16 +23,23 @@ export function useSites() {
     queryFn: listSites,
   });
   const engine = useQuery({ queryKey: ENGINE_STATUS_QUERY_KEY, queryFn: getEngineStatus });
-  const engineReady = engine.data?.state === "ready";
+  // Como mucho un reintento por cada estado "listo" del motor: si la lectura vuelve a fallar con
+  // `engine.not_ready`, no se repite en bucle (queda "Intentar de nuevo").
+  const readyAt = engine.data?.state === "ready" ? engine.dataUpdatedAt : 0;
+  const retriedFor = useRef(0);
   const waitingForEngine =
-    query.isError && toFaroError(query.error).code === "engine.not_ready" && !query.isFetching;
+    readyAt > 0 &&
+    query.isError &&
+    toFaroError(query.error).code === "engine.not_ready" &&
+    !query.isFetching;
   const { refetch } = query;
 
   useEffect(() => {
-    if (engineReady && waitingForEngine) {
+    if (waitingForEngine && retriedFor.current !== readyAt) {
+      retriedFor.current = readyAt;
       void refetch();
     }
-  }, [engineReady, waitingForEngine, refetch]);
+  }, [waitingForEngine, readyAt, refetch]);
 
   return query;
 }

@@ -196,7 +196,9 @@ describe("formas tipadas del resultado y de la propuesta", () => {
   it("saveSummaryPayload solo para site_summary.save con su resumen", () => {
     expect(saveSummaryPayload(approvalFixture())).not.toBeNull();
     expect(saveSummaryPayload(approvalFixture({ action_kind: "otra.cosa" }))).toBeNull();
-    expect(saveSummaryPayload(approvalFixture({ payload: { kind: "site_summary.save" } }))).toBeNull();
+    expect(
+      saveSummaryPayload(approvalFixture({ payload: { kind: "site_summary.save" } })),
+    ).toBeNull();
     expect(isSiteSummary({ ...summaryFixture(), version: 2 })).toBe(false);
   });
 

@@ -47,9 +47,7 @@ export function SchedulesSection({ onSchedule }: { onSchedule: () => void }) {
       queryClient.setQueryData<Schedule[]>(SCHEDULES_QUERY_KEY, (current) =>
         current?.map((item) => (item.id === updated.id ? updated : item)),
       );
-      toast.success(
-        updated.enabled ? t("schedules.toast.enabled") : t("schedules.toast.disabled"),
-      );
+      toast.success(updated.enabled ? t("schedules.toast.enabled") : t("schedules.toast.disabled"));
     },
     onError: (reason) => {
       toast.error(getErrorMessage(reason, i18n));

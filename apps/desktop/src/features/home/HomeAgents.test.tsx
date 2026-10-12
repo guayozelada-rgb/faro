@@ -89,7 +89,9 @@ describe("Inicio con agentes (spec F1b §3.8)", () => {
         listApprovals: (request) => ({
           items:
             request.query?.status === "pending"
-              ? Array.from({ length: count }, (_, index) => approvalFixture({ id: `a${String(index)}` }))
+              ? Array.from({ length: count }, (_, index) =>
+                  approvalFixture({ id: `a${String(index)}` }),
+                )
               : [],
           next_cursor: null,
         }),

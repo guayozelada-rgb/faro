@@ -384,7 +384,9 @@ function ActivitySection({
           headingLevel={3}
           title={t("feed.emptyTitle")}
           description={t("feed.emptyDescription")}
-          {...(hasSite && hasKey ? { action: { label: t("feed.emptyAction"), onClick: onLaunch } } : {})}
+          {...(hasSite && hasKey
+            ? { action: { label: t("feed.emptyAction"), onClick: onLaunch } }
+            : {})}
         />
       ) : null}
       {runs && runs.length > 0 ? (

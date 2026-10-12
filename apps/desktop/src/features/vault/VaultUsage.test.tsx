@@ -131,7 +131,7 @@ describe("Claves de IA: gasto, límite y clave de los agentes (spec F1b §3.6)",
       operations: {
         getLlmUsage: () => {
           if (failing) {
-            throw faroError("engine.timeout");
+            return rejectWith(faroError("engine.timeout"))();
           }
           return usageFixture();
         },

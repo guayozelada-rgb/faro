@@ -64,7 +64,9 @@ describe("Pausar agentes (spec F1b §3.1)", () => {
     const pausing = await within(header()).findByRole("button", { name: "Pausando…" });
     expect(pausing).toBeDisabled();
 
-    page = runPage(runFixture({ status: "paused", status_reason: "agents_paused", activity_seq: 3 }));
+    page = runPage(
+      runFixture({ status: "paused", status_reason: "agents_paused", activity_seq: 3 }),
+    );
     ipc.emitActivity(activityFixture({ kind: "run_status", status: "paused", step: null }));
 
     expect(await within(header()).findByRole("button", { name: "Reanudar agentes" })).toBeEnabled();
@@ -89,7 +91,7 @@ describe("Pausar agentes (spec F1b §3.1)", () => {
       controlState: () => ({ paused, changed_at: null }),
       pause: () => {
         paused = true;
-        throw faroError("agents.control_unavailable");
+        return rejectWith(faroError("agents.control_unavailable"))();
       },
     });
     renderApp("/");

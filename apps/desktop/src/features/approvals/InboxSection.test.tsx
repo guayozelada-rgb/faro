@@ -39,7 +39,7 @@ describe("Bandeja mínima (spec F1b §3.5)", () => {
         listApprovals: () => {
           calls += 1;
           if (calls === 1) {
-            throw faroError("engine.timeout");
+            return rejectWith(faroError("engine.timeout"))();
           }
           return pending();
         },
@@ -73,9 +73,9 @@ describe("Bandeja mínima (spec F1b §3.5)", () => {
     expect(within(card).getByText("Por qué: así lo verás en Inicio.")).toBeInTheDocument();
     expect(within(card).getByText("Caduca el 26 de octubre")).toBeInTheDocument();
     expect(within(card).getByText("Hecho por IA")).toBeInTheDocument();
-    expect(within(card).getByRole("region", { name: "Vista previa de la propuesta" })).toHaveTextContent(
-      "Vendes ropa de algodón para bebés",
-    );
+    expect(
+      within(card).getByRole("region", { name: "Vista previa de la propuesta" }),
+    ).toHaveTextContent("Vendes ropa de algodón para bebés");
     expect(within(card).queryByRole("button", { name: /Editar/ })).not.toBeInTheDocument();
 
     await user.click(within(card).getByRole("button", { name: "Guardar resumen" }));
@@ -139,9 +139,11 @@ describe("Bandeja mínima (spec F1b §3.5)", () => {
         "Esta propuesta no se puede revisar en esta versión de Faro. Puedes descartarla.",
       ),
     ).toBeInTheDocument();
-    expect(within(card).getAllByRole("button").map((button) => button.textContent)).toEqual([
-      "Descartar",
-    ]);
+    expect(
+      within(card)
+        .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["Descartar"]);
   });
 
   it("la barra lateral muestra el número de pendientes (texto + lector de pantalla)", async () => {

@@ -2,6 +2,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { activityFixture } from "@/test/agentsIpc";
+import { rejectWith } from "@/test/vaultIpc";
 
 import {
   getAgentsControlState,
@@ -33,9 +34,7 @@ describe("comandos de la pausa (spec F1b §5.3)", () => {
   });
 
   it("agents.control_unavailable llega como FaroError", async () => {
-    mockIPC(() => {
-      throw { code: "agents.control_unavailable", message: "", details: {} };
-    });
+    mockIPC(rejectWith({ code: "agents.control_unavailable", message: "", details: {} }));
     await expect(pauseAllAgents()).rejects.toMatchObject({ code: "agents.control_unavailable" });
     await expect(pauseAllAgents()).rejects.toBeInstanceOf(FaroError);
   });

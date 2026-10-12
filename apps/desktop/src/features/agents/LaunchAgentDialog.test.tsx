@@ -136,7 +136,7 @@ describe("Lanzar Resumen del sitio (spec F1b §3.3)", () => {
         estimateAgentRun: () => {
           calls += 1;
           if (calls === 1) {
-            throw faroError("engine.timeout");
+            return rejectWith(faroError("engine.timeout"))();
           }
           return estimateFixture();
         },
@@ -161,9 +161,7 @@ describe("Lanzar Resumen del sitio (spec F1b §3.3)", () => {
         startAgentRun: rejectWith(faroError("agent.estimate_changed")),
       },
     });
-    await user.click(
-      await within(dialog).findByRole("button", { name: launchName("0,01") }),
-    );
+    await user.click(await within(dialog).findByRole("button", { name: launchName("0,01") }));
 
     expect(
       await within(dialog).findByText("El costo cambió. Revísalo y vuelve a lanzar."),

@@ -53,9 +53,7 @@ describe("Agentes: catálogo (qué hacer ahora)", () => {
     ).toBeInTheDocument();
     expect(card.querySelector("svg.text-ai")).not.toBeNull();
 
-    await user.click(
-      await within(card).findByRole("button", { name: "Lanzar Resumen del sitio" }),
-    );
+    await user.click(await within(card).findByRole("button", { name: "Lanzar Resumen del sitio" }));
     expect(
       await screen.findByRole("dialog", { name: "Lanzar Resumen del sitio" }),
     ).toBeInTheDocument();
@@ -146,7 +144,7 @@ describe("Agentes: gasto de hoy", () => {
           .getAllByRole("tooltip")
           .some(
             (tip) =>
-              tip.textContent?.replace(/\s+/g, " ") ===
+              tip.textContent.replace(/\s+/g, " ") ===
               `Anthropic: ${usd("0,12")} de ${usd("5,00")}`,
           ),
       ).toBe(true);
@@ -164,7 +162,7 @@ describe("Agentes: gasto de hoy", () => {
         getLlmUsage: () => {
           calls += 1;
           if (calls === 1) {
-            throw faroError("engine.timeout");
+            return rejectWith(faroError("engine.timeout"))();
           }
           return usageFixture({ total_today_micros: 0 });
         },
@@ -212,9 +210,22 @@ describe("Agentes: actividad", () => {
     renderApp("/agents");
     const alert = await within(region("Actividad")).findByRole("alert");
     expect(alert).toHaveTextContent(text);
-    expect(within(alert).queryByRole("button", { name: "Intentar de nuevo" }) !== null).toBe(
-      retry,
-    );
+    expect(within(alert).queryByRole("button", { name: "Intentar de nuevo" }) !== null).toBe(retry);
+  });
+
+  it("engine.not_ready con el motor listo: reintentos acotados, sin bucle", async () => {
+    const ipc = mockAgentsIpc({
+      operations: { listAgentRuns: rejectWith(faroError("engine.not_ready")) },
+    });
+    renderApp("/agents");
+    await within(region("Actividad")).findByRole("alert");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const settled = ipc.engineCalls("listAgentRuns").length;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    // Sin bucle: el número de lecturas deja de crecer (antes crecía sin fin).
+    expect(ipc.engineCalls("listAgentRuns")).toHaveLength(settled);
+    expect(settled).toBeLessThanOrEqual(4);
+    expect(within(region("Actividad")).getByRole("alert")).toBeInTheDocument();
   });
 
   it("los 7 estados con su chip (icono + texto), el tope del día y lo descartado", async () => {
@@ -263,13 +274,18 @@ describe("Agentes: actividad", () => {
     for (let index = 0; index < rows.length; index++) {
       expect(chip(index)?.querySelector("svg, [data-testid='running-dot']")).not.toBeNull();
     }
-    expect(within(rows[2] as HTMLElement).getByTestId("running-dot")).toHaveClass(
+    const row = (index: number): HTMLElement => {
+      const item = rows[index];
+      if (!item) {
+        throw new Error(`sin fila ${String(index)}`);
+      }
+      return item;
+    };
+    expect(within(row(2)).getByTestId("running-dot")).toHaveClass(
       "bg-ai",
       "motion-reduce:animate-none",
     );
-    expect(
-      within(rows[1] as HTMLElement).getByRole("button", { name: "Por qué espera" }),
-    ).toBeInTheDocument();
+    expect(within(row(1)).getByRole("button", { name: "Por qué espera" })).toBeInTheDocument();
     expect(rows[2]).toHaveTextContent("Resumen del sitio · Mi Tienda");
     expect(rows[2]).toHaveTextContent("Leyendo tu sitio…");
     expect(rows[2]).toHaveTextContent(`Costo: ${usd("0,01")}`);
@@ -384,7 +400,7 @@ describe("Agentes: programadas", () => {
         listSchedules: () => {
           calls += 1;
           if (calls === 1) {
-            throw faroError("engine.timeout");
+            return rejectWith(faroError("engine.timeout"))();
           }
           return { items: [scheduleFixture()], next_cursor: null };
         },
@@ -413,14 +429,14 @@ describe("Agentes: programadas", () => {
     if (!row) {
       throw new Error("sin fila");
     }
-    expect(row).toHaveTextContent(
-      "Cada lunes a las 9:00 · Próxima: lunes, 19 de octubre, 9:00",
-    );
+    expect(row).toHaveTextContent("Cada lunes a las 9:00 · Próxima: lunes, 19 de octubre, 9:00");
     expect(section).toHaveTextContent(
       "Las tareas programadas solo corren con Faro abierto. Si estaba cerrado, la haremos cuando lo abras.",
     );
 
-    const toggle = within(row).getByRole("switch", { name: "Activa: Resumen del sitio · Mi Tienda" });
+    const toggle = within(row).getByRole("switch", {
+      name: "Activa: Resumen del sitio · Mi Tienda",
+    });
     expect(toggle).toHaveAttribute("aria-checked", "true");
     await user.click(toggle);
     expect(await screen.findByText("Pausamos la programación.")).toBeInTheDocument();

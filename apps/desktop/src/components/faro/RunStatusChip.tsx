@@ -50,7 +50,11 @@ export interface RunStatusChipProps {
  * Chip del estado de una tarea (spec F1b §3.2), siempre con icono y texto. "Trabajando" lleva
  * un punto animado (`ai`, solo lo que hace la IA), quieto con `prefers-reduced-motion`.
  */
-export function RunStatusChip({ status, statusReason = null, discarded = false }: RunStatusChipProps) {
+export function RunStatusChip({
+  status,
+  statusReason = null,
+  discarded = false,
+}: RunStatusChipProps) {
   const { t } = useTranslation("agents");
 
   if (!isRunStatus(status)) {

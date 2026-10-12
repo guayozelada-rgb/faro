@@ -47,7 +47,9 @@ export function useApprovalActions() {
     mutationFn: (input: { approval: Approval; decision: Decision }) =>
       decideApproval(input.approval.id, input.decision),
     onSuccess: (_result, { approval, decision }) => {
-      toast.success(decision === "approve" ? approvedText(approval.action_kind) : t("toast.rejected"));
+      toast.success(
+        decision === "approve" ? approvedText(approval.action_kind) : t("toast.rejected"),
+      );
       refresh(approval.run_id);
       void queryClient.invalidateQueries({ queryKey: SITE_SUMMARY_PREFIX });
     },

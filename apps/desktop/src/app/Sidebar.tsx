@@ -34,9 +34,7 @@ function SidebarLink({ section, collapsed, count = 0 }: SidebarLinkProps) {
         )}
       >
         <span aria-hidden="true">{count}</span>
-        <span className="sr-only">
-          {tCommon("sidebar.pendingApprovals", { count })}
-        </span>
+        <span className="sr-only">{tCommon("sidebar.pendingApprovals", { count })}</span>
       </span>
     ) : null;
 

@@ -36,7 +36,12 @@ export function CostEstimate({
 
   if (isLoading) {
     return (
-      <div role="status" aria-busy="true" className="flex flex-col gap-2" data-testid="cost-loading">
+      <div
+        role="status"
+        aria-busy="true"
+        className="flex flex-col gap-2"
+        data-testid="cost-loading"
+      >
         <Skeleton aria-hidden="true" className="h-5 w-3/4" />
         <p className="text-sm text-muted-foreground">{t("launch.calculating")}</p>
       </div>

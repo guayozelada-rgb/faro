@@ -415,7 +415,13 @@ interface AddSiteRuleDialogProps {
   onSubmit: (change: RuleChange) => void;
 }
 
-function AddSiteRuleDialog({ agentKind, rules, saving, onCancel, onSubmit }: AddSiteRuleDialogProps) {
+function AddSiteRuleDialog({
+  agentKind,
+  rules,
+  saving,
+  onCancel,
+  onSubmit,
+}: AddSiteRuleDialogProps) {
   const { t } = useTranslation("settings");
   const siteFieldId = useId();
   const levelFieldId = useId();
@@ -424,8 +430,7 @@ function AddSiteRuleDialog({ agentKind, rules, saving, onCancel, onSubmit }: Add
     () =>
       sortSites(sites.data ?? []).filter(
         (site) =>
-          site.connection?.status === "active" &&
-          !rules.some((rule) => rule.site_id === site.id),
+          site.connection?.status === "active" && !rules.some((rule) => rule.site_id === site.id),
       ),
     [sites.data, rules],
   );

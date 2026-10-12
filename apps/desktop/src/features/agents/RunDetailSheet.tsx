@@ -45,12 +45,7 @@ import {
   CANCELLABLE_STATUSES,
   siteSummaryResult,
 } from "@/lib/api/agents";
-import {
-  FaroError,
-  getErrorMessage,
-  toFaroError,
-  UNEXPECTED_ERROR_CODE,
-} from "@/lib/api/errors";
+import { FaroError, getErrorMessage, toFaroError, UNEXPECTED_ERROR_CODE } from "@/lib/api/errors";
 import { relativeTime } from "@/lib/format/dates";
 import { formatUsdMicros } from "@/lib/format/money";
 
@@ -119,12 +114,7 @@ function RunDetailContent({
           )}
         </SheetHeader>
         <SheetClose asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="shrink-0"
-            aria-label={t("detail.close")}
-          >
+          <Button variant="ghost" size="icon" className="shrink-0" aria-label={t("detail.close")}>
             <X aria-hidden="true" className="size-5" strokeWidth={1.5} />
           </Button>
         </SheetClose>
@@ -155,11 +145,7 @@ function RunDetailContent({
   );
 }
 
-function startedLine(
-  t: TFunction<"agents">,
-  language: string,
-  run: AgentRunDetail,
-): string {
+function startedLine(t: TFunction<"agents">, language: string, run: AgentRunDetail): string {
   const when = run.started_at ?? run.created_at;
   const relative = relativeTime(language, when);
   const origin = t(`detail.trigger.${run.trigger}`);

@@ -73,7 +73,12 @@ describe("handleActivity", () => {
   it("invalida el detalle, las propuestas y el gasto según el evento", () => {
     const client = new QueryClient();
     client.setQueryData<AgentRunPage>(["agentRuns"], runPage(runFixture({ activity_seq: 2 })));
-    for (const key of [["agentRun", runFixture().id], ["approvals", "pending"], ["llmUsage"], ["siteSummary", "s"]]) {
+    for (const key of [
+      ["agentRun", runFixture().id],
+      ["approvals", "pending"],
+      ["llmUsage"],
+      ["siteSummary", "s"],
+    ]) {
       client.setQueryData(key, {});
     }
 

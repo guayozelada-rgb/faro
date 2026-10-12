@@ -32,7 +32,11 @@ export interface DailyLimitDialogProps {
 }
 
 /** "Cambiar límite diario" de una clave de IA (spec F1b §3.6): de US$0,50 a US$500. */
-export function DailyLimitDialog({ provider, currentLimitMicros, onOpenChange }: DailyLimitDialogProps) {
+export function DailyLimitDialog({
+  provider,
+  currentLimitMicros,
+  onOpenChange,
+}: DailyLimitDialogProps) {
   return (
     <Dialog open={provider !== null} onOpenChange={onOpenChange}>
       {provider !== null ? (

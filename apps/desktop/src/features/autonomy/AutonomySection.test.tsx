@@ -3,13 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { deferred } from "@/test/engineIpc";
-import {
-  autonomyFixture,
-  mockAgentsIpc,
-  RULE_ID,
-  SITE_B_ID,
-  SITE_ID,
-} from "@/test/agentsIpc";
+import { autonomyFixture, mockAgentsIpc, RULE_ID, SITE_B_ID, SITE_ID } from "@/test/agentsIpc";
 import { renderApp } from "@/test/renderApp";
 import { siteFixture } from "@/test/sitesIpc";
 import { faroError, rejectWith } from "@/test/vaultIpc";
@@ -40,7 +34,9 @@ describe("Configuración → Autonomía (spec F1b §3.7)", () => {
       expect(
         screen
           .getAllByRole("tooltip")
-          .some((tip) => tip.textContent === "Decide cuánto pueden hacer los agentes sin preguntarte."),
+          .some(
+            (tip) => tip.textContent === "Decide cuánto pueden hacer los agentes sin preguntarte.",
+          ),
       ).toBe(true);
     });
   });
@@ -73,9 +69,11 @@ describe("Configuración → Autonomía (spec F1b §3.7)", () => {
     renderApp("/settings?tab=autonomy");
     const block = await agentBlock();
     const select = within(block).getByLabelText("Nivel de Resumen del sitio en Todos tus sitios");
-    expect(within(select).getAllByRole("option").map((option) => option.textContent)).toEqual(
-      LEVELS,
-    );
+    expect(
+      within(select)
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual(LEVELS);
     expect(select).toHaveValue("1");
     expect(select).toHaveAccessibleDescription(
       "Prepara el resultado y espera tu OK en la Bandeja.",
@@ -184,15 +182,15 @@ describe("Configuración → Autonomía (spec F1b §3.7)", () => {
 
     await user.click(within(block).getByRole("button", { name: "Más acciones para Mi Tienda" }));
     await user.click(await screen.findByRole("menuitem", { name: "Usar la regla general" }));
-    expect(
-      await screen.findByText("El sitio vuelve a usar la regla general."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("El sitio vuelve a usar la regla general.")).toBeInTheDocument();
     expect(ipc.engineCalls("deleteAutonomyRule")[0]?.path).toEqual({ rule_id: RULE_ID });
   });
 
   it("error al guardar: toast con el mensaje", async () => {
     const user = userEvent.setup();
-    mockAgentsIpc({ operations: { setAutonomyRule: rejectWith(faroError("autonomy.invalid_level")) } });
+    mockAgentsIpc({
+      operations: { setAutonomyRule: rejectWith(faroError("autonomy.invalid_level")) },
+    });
     renderApp("/settings?tab=autonomy");
     await user.selectOptions(
       within(await agentBlock()).getByLabelText("Nivel de Resumen del sitio en Todos tus sitios"),

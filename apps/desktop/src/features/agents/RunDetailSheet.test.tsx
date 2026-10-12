@@ -78,7 +78,7 @@ describe("Detalle de la tarea (spec F1b §3.4)", () => {
     const { user } = await openDetail(() => {
       calls += 1;
       if (calls === 1) {
-        throw faroError("engine.timeout");
+        return rejectWith(faroError("engine.timeout"))();
       }
       return runDetailFixture();
     });
@@ -100,7 +100,7 @@ describe("Detalle de la tarea (spec F1b §3.4)", () => {
     expect(
       within(steps)
         .getAllByRole("listitem")
-        .map((item) => item.textContent?.replace(/\s+/g, " ")),
+        .map((item) => item.textContent.replace(/\s+/g, " ")),
     ).toEqual([
       "Leyendo tu sitioHecho0,00 US$",
       "Ordenando tu contenidoHechomenos de 0,01 US$",
@@ -117,8 +117,7 @@ describe("Detalle de la tarea (spec F1b §3.4)", () => {
           .getAllByRole("tooltip")
           .some(
             (tip) =>
-              tip.textContent?.replace(/\s+/g, " ") ===
-              "2861 tokens usados. Como mucho: 0,12 US$.",
+              tip.textContent.replace(/\s+/g, " ") === "2861 tokens usados. Como mucho: 0,12 US$.",
           ),
       ).toBe(true);
     });
@@ -147,7 +146,10 @@ describe("Detalle de la tarea (spec F1b §3.4)", () => {
   });
 
   it.each([
-    ["approval.not_ready", "Esta propuesta aún se está preparando. Intenta de nuevo en unos segundos."],
+    [
+      "approval.not_ready",
+      "Esta propuesta aún se está preparando. Intenta de nuevo en unos segundos.",
+    ],
     ["approval.already_decided", "Esta propuesta ya se decidió."],
   ])("%s: toast con el mensaje", async (code, text) => {
     const { user, ipc } = await openDetail(() => runDetailFixture(), {
@@ -183,7 +185,9 @@ describe("Detalle de la tarea (spec F1b §3.4)", () => {
 
     expect(within(result).getByText("<script>alert(1)</script>")).toBeInTheDocument();
     expect(
-      within(result).getByText("<b>negrita</b> y [enlace](https://ejemplo.com) https://ejemplo.com"),
+      within(result).getByText(
+        "<b>negrita</b> y [enlace](https://ejemplo.com) https://ejemplo.com",
+      ),
     ).toBeInTheDocument();
     expect(within(result).getByText("<img src=x onerror=alert(1)>")).toBeInTheDocument();
     expect(within(result).getByText("<a href='https://x.com'>clic</a>")).toBeInTheDocument();
