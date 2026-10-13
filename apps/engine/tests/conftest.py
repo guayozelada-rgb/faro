@@ -10,21 +10,25 @@ from collections.abc import AsyncIterator, Generator, Iterator
 from pathlib import Path
 from typing import Any
 
-import httpx
 import pytest
-from fastapi import FastAPI
 
-from faro_engine import __version__
-from faro_engine.core.app import create_app
-from faro_engine.core.config import Settings
 from tests.network_guard import NetworkGuard, fail_on_network_attempts, install
+
+# Spec F1b §4.7 (condición T6-C5): ninguna conexión fuera de loopback en todo el proceso de
+# pytest. Se instala **antes** de importar el motor y sus dependencias (revisión de seguridad
+# de T11, hallazgo 3d): así cubre también lo que hagan al importarse. Ver
+# `tests/network_guard.py`.
+NETWORK_GUARD = install()
+
+import httpx  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+
+from faro_engine import __version__  # noqa: E402
+from faro_engine.core.app import create_app  # noqa: E402
+from faro_engine.core.config import Settings  # noqa: E402
 
 ENGINE_DIR = Path(__file__).resolve().parents[1]
 TEST_PORT = 50123
-
-# Spec F1b §4.7 (condición T6-C5): ninguna conexión fuera de loopback en todo el proceso de
-# pytest, desde que se carga este archivo. Ver `tests/network_guard.py`.
-NETWORK_GUARD = install()
 
 
 @pytest.fixture(autouse=True)

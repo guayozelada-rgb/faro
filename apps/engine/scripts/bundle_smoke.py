@@ -89,6 +89,10 @@ FAKE_KEYS = {
 }
 F1B_MODULES = ("litellm", "langgraph", "apscheduler", "respx", "trustme")
 MANUAL_SCRIPTS = ("manual_llm_check", "manual_llm_models_check", "manual_tls_check")
+# Módulos del proxy de LiteLLM que no deben cargarse nunca en el motor (revisión de
+# seguridad de T11, hallazgo 2): `proxy_server` hace `sys.path.insert(0, abspath("../.."))`
+# al importarse. Excluirlos del paquete con `--exclude-module` queda para release.
+FORBIDDEN_LITELLM_MODULES = ("litellm.proxy.proxy_server", "litellm.proxy.prisma_migration")
 OFFICIAL_URLS = {
     "openai": "https://api.openai.com/v1/chat/completions",
     "anthropic": "https://api.anthropic.com/v1/messages",
@@ -517,6 +521,11 @@ def check_adapter(_tmp: Path) -> dict[str, Any]:
             problems.append(f"llamadas: {bad or ''} {wrong or ''} {calls['other_hosts'] or ''}")
     elif getattr(sys, "frozen", False):
         report["calls"] = "skipped"
+    # Después de las llamadas: nada del servidor proxy de LiteLLM se cargó (hallazgo 2).
+    loaded = [name for name in FORBIDDEN_LITELLM_MODULES if name in sys.modules]
+    report["forbidden_modules_loaded"] = loaded
+    if loaded:
+        problems.append(f"módulos del proxy de LiteLLM cargados: {loaded}")
     if problems:
         raise RuntimeError("; ".join(problems))
     return report

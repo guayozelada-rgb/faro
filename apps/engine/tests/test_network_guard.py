@@ -17,6 +17,7 @@ import httpx
 import pytest
 
 from tests.network_guard import (
+    GUARD,
     DnsBlockedError,
     NetworkBlockedError,
     NetworkGuard,
@@ -113,6 +114,46 @@ def test_dns_inverso_y_gethostbyname_fuera_de_loopback_fallan(
     ]
 
 
+def test_dns_inverso_con_getnameinfo_falla(network_guard: NetworkGuard) -> None:
+    """Hallazgo 3a de la revisión de T11: `getnameinfo` también hace DNS inverso."""
+    with pytest.raises(NetworkBlockedError):
+        socket.getnameinfo((OUTSIDE_IP, 443), 0)
+    assert network_guard.take() == [f"socket.getnameinfo:{OUTSIDE_IP}"]
+
+
+def test_getnameinfo_numerico_o_en_loopback_se_permite(network_guard: NetworkGuard) -> None:
+    flags = socket.NI_NUMERICHOST | socket.NI_NUMERICSERV
+    assert socket.getnameinfo((OUTSIDE_IP, 443), flags) == (OUTSIDE_IP, "443")
+    assert socket.getnameinfo(("127.0.0.1", 443), socket.NI_NUMERICSERV)[1] == "443"
+    assert network_guard.take() == []
+
+
+def test_getnameinfo_sin_el_envoltorio_falla_cerrado(network_guard: NetworkGuard) -> None:
+    """El evento de auditoría no trae los `flags`: saltarse `socket.getnameinfo` (y su
+    marca de `NI_NUMERICHOST`) se bloquea aunque la llamada fuera numérica."""
+    import _socket
+
+    with pytest.raises(NetworkBlockedError):
+        _socket.getnameinfo((OUTSIDE_IP, 443), socket.NI_NUMERICHOST)
+    assert network_guard.take() == [f"socket.getnameinfo:{OUTSIDE_IP}"]
+
+
+@pytest.mark.parametrize("host", ["x.localhost", "faro.localhost", "localhost."])
+def test_subdominios_de_localhost_no_se_resuelven(network_guard: NetworkGuard, host: str) -> None:
+    """Hallazgo 3b: solo `localhost` exacto; `*.localhost` podría ir al DNS."""
+    with pytest.raises(DnsBlockedError):
+        socket.getaddrinfo(host, 80)
+    assert network_guard.take() == [f"socket.getaddrinfo:{host}"]
+
+
+def test_el_bloqueo_se_instala_antes_de_importar_el_motor() -> None:
+    """Hallazgo 3d: `conftest.py` instala el gancho antes de importar `faro_engine.core.app`
+    (y lo que este importa), así cubre también lo que hagan al importarse."""
+    assert GUARD.installed
+    assert "faro_engine.core.app" not in GUARD.engine_modules_at_install
+    assert GUARD.engine_modules_at_install <= {"faro_engine"}
+
+
 async def test_asyncio_fuera_de_loopback_falla(network_guard: NetworkGuard) -> None:
     """También con el bucle de asyncio (en Windows, `ProactorEventLoop` y `ConnectEx`)."""
     with pytest.raises(NetworkBlockedError):
@@ -160,8 +201,9 @@ def test_loopback_y_sus_nombres_siguen_funcionando(network_guard: NetworkGuard) 
         ("[::1]", True),
         ("::ffff:127.0.0.1", True),
         ("localhost", True),
-        ("LOCALHOST.", True),
-        ("faro.localhost", True),
+        ("LOCALHOST", True),
+        ("LOCALHOST.", False),
+        ("faro.localhost", False),
         (b"127.0.0.1", True),
         ("0.0.0.0", False),
         ("10.0.0.1", False),

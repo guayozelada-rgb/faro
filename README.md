@@ -290,7 +290,7 @@ Cada pull request hacia `main`, cada push a `main` y cada ejecución manual lanz
 | Trabajo | Runner | Qué comprueba |
 | --- | --- | --- |
 | `ts` | Ubuntu | Prettier, ESLint, `tsc` y Vitest con cobertura (70 %) |
-| `engine` | Ubuntu, Windows y macOS | `ruff format --check`, `ruff check`, `mypy --strict` y pytest con cobertura (80 % global; 95 % en cada módulo de `strict_modules` de `apps/engine/pyproject.toml`: seguridad, protocolo, capa de IA, agentes y cola). Las pruebas no pueden salir de `127.0.0.1`: cualquier intento hace fallar la prueba |
+| `engine` | Ubuntu, Windows y macOS | `ruff format --check`, `ruff check`, `mypy --strict` y pytest con cobertura (80 % global; 95 % en cada módulo de `strict_modules` de `apps/engine/pyproject.toml`: seguridad, protocolo, capa de IA, agentes y cola). Dentro del proceso de pytest, las pruebas no pueden salir de `127.0.0.1`: cualquier intento hace fallar la prueba. El bloqueo no llega a los procesos hijos que lanzan algunas pruebas (las sondas llevan el suyo) |
 | `core` | Windows | Build de la interfaz, `cargo fmt --check`, `clippy -D warnings`, pruebas con `cargo llvm-cov` (falla si la cobertura de líneas baja del 80 % global o del 95 % en `vault/`, `secrets/`, `profile/` y `engine/protocol.rs`) y el arranque real del motor (`engine_real`) |
 | `contracts` | Ubuntu | `npm run contracts` no deja diferencias en `packages/shared` |
 | `wp-plugin` | Ubuntu | Plugin de WordPress: PHPCS (WordPress Coding Standards), PHPStan y el zip del plugin (contenido y hash estable) |

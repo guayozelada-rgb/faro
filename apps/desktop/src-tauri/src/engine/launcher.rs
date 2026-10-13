@@ -384,7 +384,9 @@ impl EngineLauncher for DevVenvLauncher {
 ///   El motor, además, vuelve a fijar ese mismo directorio al arrancar (`engine_workdir`).
 /// - Argumentos fijos: nunca `--dev`, `--allow-local-sites` ni `--fake-llm` (no hay forma
 ///   de pedirlos aquí; el motor empaquetado además los rechaza con código 2).
-/// - `program` debe ser una ruta absoluta.
+/// - `program` y `data_dir` deben ser rutas absolutas (revisión de seguridad de T11,
+///   hallazgo 4): una carpeta de datos relativa se resolvería contra el directorio de
+///   trabajo, que es la carpeta de instalación.
 #[derive(Debug, Clone)]
 pub struct SidecarLauncher {
     program: PathBuf,
@@ -394,10 +396,15 @@ pub struct SidecarLauncher {
 
 impl SidecarLauncher {
     /// `program`: ruta absoluta del ejecutable del motor; `data_dir`: carpeta de datos de la
-    /// app (`--data-dir`). Una ruta relativa o sin carpeta → `engine.start_failed`.
+    /// app (`--data-dir`). Una ruta relativa (de cualquiera de las dos) o un ejecutable sin
+    /// carpeta → `engine.start_failed`.
     pub fn new(program: PathBuf, data_dir: PathBuf) -> Result<Self, AppError> {
         if !program.is_absolute() {
             tracing::error!("la ruta del motor empaquetado no es absoluta");
+            return Err(AppError::engine_start_failed("spawn"));
+        }
+        if !data_dir.is_absolute() {
+            tracing::error!("la carpeta de datos del motor empaquetado no es absoluta");
             return Err(AppError::engine_start_failed("spawn"));
         }
         let Some(workdir) = program
@@ -619,7 +626,8 @@ mod tests {
     fn sidecar_directorio_de_trabajo_es_la_carpeta_de_instalacion() {
         let install = tempfile::tempdir().unwrap();
         let program = install.path().join("faro-engine.exe");
-        let launcher = SidecarLauncher::new(program.clone(), PathBuf::from("/datos/faro")).unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let launcher = SidecarLauncher::new(program.clone(), data.path().to_path_buf()).unwrap();
         assert_eq!(launcher.workdir(), install.path());
         let command = launcher.command();
         let std_command = command.as_std();
@@ -639,13 +647,14 @@ mod tests {
     #[test]
     fn sidecar_sin_modos_de_desarrollo_ni_variables_heredadas() {
         let install = tempfile::tempdir().unwrap();
-        let launcher = SidecarLauncher::new(
-            install.path().join("faro-engine.exe"),
-            PathBuf::from("datos"),
-        )
-        .unwrap();
-        let expected = ["--host", "127.0.0.1", "--port", "0", "--data-dir", "datos"]
-            .map(std::ffi::OsString::from);
+        let data = install.path().join("datos");
+        let launcher =
+            SidecarLauncher::new(install.path().join("faro-engine.exe"), data.clone()).unwrap();
+        let expected = ["--host", "127.0.0.1", "--port", "0", "--data-dir"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .chain([data.into_os_string()])
+            .collect::<Vec<_>>();
         assert_eq!(launcher.args(), expected);
         let command = launcher.command();
         let args: Vec<&std::ffi::OsStr> = command.as_std().get_args().collect();
@@ -681,12 +690,19 @@ mod tests {
 
     #[test]
     fn sidecar_rechaza_rutas_relativas_y_ejecutables_que_no_existen() {
-        let relative = SidecarLauncher::new(PathBuf::from("faro-engine.exe"), "datos".into());
-        assert_eq!(relative.err().unwrap().code, "engine.start_failed");
         let install = tempfile::tempdir().unwrap();
+        let data = install.path().join("datos");
+        let relative = SidecarLauncher::new(PathBuf::from("faro-engine.exe"), data.clone());
+        assert_eq!(relative.err().unwrap().code, "engine.start_failed");
+        // Hallazgo 4 de la revisión de T11: carpeta de datos relativa.
+        let relative_data = SidecarLauncher::new(
+            install.path().join("faro-engine.exe"),
+            PathBuf::from("datos"),
+        );
+        assert_eq!(relative_data.err().unwrap().code, "engine.start_failed");
         let missing = SidecarLauncher::new(
             install.path().join("no-existe").join("faro-engine.exe"),
-            "datos".into(),
+            data,
         )
         .unwrap();
         let err = missing.launch().err().unwrap();
@@ -699,7 +715,8 @@ mod tests {
     #[tokio::test]
     async fn sidecar_el_proceso_lanzado_trabaja_en_la_carpeta_de_instalacion() {
         let (program, probe_args) = cwd_probe();
-        let launcher = SidecarLauncher::new(program.clone(), PathBuf::from("datos")).unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let launcher = SidecarLauncher::new(program.clone(), data.path().to_path_buf()).unwrap();
         let mut command = launcher.base_command();
         command.args(&probe_args);
         #[cfg(windows)]

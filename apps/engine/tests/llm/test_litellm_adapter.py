@@ -211,6 +211,14 @@ def test_sin_red_ni_clave_en_caches_tras_las_llamadas() -> None:
     assert report["holders"] == dict.fromkeys(PROVIDERS, 0)
 
 
+def test_el_servidor_proxy_de_litellm_no_se_carga() -> None:
+    """Revisión de seguridad de T11, hallazgo 2: tras la matriz de llamadas de los tres
+    proveedores, ni `litellm.proxy.proxy_server` (hace `sys.path.insert(0, …)` al
+    importarse) ni `litellm.proxy.prisma_migration` están cargados. El humo del ejecutable
+    (`scripts/bundle_smoke.py`, comprobación `adapter`) lo repite empaquetado."""
+    assert matrix()["proxy_modules"] == []
+
+
 def test_configuracion_endurecida_aplicada() -> None:
     """Condiciones 2, 4, 5 y 20: entorno limpio, callbacks vacíos, loggers a stderr y
     contextos TLS inyectados con la subclase con cerrojo del motor."""

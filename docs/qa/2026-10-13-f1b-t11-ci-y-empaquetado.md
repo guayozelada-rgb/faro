@@ -5,7 +5,7 @@
 - **Rama:** `feat/f1b-t6-capa-llm-hz39c9` (reiniciada desde `main` con T1–T10)
 - **Spec:** [F1b](../specs/2026-10-05-f1b-capa-ia-y-motor-de-agentes.md) §4.7, §7, §8 (fila T11).
 - **Condiciones que cierra:** T6-C5 ([T6](2026-10-10-f1b-t6-capa-llm.md) §6); 12, 17 y la parte del núcleo de la 14 ([T2](2026-10-05-f1b-t2-dependencias.md) §12, [T7](2026-10-11-f1b-t7-cola-y-programador.md) §3); lanzador de release de [T5](2026-10-08-f1b-t5-condiciones.md) (punto 2); [T8](2026-10-11-f1b-t8-marco-de-agentes.md) §7–8; [T9](2026-10-11-f1b-t9-agente-resumen-del-sitio.md) §8; [T10](2026-10-12-f1b-t10-interfaz-de-agentes.md) §10.
-- **Estado:** implementado y verificado en Linux. **Pendiente:** lanzar `engine-bundle-smoke` en Windows (§7) y la revisión obligatoria de `revisor-seguridad` (T11 toca workflows, §8).
+- **Estado:** implementado y verificado en Linux. `revisor-seguridad` (commit `f311ace`): **aprobado con cambios**; hallazgos 2, 3 (a, b, d), 4 y 5 corregidos en el árbol y el resto como condiciones T11-C1 a T11-C3 (§10). **Pendiente:** lanzar `engine-bundle-smoke` en Windows (§7).
 
 ## 1. Qué se hizo
 
@@ -13,7 +13,7 @@
 | --- | --- |
 | `apps/engine/tests/network_guard.py` (nuevo) | Bloqueo de red de las pruebas con un gancho de auditoría (PEP 578): `socket.connect`, `sendto`, `sendmsg`, `getaddrinfo`, `gethostbyname(_ex)` y `gethostbyaddr` fuera de loopback lanzan `NetworkBlockedError` (`OSError`; con DNS, también `gaierror`) y quedan anotados. En Windows, además, `IocpProactor.connect`/`sendto` (`ConnectEx` no pasa por `socket.connect`). |
 | `apps/engine/tests/conftest.py` | Instala el bloqueo al cargarse (todo el proceso de pytest) y un *fixture* automático que hace **fallar** la prueba si hubo un intento, aunque el código se tragara el error. *Fixture* `network_guard` para las pruebas que lo provocan a propósito. |
-| `apps/engine/tests/test_network_guard.py` (nuevo) | 38 pruebas: conectar fuera de loopback (IPv4, IPv6, `_socket` y `connect_ex`, UDP, asyncio, httpx a `api.anthropic.com`) falla; resolver nombres públicos falla; un intento tragado hace fallar la prueba; loopback, `localhost`, `None` e IP literales siguen funcionando. |
+| `apps/engine/tests/test_network_guard.py` (nuevo) | 46 pruebas (con las de la revisión, §10): conectar fuera de loopback (IPv4, IPv6, `_socket` y `connect_ex`, UDP, asyncio, httpx a `api.anthropic.com`) falla; resolver nombres públicos falla; un intento tragado hace fallar la prueba; loopback, `localhost`, `None` e IP literales siguen funcionando. |
 | `apps/engine/tests/test_strict_coverage.py` (nuevo) | Los 10 módulos de §4.7 y los 61 que añadieron T3–T9 siguen en `strict_modules`, existen, el umbral es ≥ 95 %, `pytest` mide la cobertura por defecto y la CI ejecuta `pytest` en el trabajo `engine` (Ubuntu, Windows y macOS), que `ci-ok` exige. |
 | `apps/engine/tests/test_ci_workflows.py` (nuevo) | Ningún workflow ni script de npm ejecuta `scripts/manual_*`; los scripts manuales no están en `faro_engine`; en todos los workflows: sin `pull_request_target`/`workflow_run`, `permissions: contents: read` (única escritura: `security-events` del trabajo `upload` de CodeQL), acciones fijadas por SHA de 40 caracteres, `persist-credentials: false`, sin `secrets.` ni runners propios; `engine-bundle-smoke` solo `workflow_dispatch`, en `windows-latest`, ≤ 45 min y fuera de `ci-ok`. |
 | `apps/engine/scripts/bundle_smoke_build.py` | Reescrito: variantes `engine` (el motor real), `full` y `base`; `engine_pyinstaller_args` (opciones que debe usar el build de release); build sin red; `cl100k_base` del paquete en lugar de descargarlo; lanzamiento del motor real como el núcleo; `--variant` repetible. |
@@ -54,7 +54,7 @@
 | **T6-C5** (d): scripts `manual_*` fuera de la CI | No los lanza ningún workflow ni script de npm, no están en `faro_engine` ni en el paquete | `tests/test_ci_workflows.py`; humo `engine` (`find_spec` en el ejecutable) |
 | **T2-12**: hook de LiteLLM con lista permitida y build sin red | Decisiones 5 y 6 | Linux: "ninguna" red en las tres variantes; hallazgo medido en la decisión 5 |
 | **T2-17**: el ejecutable quita `SSLKEYLOGFILE` antes de cualquier import; humo con una conexión TLS en loopback | Decisión 3. `full` se lanza con `SSLKEYLOGFILE`: el archivo no existía al entrar (ningún hook de ejecución creó antes un contexto), el prólogo del motor la quita y una conexión TLS 1.3 real en 127.0.0.1 (certificado de `trustme`) no crea el archivo. **Control:** el mismo ejecutable con `--keylog-control` (sin el prólogo) sí lo crea. Además, el motor real arranca con `SSLKEYLOGFILE` y no lo crea | Linux: `keylog ok` (`created: false`, `existed_at_entry: false`), control `created: true`, motor real `keylog_created: false`. Nota: en el ejecutable `sys.flags.ignore_environment` es `True`, así que la biblioteca estándar ya ignora la variable, pero httpx, urllib3 y aiohttp la leen de `os.environ`: por eso la prueba la aplica igual que ellas |
-| **T2-14 (núcleo)** y T7 §3: directorio de trabajo fijo y no escribible del lanzador de release | `SidecarLauncher` (decisión 10): `current_dir` = carpeta del ejecutable (la de instalación), nunca la del núcleo, `%TEMP%` ni la de datos; ruta absoluta obligatoria | `sidecar_directorio_de_trabajo_es_la_carpeta_de_instalacion`; `sidecar_el_proceso_lanzado_trabaja_en_la_carpeta_de_instalacion` (proceso real: `pwd` o `cmd /c cd` imprime la carpeta del ejecutable, distinta de la del núcleo). El motor real del humo también se lanza con esa carpeta |
+| **T2-14 (núcleo)** y T7 §3: directorio de trabajo fijo y no escribible del lanzador de release. **Parcial** hasta T11-C1 (§10): con el instalador por usuario la carpeta de instalación es escribible | `SidecarLauncher` (decisión 10): `current_dir` = carpeta del ejecutable (la de instalación), nunca la del núcleo, `%TEMP%` ni la de datos; ruta absoluta obligatoria | `sidecar_directorio_de_trabajo_es_la_carpeta_de_instalacion`; `sidecar_el_proceso_lanzado_trabaja_en_la_carpeta_de_instalacion` (proceso real: `pwd` o `cmd /c cd` imprime la carpeta del ejecutable, distinta de la del núcleo). El motor real del humo también se lanza con esa carpeta |
 | **T5, punto 2**, y skill `tauri-sidecar-python` ("pendiente: prueba en el lanzador PyInstaller") | `SidecarLauncher` parte de `engine_command` y no tiene forma de pasar `--dev`, `--allow-local-sites` ni `--fake-llm` | `sidecar_sin_modos_de_desarrollo_ni_variables_heredadas`, `sidecar_rechaza_rutas_relativas_y_ejecutables_que_no_existen` |
 | **T9**: prompts `.md`, `models.json` y `llm/tiktoken` en el paquete; el humo carga el registro y ejecuta un grafo | Decisión 4. Comprobación `agents`: `validate_registry`, 2 prompts, 6 modelos del catálogo, respuestas de `--fake-llm`, `graph.py` con `load_graph_module()` (`importlib`) y un grafo con `interrupt` y reanudación. El motor real responde `/agents` → `site_summary` | `full`: `agents ok`; `engine`: `["site_summary"]` |
 | **T8**: repetir la sonda de `httpx2` con `FaroCheckpointSaver` | El grafo de `agents` usa `FaroCheckpointSaver` sobre una base cifrada (4 checkpoints guardados), con `LANGSMITH_TRACING`, `LANGSMITH_API_KEY` y `LANGCHAIN_TRACING_V2` en el entorno: el marco los quita, LangSmith queda apagado y `httpx2`/`httpcore2` no crean ningún contexto TLS | `full`: `langsmith_env_before: 3`, `httpx2_contexts: 0`, sin intentos de red. El constructor exige `langsmith_env_before ≥ 1` (si no, la comprobación sería vacía) |
@@ -96,7 +96,7 @@ Workflows y Dependabot:
 | --- | --- |
 | `actionlint` 1.7.12 (binario oficial, SHA-256 comprobado) sobre `.github/workflows/*.yml` | Sin errores (sin `shellcheck`: no está instalado) |
 | `.github/dependabot.yml` contra el esquema `dependabot-2.0.json` de SchemaStore | Válido |
-| `tests/test_ci_workflows.py` | 22 pruebas en verde (más 59 de `test_strict_coverage.py` y 38 de `test_network_guard.py`: las 119 nuevas de la suite) |
+| `tests/test_ci_workflows.py` | 22 pruebas en verde (más 59 de `test_strict_coverage.py` y 38 de `test_network_guard.py`: las 119 nuevas de la suite). Tras la revisión: 26, 59 y 46 (§10) |
 
 Núcleo Rust (no compila aquí: falta GTK):
 
@@ -141,3 +141,44 @@ Secciones 3, 5, 9 y 10 de `revision-seguridad` y §7 de la spec. Puntos concreto
 - Skill `release-y-firma`: el build de release debe reutilizar `engine_pyinstaller_args` y `--no-dev`; conectar `SidecarLauncher` con la verificación de integridad.
 - Skill `pruebas-faro`: bloqueo de red global (`tests/network_guard.py`, *fixture* `network_guard`).
 - Spec: valorar añadir a `strict_modules` los módulos de la decisión 11.
+
+## 10. Revisión de seguridad (2026-10-13)
+
+Veredicto de `revisor-seguridad` sobre el commit `f311ace`: **aprobado con cambios**, con seis hallazgos.
+
+| # | Hallazgo | Estado | Prueba |
+| --- | --- | --- | --- |
+| 1 | **(Medio, release)** Con el instalador por usuario (modo por defecto de NSIS en Tauri), la carpeta de instalación es escribible por el usuario: el directorio de trabajo fijo de `SidecarLauncher` no es "no escribible" y un `tiktoken_ext/x.py` puesto ahí se ejecutaría en el motor | **Condición T11-C1** (abajo). T2-14 (parte del núcleo) queda **parcial** | — |
+| 2 | `litellm.proxy.proxy_server` hace `sys.path.insert(0, abspath("../.."))` al importarse; nada comprobaba que no se cargue | Corregido: la comprobación `adapter` de `scripts/bundle_smoke.py`, **después** de las llamadas, falla si `litellm.proxy.proxy_server` o `litellm.proxy.prisma_migration` están en `sys.modules` (`forbidden_modules_loaded`). La sonda del adaptador lo repite en la CI. Excluirlos del paquete con `--exclude-module` queda para release (abajo) | `test_el_servidor_proxy_de_litellm_no_se_carga` (`tests/llm/test_litellm_adapter.py`, matriz de los tres proveedores); humo `full` en Linux: `adapter ok`, `forbidden_modules_loaded: []` |
+| 3a | `socket.getnameinfo` (DNS inverso) no estaba bloqueado | Corregido en `tests/network_guard.py`: se bloquea salvo con `NI_NUMERICHOST` o sobre loopback. El evento de auditoría no trae los `flags`, así que un envoltorio de `socket.getnameinfo` marca en el hilo las llamadas numéricas; quien se lo salte (`_socket.getnameinfo`) se bloquea siempre (falla cerrado) | `test_dns_inverso_con_getnameinfo_falla` (`getnameinfo(("203.0.113.10", 443), 0)` → `NetworkBlockedError`), `test_getnameinfo_numerico_o_en_loopback_se_permite`, `test_getnameinfo_sin_el_envoltorio_falla_cerrado` |
+| 3b | En DNS se aceptaba `*.localhost`, que según el sistema puede ir al DNS | Corregido: solo `localhost` exacto (también en `connect`) | `test_subdominios_de_localhost_no_se_resuelven` (`x.localhost`, `faro.localhost`, `localhost.` → `DnsBlockedError`); casos nuevos en `test_que_cuenta_como_loopback` |
+| 3c | Los procesos hijos de las pruebas no heredan el bloqueo | **Condición T11-C2** (abajo). README y docstring matizados: el bloqueo cubre el proceso de pytest, no sus hijos | — |
+| 3d | `conftest.py` importaba `faro_engine.core.app` antes de instalar el gancho | Corregido: `install()` va antes de importar `httpx`, FastAPI y el motor; `install()` anota qué módulos del motor estaban ya cargados | `test_el_bloqueo_se_instala_antes_de_importar_el_motor` (`faro_engine.core.app` no estaba cargado al instalar) |
+| 4 | `SidecarLauncher::new` aceptaba un `data_dir` relativo, que el motor resolvería contra la carpeta de instalación | Corregido (`launcher.rs`): `engine.start_failed` si `data_dir` no es absoluto. Las pruebas usan carpetas temporales absolutas (en Windows, `/datos/faro` no es absoluta) | `sidecar_rechaza_rutas_relativas_y_ejecutables_que_no_existen` (caso nuevo). Compilado en el crate aparte: `cargo test` 4/4, `clippy --all-targets -D warnings` sin avisos; `cargo fmt --check` en el crate real sin diferencias |
+| 5 | `tests/test_ci_workflows.py` incompleto | Corregido: también `*.yaml`; `\bsecrets\b` en claves y valores (no en comentarios); prohibido `${{` dentro de cualquier `run:`; `jobs.<id>.uses` (workflows reutilizables) fijado por SHA; todo parametrizado sobre todos los workflows | `test_sin_secretos_ni_runners_propios`, `test_sin_expresiones_dentro_de_run`, `test_acciones_y_workflows_reutilizables_fijados_por_sha_completo` y el control `test_las_reglas_detectan_un_workflow_que_las_incumple` (un workflow inventado con `checkout@v7`, `echo ${{ github.event.pull_request.title }}`, `secrets.DEPLOY_TOKEN`, `secrets: inherit` y un reutilizable `@main`) |
+| 6 | Quedan comprobaciones del empaquetado y del entorno que no se hacen | **Condición T11-C3** (abajo) | — |
+
+### Condiciones para tareas posteriores
+
+1. **T11-C1 (hallazgo 1, medio; release).** La carpeta de instalación no puede ser escribible por el usuario, o su contenido debe verificarse entero. Opciones: instalar por máquina (`bundle.windows.nsis.installMode = "perMachine"`, en `Program Files`) o verificar la integridad de **toda** la carpeta del motor con un manifiesto firmado que rechace archivos no listados. Prueba: añadir un `tiktoken_ext/x.py` a la carpeta del motor hace que no arranque (`engine.integrity_failed`). Hasta entonces, la parte del núcleo de T2-14 queda **parcial**.
+2. **T11-C2 (hallazgo 3c; T12).** Los procesos hijos de las pruebas (el motor en las pruebas de protocolo, las sondas) no heredan el bloqueo. Solución: un `sitecustomize` de pruebas en el `PYTHONPATH` de los hijos que instale el mismo gancho y anote los intentos en un archivo que el *fixture* automático revise al terminar cada prueba.
+3. **T11-C3 (hallazgo 6; T12 y release).**
+   - Leer el PYZ del `faro-engine` real y fallar si aparecen `sitecustomize`, `manual_*`, `respx`, `trustme` o `pytest`.
+   - Reutilizar en `bundle_smoke.py` el gancho de auditoría de `tests/network_guard.py` en lugar de parchear `socket`.
+   - Una prueba que compare `ENGINE_ENV_ALLOWLIST` de `bundle_smoke_build.py` con la de `launcher.rs`.
+   - En release, build sin red a nivel del sistema operativo (no solo el `sitecustomize`).
+4. **Release: excluir el proxy de LiteLLM del paquete** (`--exclude-module` de `litellm.proxy.proxy_server`, `litellm.proxy.prisma_migration` y lo que se pueda del resto, decisión 5), con el humo `adapter` como red de seguridad.
+
+### Verificaciones tras las correcciones (2026-10-13)
+
+| Comando | Resultado |
+| --- | --- |
+| `uv run --native-tls pytest` (desde `apps/engine`) | `2 failed, 2614 passed, 2 skipped, 2 deselected in 398.69s`; cobertura total 99 %; los 71 `strict_modules` ≥ 95 %. Los dos fallos son los conocidos del proxy, con el mismo mensaje; `net/tls.py:204` sin cubrir |
+| `uv run --native-tls ruff check .` | `All checks passed!` |
+| `uv run --native-tls ruff format --check .` | `269 files already formatted` |
+| `uv run --native-tls mypy faro_engine tests scripts` | `Success: no issues found in 264 source files` |
+| `npm run format:check` (raíz) | Prettier, `cargo fmt --check` y ruff sin diferencias |
+| Humo en Linux, `engine` (sin `dev`) | ok: 164,7 MiB, sin red en el build; `--fake-llm`, `--allow-local-sites` y `--dev` → 2; `ready` en 0,8 s; `/agents` → `['site_summary']`; `shutdown` → 0; `SSLKEYLOGFILE` no creado |
+| Humo en Linux, `full` (con `dev`) | ok: las 10 comprobaciones; `adapter` con `forbidden_modules_loaded: []`; control de `SSLKEYLOGFILE` ok |
+
+No se tocaron workflows en estas correcciones (`actionlint` no hace falta de nuevo).
