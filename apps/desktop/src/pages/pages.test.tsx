@@ -30,12 +30,13 @@ const PAGES: PageCase[] = [
     headingLevel: 3,
   },
   {
+    // F1b: la Bandeja ya funciona; sin propuestas mantiene el texto de F0 (spec F1b §3.5).
     path: "/inbox",
     section: "Bandeja",
     title: "Nada por aprobar",
     description: "Antes de publicar o gastar dinero, los agentes te pedirán permiso aquí.",
     action: null,
-    comingSoon: true,
+    comingSoon: false,
   },
   {
     path: "/research",
@@ -72,14 +73,6 @@ const PAGES: PageCase[] = [
     comingSoon: true,
   },
   {
-    path: "/agents",
-    section: "Agentes",
-    title: "Conoce a tus agentes",
-    description: "Investigan, revisan y escriben por ti. Tú decides qué se publica.",
-    action: null,
-    comingSoon: true,
-  },
-  {
     path: "/settings",
     section: "Configuración",
     title: "Conecta tu sitio de WordPress",
@@ -91,7 +84,8 @@ const PAGES: PageCase[] = [
   },
 ];
 
-describe("estados vacíos de las 8 secciones", () => {
+// Agentes deja de ser "próximamente" en F1b: sus estados se prueban en AgentsPage.test.tsx.
+describe("estados vacíos de las secciones", () => {
   beforeEach(() => {
     // Sin sitios ni claves: Inicio muestra la bienvenida y Configuración su estado vacío.
     mockSitesIpc({ listSites: () => ({ items: [], next_cursor: null }) });
@@ -179,7 +173,7 @@ describe("Configuración: pestañas", () => {
       within(tabs)
         .getAllByRole("tab")
         .map((tab) => tab.textContent),
-    ).toEqual(["Sitios conectados", "Claves de IA"]);
+    ).toEqual(["Sitios conectados", "Claves de IA", "Autonomía"]);
     expect(within(tabs).getByRole("tab", { name: "Sitios conectados" })).toHaveAttribute(
       "aria-selected",
       "true",

@@ -1,5 +1,6 @@
 import { type QueryClient, useQuery } from "@tanstack/react-query";
 
+import { AGENT_ESTIMATE_PREFIX, LLM_USAGE_QUERY_KEY } from "@/features/agents/queryKeys";
 import type { KeySummary } from "@/lib/api/types";
 import { listKeys } from "@/lib/api/vault";
 
@@ -21,7 +22,12 @@ export function updateKeySummary(queryClient: QueryClient, summary: KeySummary):
   );
 }
 
-/** Vuelve a leer la lista desde el núcleo. */
+/**
+ * Vuelve a leer la lista desde el núcleo. Al agregar o borrar una clave también cambian el gasto
+ * por proveedor y el estimado de los agentes (el núcleo avisa al motor con `agents_control`).
+ */
 export function refreshVaultKeys(queryClient: QueryClient): Promise<void> {
+  void queryClient.invalidateQueries({ queryKey: LLM_USAGE_QUERY_KEY });
+  void queryClient.invalidateQueries({ queryKey: AGENT_ESTIMATE_PREFIX });
   return queryClient.invalidateQueries({ queryKey: VAULT_KEYS_QUERY_KEY });
 }

@@ -11,6 +11,7 @@ import { ResearchPage } from "@/pages/ResearchPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 
 import { AppShell } from "./AppShell";
+import { RouteError } from "./RouteError";
 import { type SectionId, SECTIONS } from "./sections";
 
 const PAGES: Record<SectionId, ComponentType> = {
@@ -30,13 +31,20 @@ export const routes: RouteObject[] = [
     path: "/",
     element: <AppShell />,
     children: [
-      ...SECTIONS.map((section): RouteObject => {
-        const Page = PAGES[section.id];
-        return section.path === "/"
-          ? { index: true, element: <Page /> }
-          : { path: section.path.slice(1), element: <Page /> };
-      }),
-      { path: "*", element: <Navigate to="/" replace /> },
+      {
+        // Ruta sin camino que envuelve las secciones: su `errorElement` se pinta dentro del
+        // `<Outlet/>` de `AppShell`, así un fallo de una pantalla no tumba la barra superior.
+        errorElement: <RouteError />,
+        children: [
+          ...SECTIONS.map((section): RouteObject => {
+            const Page = PAGES[section.id];
+            return section.path === "/"
+              ? { index: true, element: <Page /> }
+              : { path: section.path.slice(1), element: <Page /> };
+          }),
+          { path: "*", element: <Navigate to="/" replace /> },
+        ],
+      },
     ],
   },
 ];

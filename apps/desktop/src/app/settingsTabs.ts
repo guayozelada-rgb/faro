@@ -1,12 +1,13 @@
 import { getSection } from "./sections";
 
 /** Pestañas de Configuración; su valor va en la URL (`?tab=`) (spec F1a §3.1). */
-export const SETTINGS_TABS = ["sites", "ai-keys"] as const;
+export const SETTINGS_TABS = ["sites", "ai-keys", "autonomy"] as const;
 
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 export const SITES_TAB: SettingsTab = "sites";
 export const AI_KEYS_TAB: SettingsTab = "ai-keys";
+export const AUTONOMY_TAB: SettingsTab = "autonomy";
 
 /** "Sitios conectados" es la pestaña por defecto. */
 export const DEFAULT_SETTINGS_TAB: SettingsTab = SITES_TAB;

@@ -61,6 +61,34 @@ const COUNT_DETAIL: Readonly<Record<string, string>> = {
   "site.pairing_code_invalid": "attempts_left",
 };
 
+const PROVIDER_IDS: readonly string[] = ["anthropic", "openai", "gemini"];
+
+/** Contexto que la interfaz conoce y el error no trae (p. ej. el proveedor de una tarea). */
+export interface ErrorContext {
+  /** Proveedor de IA de la tarea; `details.provider` del error tiene prioridad. */
+  provider?: string | null;
+}
+
+/**
+ * `{{provider}}` de los errores `llm.*` (spec F1b §5.5): nombre visible del proveedor desde
+ * `details.provider` o desde el contexto; si no se sabe, "tu proveedor de IA".
+ */
+function providerOptions(
+  i18n: I18n,
+  error: FaroError,
+  context: ErrorContext,
+): Record<string, string> {
+  const fromDetails = error.details.provider;
+  const candidate = typeof fromDetails === "string" ? fromDetails : context.provider;
+  const provider =
+    typeof candidate === "string" && PROVIDER_IDS.includes(candidate) ? candidate : null;
+  const name =
+    provider === null
+      ? i18n.t("providers.unknown", { ns: "common" })
+      : i18n.t(`vault.providerShort.${provider}`, { ns: "settings" });
+  return { provider: name };
+}
+
 /** Opciones de interpolación a partir de `details`: solo enteros no negativos conocidos. */
 function countOptions(error: FaroError): Record<string, number> {
   const detail = COUNT_DETAIL[error.code];
@@ -77,12 +105,14 @@ function countOptions(error: FaroError): Record<string, number> {
 function catalogMessage(
   i18n: I18n,
   code: string,
-  options: Record<string, number> = {},
+  options: Record<string, number | string> = {},
 ): string | null {
   for (const lng of i18n.languages) {
     const value: unknown = i18n.getResource(lng, "errors", code);
     if (typeof value === "string" && value.length > 0) {
-      return i18n.t(code, { ns: "errors", lng, nsSeparator: false, ...options });
+      const text = i18n.t(code, { ns: "errors", lng, nsSeparator: false, ...options });
+      // "{{provider}} tuvo un problema" con "tu proveedor de IA" empieza en minúscula.
+      return text.charAt(0).toLocaleUpperCase(lng) + text.slice(1);
     }
   }
   return null;
@@ -92,9 +122,16 @@ function catalogMessage(
  * Texto para el usuario a partir de un error (ADR 0002):
  * catálogo `errors:<code>` → `message` del backend → mensaje de `internal.unexpected`.
  */
-export function getErrorMessage(error: unknown, i18n: I18n = defaultI18n): string {
+export function getErrorMessage(
+  error: unknown,
+  i18n: I18n = defaultI18n,
+  context: ErrorContext = {},
+): string {
   const faroError = toFaroError(error);
-  const fromCatalog = catalogMessage(i18n, faroError.code, countOptions(faroError));
+  const fromCatalog = catalogMessage(i18n, faroError.code, {
+    ...providerOptions(i18n, faroError, context),
+    ...countOptions(faroError),
+  });
   if (fromCatalog !== null) {
     return fromCatalog;
   }

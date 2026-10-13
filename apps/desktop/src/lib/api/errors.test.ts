@@ -152,3 +152,30 @@ describe("isFaroErrorData", () => {
     expect(isFaroErrorData("a.b")).toBe(false);
   });
 });
+
+describe("getErrorMessage: {{provider}} de los errores llm.* (spec F1b §5.5)", () => {
+  it("toma el proveedor de details.provider", () => {
+    expect(getErrorMessage(new FaroError("llm.rate_limited", "", { provider: "openai" }))).toBe(
+      "OpenAI está recibiendo demasiadas solicitudes. Intenta de nuevo en unos minutos.",
+    );
+  });
+
+  it("o del contexto (el proveedor de la tarea)", () => {
+    expect(
+      getErrorMessage(new FaroError("llm.invalid_key"), undefined, { provider: "gemini" }),
+    ).toBe(
+      "Tu clave de Google Gemini dejó de funcionar. Reemplázala en Configuración → Claves de IA.",
+    );
+  });
+
+  it("details.provider gana al contexto y un valor desconocido usa el genérico", () => {
+    expect(
+      getErrorMessage(new FaroError("llm.timeout", "", { provider: "anthropic" }), undefined, {
+        provider: "openai",
+      }),
+    ).toBe("Anthropic tardó demasiado en responder. Intenta de nuevo.");
+    expect(getErrorMessage(new FaroError("llm.provider_error", "", { provider: "<b>x</b>" }))).toBe(
+      "Tu proveedor de IA tuvo un problema. Intenta de nuevo en unos minutos.",
+    );
+  });
+});

@@ -6,6 +6,8 @@ import { afterEach, beforeEach, expect } from "vitest";
 
 import { toast } from "sonner";
 
+import { resetPauseNotSavedForTests } from "@/features/agents/pauseNotSaved";
+import { resetEngineReadyRetriesForTests } from "@/features/agents/queries";
 import { resetSiteActivityForTests } from "@/features/sites/siteActivity";
 import { resetAutoCheckSessionForTests } from "@/features/sites/useAutoCheckSites";
 import { resetKeyActivityForTests } from "@/features/vault/keyActivity";
@@ -49,6 +51,8 @@ beforeEach(() => {
   // Y para la comprobación automática de sitios.
   resetAutoCheckSessionForTests();
   resetSiteActivityForTests();
+  resetEngineReadyRetriesForTests();
+  resetPauseNotSavedForTests();
 });
 
 afterEach(() => {

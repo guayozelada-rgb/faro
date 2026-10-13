@@ -3,5 +3,196 @@
   "emptyState": {
     "title": "Conoce a tus agentes",
     "description": "Investigan, revisan y escriben por ti. Tú decides qué se publica."
+  },
+  "kinds": {
+    "site_summary": {
+      "title": "Resumen del sitio",
+      "description": "Lee tu sitio y te cuenta en pocas palabras qué vendes y a quién."
+    },
+    "unknown": {
+      "title": "Un agente",
+      "description": "Un agente de Faro que trabaja en tu sitio."
+    }
+  },
+  "steps": {
+    "read_site": "Leyendo tu sitio",
+    "classify_content": "Ordenando tu contenido",
+    "write_summary": "Escribiendo el resumen",
+    "propose_save": "Preparando la propuesta",
+    "save_summary": "Guardando el resumen",
+    "unknown": "Trabajando"
+  },
+  "status": {
+    "queued": "En cola",
+    "queuedDailyLimit": "En cola hasta mañana",
+    "running": "Trabajando",
+    "waiting_approval": "Espera tu OK",
+    "paused": "En pausa",
+    "succeeded": "Listo",
+    "succeededDiscarded": "Listo · descartado",
+    "failed": "No se pudo terminar",
+    "cancelled": "Cancelada",
+    "unknown": "En proceso",
+    "whyLabel": "Por qué espera"
+  },
+  "reasons": {
+    "daily_limit": "Llegaste al límite de gasto de hoy.",
+    "cancel_requested": "Estamos cancelando la tarea.",
+    "interrupted": "Se interrumpió al cerrar Faro. Seguirá sola.",
+    "agents_paused": "Seguirá cuando reanudes los agentes.",
+    "dependency_failed": "Se canceló porque la tarea anterior no terminó.",
+    "user_cancelled": "La cancelaste tú."
+  },
+  "catalog": {
+    "title": "Qué hacer ahora",
+    "launch": "Lanzar",
+    "launchLabel": "Lanzar {{agent}}",
+    "needsSite": "Conecta tu sitio para usar este agente.",
+    "connectSite": "Conectar tu sitio",
+    "needsKey": "Agrega una clave de IA para usar este agente.",
+    "addKey": "Agregar clave de IA",
+    "loadingLabel": "Cargando los agentes",
+    "empty": "Esta versión de Faro todavía no tiene agentes.",
+    "retry": "Intentar de nuevo",
+    "retrying": "Intentando de nuevo…"
+  },
+  "spend": {
+    "title": "Gasto de hoy",
+    "today": "Hoy los agentes gastaron {{amount}}.",
+    "detailLabel": "Ver el gasto de hoy por proveedor",
+    "provider": "{{provider}}: {{spent}} de {{limit}}",
+    "noKeys": "Todavía no tienes claves de IA.",
+    "viewLimits": "Ver límites",
+    "loadingLabel": "Cargando el gasto de hoy",
+    "error": "No pudimos leer el gasto de hoy.",
+    "retry": "Intentar de nuevo",
+    "otherProvider": "Otro proveedor de IA"
+  },
+  "feed": {
+    "title": "Actividad",
+    "loadingLabel": "Cargando la actividad",
+    "emptyTitle": "Todavía no hay actividad.",
+    "emptyDescription": "Aquí verás a tus agentes mientras trabajan.",
+    "emptyAction": "Lanzar Resumen del sitio",
+    "retry": "Intentar de nuevo",
+    "retrying": "Intentando de nuevo…",
+    "runTitle": "{{agent}} · {{site}}",
+    "currentStep": "{{step}}…",
+    "cost": "Costo: {{amount}}"
+  },
+  "schedules": {
+    "title": "Programadas",
+    "note": "Las tareas programadas solo corren con Faro abierto. Si estaba cerrado, la haremos cuando lo abras.",
+    "emptyTitle": "No tienes tareas programadas.",
+    "schedule": "Programar",
+    "loadingLabel": "Cargando tus tareas programadas",
+    "retry": "Intentar de nuevo",
+    "retrying": "Intentando de nuevo…",
+    "daily": "Cada día a las {{time}}",
+    "weekly": "Cada {{weekday}} a las {{time}}",
+    "line": "{{cadence}} · Próxima: {{when}}",
+    "enabled": "Activa",
+    "enabledLabel": "Activa: {{name}}",
+    "more": "Más acciones para {{name}}",
+    "remove": "Quitar programación",
+    "removeTitle": "¿Quitar esta programación?",
+    "removeDescription": "Faro dejará de lanzar este agente en {{site}}.",
+    "unknownSite": "tu sitio",
+    "removeConfirm": "Quitar programación",
+    "removing": "Quitando la programación…",
+    "back": "Volver",
+    "toast": {
+      "enabled": "Activamos la programación.",
+      "disabled": "Pausamos la programación.",
+      "removed": "Quitamos la programación."
+    }
+  },
+  "launch": {
+    "title": "Lanzar {{agent}}",
+    "description": "Mira cuánto puede costar antes de lanzarlo. Nada se guarda sin tu OK.",
+    "paused": "Los agentes están en pausa.",
+    "siteLabel": "Sitio",
+    "noSites": "Conecta tu sitio para usar este agente.",
+    "calculating": "Calculando el costo…",
+    "expected": "Costo estimado: unos {{expected}}. Como mucho: {{max}}.",
+    "usage": "Usará tu clave de {{provider}}. Hoy llevas {{spent}} de {{limit}}.",
+    "usageNoProvider": "Hoy llevas {{spent}} de {{limit}}.",
+    "detailLabel": "Ver el desglose del costo",
+    "detailModel": "Modelo {{tier}}: {{model}}",
+    "detailModelUnknown": "Modelo: {{model}}",
+    "tiers": {
+      "economy": "económico",
+      "premium": "potente"
+    },
+    "detailTokens": "Hasta {{tokens}} tokens en total.",
+    "dailyLimit": "Esta tarea podría pasar tu límite de hoy (te quedan {{remaining}}). Súbelo en Configuración o espera a mañana.",
+    "changeLimit": "Cambiar límite",
+    "estimateChanged": "El costo cambió. Revísalo y vuelve a lanzar.",
+    "retry": "Intentar de nuevo",
+    "repeatLegend": "Repetir",
+    "repeat": {
+      "once": "Solo esta vez",
+      "daily": "Cada día",
+      "weekly": "Cada semana"
+    },
+    "timeLabel": "Hora",
+    "weekdayLabel": "Día",
+    "repeatNote": "Solo corre con Faro abierto.",
+    "invalidTime": "Elige una hora.",
+    "submit": "Lanzar por unos {{amount}}",
+    "submitting": "Lanzando…",
+    "scheduleSubmit": "Programar",
+    "scheduling": "Programando…",
+    "cancel": "Cancelar",
+    "toast": {
+      "started": "El agente empezó a trabajar.",
+      "scheduled": "Programamos el {{agent}} para {{when}}."
+    }
+  },
+  "detail": {
+    "title": "{{agent}} · {{site}}",
+    "started": "Empezó {{relative}}",
+    "created": "Se creó {{relative}}",
+    "meta": "{{started}} · {{origin}}",
+    "trigger": {
+      "user": "La lanzaste tú",
+      "schedule": "Programada",
+      "catch_up": "Al abrir Faro: no corrió a su hora",
+      "unknown": "Origen desconocido"
+    },
+    "close": "Cerrar",
+    "loadingLabel": "Cargando la tarea",
+    "retry": "Intentar de nuevo",
+    "retrying": "Intentando de nuevo…",
+    "stepsTitle": "Pasos",
+    "noSteps": "Todavía no empezó ningún paso.",
+    "stepStatus": {
+      "running": "En curso",
+      "succeeded": "Hecho",
+      "failed": "Falló",
+      "skipped": "Omitido",
+      "cancelled": "Cancelado",
+      "unknown": "Sin información"
+    },
+    "total": "Costo total: {{amount}}",
+    "totalLabel": "Ver el detalle del costo",
+    "totalTokens": "{{tokens}} tokens usados.",
+    "totalMax": "Como mucho: {{max}}.",
+    "resultTitle": "Resultado",
+    "offerings": "Qué ofreces",
+    "audience": "Para quién",
+    "suggestion": "Sugerencia: guarda este resumen si te sirve.",
+    "saveSummary": "Guardar resumen",
+    "saving": "Guardando…",
+    "relaunch": "Lanzar de nuevo",
+    "cancelRun": "Cancelar tarea",
+    "cancelTitle": "¿Cancelar la tarea?",
+    "cancelDescription": "La tarea se detendrá. Lo que ya gastó no se recupera.",
+    "cancelConfirm": "Cancelar tarea",
+    "cancelling": "Cancelando…",
+    "back": "Volver",
+    "toast": {
+      "cancelled": "Cancelamos la tarea."
+    }
   }
 }

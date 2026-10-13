@@ -3,5 +3,35 @@
   "emptyState": {
     "title": "Nada por aprobar",
     "description": "Antes de publicar o gastar dinero, los agentes te pedirán permiso aquí."
+  },
+  "listLabel": "Propuestas pendientes",
+  "loadingLabel": "Cargando tus propuestas",
+  "retry": "Intentar de nuevo",
+  "retrying": "Intentando de nuevo…",
+  "card": {
+    "from": "{{agent}} · {{site}}",
+    "expires": "Caduca el {{date}}",
+    "unknownAction": "Esta propuesta no se puede revisar en esta versión de Faro. Puedes descartarla.",
+    "previewLabel": "Vista previa de la propuesta",
+    "approving": "Guardando…",
+    "rejecting": "Descartando…",
+    "reject": "Descartar"
+  },
+  "actions": {
+    "siteSummarySave": {
+      "title": "Guardar este resumen en Faro",
+      "approve": "Guardar resumen",
+      "approved": "Guardamos el resumen."
+    },
+    "unknown": {
+      "title": "Una propuesta de un agente"
+    }
+  },
+  "reasons": {
+    "siteSummaryShowOnHome": "Por qué: así lo verás en Inicio."
+  },
+  "toast": {
+    "approved": "Aprobamos la propuesta.",
+    "rejected": "Descartamos la propuesta."
   }
 }
