@@ -142,8 +142,11 @@ LANGSMITH_ON: Final = {
 
 
 def _write(text: str) -> None:
-    sys.stdout.write(text + "\n")
+    # En UTF-8 siempre: la consola de los ejecutores de Windows usa cp1252 y el resumen lleva
+    # caracteres como «→» o «ñ» (fallaba con `UnicodeEncodeError` al terminar `engine`).
     sys.stdout.flush()
+    sys.stdout.buffer.write((text + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 
 def _sha256(path: Path) -> str:
