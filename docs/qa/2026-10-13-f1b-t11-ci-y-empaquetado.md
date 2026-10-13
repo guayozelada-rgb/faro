@@ -5,7 +5,7 @@
 - **Rama:** `feat/f1b-t6-capa-llm-hz39c9` (reiniciada desde `main` con T1–T10)
 - **Spec:** [F1b](../specs/2026-10-05-f1b-capa-ia-y-motor-de-agentes.md) §4.7, §7, §8 (fila T11).
 - **Condiciones que cierra:** T6-C5 ([T6](2026-10-10-f1b-t6-capa-llm.md) §6); 12, 17 y la parte del núcleo de la 14 ([T2](2026-10-05-f1b-t2-dependencias.md) §12, [T7](2026-10-11-f1b-t7-cola-y-programador.md) §3); lanzador de release de [T5](2026-10-08-f1b-t5-condiciones.md) (punto 2); [T8](2026-10-11-f1b-t8-marco-de-agentes.md) §7–8; [T9](2026-10-11-f1b-t9-agente-resumen-del-sitio.md) §8; [T10](2026-10-12-f1b-t10-interfaz-de-agentes.md) §10.
-- **Estado:** implementado y verificado en Linux. `revisor-seguridad` (commit `f311ace`): **aprobado con cambios**; hallazgos 2, 3 (a, b, d), 4 y 5 corregidos en el árbol y el resto como condiciones T11-C1 a T11-C3 (§10). **Pendiente:** lanzar `engine-bundle-smoke` en Windows (§7).
+- **Estado:** implementado y verificado en Linux. `revisor-seguridad` (commit `f311ace`): **aprobado con cambios**; hallazgos 2, 3 (a, b, d), 4 y 5 corregidos en el árbol y el resto como condiciones T11-C1 a T11-C3 (§10). `engine-bundle-smoke` en `windows-latest`: **en verde** (ejecución 38465499059, §7).
 
 ## 1. Qué se hizo
 
@@ -61,7 +61,7 @@
 | **T10**: `FARO_FAKE_LLM=0` en `.env.local.example` y README | §1; verificación manual del usuario anotada en el informe de T10 (§9) | `npm run format:check` |
 | Hallazgo 5 de T2 (`cl100k_base` incluido, T6/T11) | Decisión 7 | `adapter` |
 
-**Sigue abierto:** la primera ejecución de `engine-bundle-smoke` en `windows-latest` (§7, también pendiente desde T2 §9).
+**También cerrado:** la primera ejecución de `engine-bundle-smoke` en `windows-latest` (pendiente desde T2 §9): en verde, §7.
 
 ## 4. `strict_modules` y `ci-ok`
 
@@ -122,6 +122,25 @@ Con los mismos pasos que el workflow, en Linux x86-64 (PyInstaller 6.22.3, Pytho
 1. GitHub → **Actions → engine-bundle-smoke → Run workflow**, sobre la rama del PR de T11.
 2. Debe terminar en verde. En el resumen del trabajo: dos tablas (`release` con `base` y `engine`; `full`), "ninguna" en "Red en el build" en las tres variantes, el aumento `engine` − `base` por debajo de 150 MiB y la línea "Motor real (`faro-engine`)" con los tres códigos 2, `/agents` → `['site_summary']`, `shutdown` → 0 y `SSLKEYLOGFILE` creado: False.
 3. Anotar en este informe los tamaños de Windows, el tiempo de `ready` del motor real y el enlace de la ejecución. Si falla, el artefacto `engine-bundle-smoke-summary` trae `summary.json` con el detalle (incluye el final del log del motor).
+
+### Resultado en Windows (2026-10-13)
+
+Ejecución [38465499059](https://github.com/guayozelada-rgb/faro/actions/runs/38465499059) sobre el commit `44260ab`, `windows-latest`: **en verde**.
+
+| Variante | Tamaño | Archivos | Red en el build | Humo |
+| --- | ---: | ---: | --- | --- |
+| `base` (sin `dev`) | 41,4 MiB | 751 | ninguna | ok |
+| `engine` (sin `dev`) | 108,5 MiB | 2 831 | ninguna | ok |
+| `full` (con `dev`) | 122,2 MiB | 2 853 | ninguna | ok: las 10 comprobaciones; control de `SSLKEYLOGFILE` ok |
+
+- Aumento `engine` − `base`: **67,1 MiB** (límite 150 MiB; Linux 85,6 MiB, §6).
+- Motor real (`faro-engine.exe`): `--fake-llm`, `--allow-local-sites` y `--dev` → código 2; `ready` en **0,9 s** (límite del núcleo: 20 s); `/agents` → `['site_summary']`; `shutdown` → 0; `SSLKEYLOGFILE` no creado.
+
+Las tres primeras ejecuciones fallaron por el propio humo, no por el motor. Correcciones, solo visibles en Windows:
+
+1. **Eco TLS leído entero** (`384a93e`): en Windows el eco llegaba en más de un `recv`; `tls_handshake_in_loopback` ahora lee los bytes esperados con `read_exactly` y, si no coinciden, el error dice qué llegó y con qué clase de socket.
+2. **Servidor TLS de prueba con el `SSLContext` de la biblioteca estándar** (`5ca8c6c`): el motor sustituye `ssl.SSLContext` por el de `truststore` (que en Windows usa CryptoAPI), y ese contexto solo sirve como cliente: como servidor devolvía un eco vacío. El servidor de la prueba usa ahora la clase original de `ssl` (buscada en el MRO) y carga el certificado de `trustme` desde un archivo; el **cliente** sigue siendo el de `truststore`, que es lo que se quiere probar.
+3. **Resumen en UTF-8** (`44260ab`): la consola de Windows es cp1252 y la "→" del resumen daba `UnicodeEncodeError` en `base` y `engine`; `bundle_smoke_build.py` escribe siempre en UTF-8 en `sys.stdout.buffer`.
 
 ## 8. Revisión de `revisor-seguridad` (obligatoria: T11 toca workflows)
 
