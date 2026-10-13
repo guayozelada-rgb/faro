@@ -740,8 +740,19 @@ def tls_handshake_in_loopback(keylog: str | None) -> str:
     import trustme
 
     ca = trustme.CA()
-    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ca.issue_cert("localhost").configure_cert(server_context)
+    # El servidor de prueba usa la clase `ssl.SSLContext` de la biblioteca estándar. En el
+    # motor congelado `ssl.SSLContext` ya es la subclase con cerrojo sobre truststore, que
+    # solo sirve para clientes: como servidor cierra la conexión y el eco llega vacío.
+    stdlib_context = next(
+        cls
+        for cls in ssl.SSLContext.__mro__
+        if cls.__module__ == "ssl" and cls.__name__ == "SSLContext"
+    )
+    server_context = stdlib_context(ssl.PROTOCOL_TLS_SERVER)
+    # `configure_cert` de trustme comprueba el tipo contra `ssl.SSLContext` (ya sustituido):
+    # se carga el certificado desde su archivo temporal.
+    with ca.issue_cert("localhost").private_key_and_cert_chain_pem.tempfile() as pem:
+        server_context.load_cert_chain(pem)
     client_context = ssl.create_default_context()
     ca.configure_trust(client_context)
     if keylog:
