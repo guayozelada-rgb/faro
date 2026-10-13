@@ -749,11 +749,24 @@ def tls_handshake_in_loopback(keylog: str | None) -> str:
     listener = socket.create_server(("127.0.0.1", 0))
     port = int(listener.getsockname()[1])
 
+    message = b"faro"
+
+    def read_exactly(tls: ssl.SSLSocket, size: int) -> bytes:
+        # `recv` puede devolver el mensaje en trozos (se vio en Windows con el contexto
+        # de truststore del motor congelado): se lee hasta completar o hasta el cierre.
+        data = b""
+        while len(data) < size:
+            chunk = tls.recv(size - len(data))
+            if not chunk:
+                break
+            data += chunk
+        return data
+
     def serve() -> None:
         with contextlib.suppress(OSError):
             raw, _ = listener.accept()
             with server_context.wrap_socket(raw, server_side=True) as tls:
-                tls.sendall(tls.recv(16))
+                tls.sendall(read_exactly(tls, len(message)))
 
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
@@ -762,9 +775,11 @@ def tls_handshake_in_loopback(keylog: str | None) -> str:
             socket.create_connection(("127.0.0.1", port), timeout=10) as raw,
             client_context.wrap_socket(raw, server_hostname="localhost") as tls,
         ):
-            tls.sendall(b"faro")
-            if tls.recv(16) != b"faro":
-                raise RuntimeError("eco TLS incorrecto")
+            tls.sendall(message)
+            echo = read_exactly(tls, len(message))
+            if echo != message:
+                # Datos de prueba, no secretos: se muestra lo recibido para diagnosticar.
+                raise RuntimeError(f"eco TLS incorrecto: {echo!r} ({type(tls).__name__})")
             version = str(tls.version())
     finally:
         listener.close()
