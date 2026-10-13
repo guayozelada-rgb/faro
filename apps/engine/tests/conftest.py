@@ -1,11 +1,12 @@
-"""Fixtures comunes y umbral de cobertura por módulo (95 % en seguridad y protocolo)."""
+"""Fixtures comunes, bloqueo de red y umbral de cobertura por módulo (95 % en seguridad y
+protocolo)."""
 
 from __future__ import annotations
 
 import io
 import secrets
 import tomllib
-from collections.abc import AsyncIterator, Generator
+from collections.abc import AsyncIterator, Generator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -16,9 +17,28 @@ from fastapi import FastAPI
 from faro_engine import __version__
 from faro_engine.core.app import create_app
 from faro_engine.core.config import Settings
+from tests.network_guard import NetworkGuard, fail_on_network_attempts, install
 
 ENGINE_DIR = Path(__file__).resolve().parents[1]
 TEST_PORT = 50123
+
+# Spec F1b §4.7 (condición T6-C5): ninguna conexión fuera de loopback en todo el proceso de
+# pytest, desde que se carga este archivo. Ver `tests/network_guard.py`.
+NETWORK_GUARD = install()
+
+
+@pytest.fixture(autouse=True)
+def _block_external_network() -> Iterator[NetworkGuard]:
+    """Automático: la prueba falla si intentó salir de loopback, aunque se tragara el error."""
+    fail_on_network_attempts(NETWORK_GUARD, "fuera de una prueba (antes de esta)")
+    yield NETWORK_GUARD
+    fail_on_network_attempts(NETWORK_GUARD, "en esta prueba")
+
+
+@pytest.fixture
+def network_guard(_block_external_network: NetworkGuard) -> NetworkGuard:
+    """Para las pruebas que provocan un intento a propósito y lo recogen con `take()`."""
+    return _block_external_network
 
 
 @pytest.fixture

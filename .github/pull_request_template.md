@@ -12,6 +12,7 @@
 - [ ] `npm run test`
 - [ ] `npm run coverage:core` si cambia el núcleo Rust (80 % global y 95 % en `vault/`, `secrets/`, `profile/` y `engine/protocol.rs`)
 - [ ] `npm run contracts` ejecutado si cambian endpoints o el registro de agentes del motor (y los cambios de `packages/shared` incluidos en este PR)
+- [ ] `engine-bundle-smoke` lanzado a mano (Actions → engine-bundle-smoke → Run workflow, sobre la rama del PR) y en verde si cambian `apps/engine/uv.lock`, `apps/engine/pyproject.toml`, los datos del motor (migraciones, prompts, `models.json`) o su empaquetado (`apps/engine/scripts/bundle_smoke*.py`, `pyinstaller_hooks/`, `pyinstaller_offline/`)
 
 ## Capas que toca
 

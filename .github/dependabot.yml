@@ -50,9 +50,34 @@ updates:
       default-days: 5
     commit-message:
       prefix: "chore(deps)"
+    # Dependencias de F1b (spec F1b §4.7, ADR 0015): un PR por familia, con cualquier tipo
+    # de versión, aparte de `uv-menores`. Dependabot asigna cada dependencia al primer grupo
+    # que coincide, así que estos van antes. Antes de integrar un PR de estos grupos: CI en
+    # verde, lanzar a mano `engine-bundle-smoke` (el hook de LiteLLM usa una lista permitida
+    # de módulos) y revisión de `revisor-seguridad` (cadena de suministro, informe de T2).
     groups:
+      # Capa de IA: LiteLLM (fijado con `==`) y lo que cambia sus llamadas y su tokenizador.
+      uv-ia:
+        patterns: ["litellm", "openai", "tiktoken", "tokenizers"]
+      # Motor de agentes: LangGraph (fijados con `==`), LangChain Core y LangSmith (apagado
+      # siempre, ADR 0012 condición 13), con `httpx2`/`httpcore2`, que trae LangSmith.
+      uv-agentes:
+        patterns: ["langgraph*", "langchain-core", "langsmith", "httpx2*", "httpcore2"]
+      # Cola y programador (T7): APScheduler 3 y la zona horaria del sistema.
+      uv-programador:
+        patterns: ["apscheduler", "tzlocal", "tzdata"]
+      # HTTPS con el almacén del sistema (T2b, ADR 0012): fijado con `==`.
+      uv-tls:
+        patterns: ["truststore", "certifi"]
+      # Empaquetado del motor (grupo `bundle`) y la extensión de vectores (grupo `dev`).
+      uv-empaquetado:
+        patterns: ["pyinstaller*", "sqlite-vec"]
       uv-menores:
         update-types: [minor, patch]
+    ignore:
+      # APScheduler 4 cambia toda la API; el motor fija >=3,<4 (ADR 0015 §3).
+      - dependency-name: "apscheduler"
+        update-types: ["version-update:semver-major"]
 
   # Plugin de WordPress: solo herramientas de desarrollo (PHPCS, PHPStan, PHPUnit).
   - package-ecosystem: composer

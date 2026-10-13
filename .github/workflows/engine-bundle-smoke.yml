@@ -1,11 +1,18 @@
-# Empaquetado de prueba del motor con PyInstaller (spec F1b §4.7 y T2, ADR 0015 §6
+# Empaquetado de prueba del motor con PyInstaller (spec F1b §4.7, T2 y T11; ADR 0015 §6
 # criterios 5, 6 y 7).
 #
-# Solo manual (`workflow_dispatch`): construye el motor `--onedir` sin y con las dependencias
-# de F1b, ejecuta la prueba de humo de cada variante (base cifrada, migraciones, sqlite-vec,
-# grafo LangGraph con un LLM falso, APScheduler y LiteLLM contra un servidor falso local) y
-# escribe los tamaños en el resumen. Falla si una prueba falla o si el aumento supera
-# 150 MiB. No entra en `ci-ok`.
+# Solo manual (`workflow_dispatch`). Con `scripts/bundle_smoke_build.py`:
+# - `release` (sin el grupo `dev`, como el build de release): el motor real `faro-engine`
+#   (entrada `faro_engine/__main__.py`), lanzado como lo hará el núcleo: `--fake-llm`,
+#   `--allow-local-sites` y `--dev` salen con código 2; arranca con `SSLKEYLOGFILE` sin crear
+#   el archivo; `ready`, `/health`, `/agents` con `site_summary` y `shutdown`. Y la variante
+#   `base` (sin la capa de IA ni los agentes) para medir el aumento de tamaño.
+# - `full` (con `dev`): la prueba de humo `scripts/bundle_smoke.py` empaquetada (base
+#   cifrada, sqlite-vec, registro de agentes y grafo con `FaroCheckpointSaver`, adaptador real
+#   de LiteLLM con `cl100k_base` y los seis modelos del catálogo, TLS, APScheduler y la
+#   condición 17 con su control).
+# PyInstaller corre sin red (falla si algo intenta conectarse). Escribe los tamaños en el
+# resumen y falla si una prueba falla o si el aumento supera 150 MiB. No entra en `ci-ok`.
 #
 # Repositorio público (ADR 0005): sin `pull_request_target`, sin secretos, GITHUB_TOKEN de
 # solo lectura y acciones fijadas por SHA completo.
@@ -45,18 +52,30 @@ jobs:
           enable-cache: true
           cache-dependency-glob: apps/engine/uv.lock
 
-      # Grupo `bundle` (PyInstaller fijado en uv.lock) + `dev` (sqlite-vec).
+      # Como el build de release: sin el grupo `dev` (no arrastra paquetes de desarrollo).
+      - name: uv sync --locked --no-dev --group bundle
+        run: uv sync --locked --no-dev --group bundle
+
+      - name: Motor real y base (empaquetar sin red, probar y medir)
+        run: >-
+          uv run --locked --no-dev --group bundle python scripts/bundle_smoke_build.py
+          --variant base --variant engine --out build/bundle-smoke/release
+
+      # `full` necesita `dev` (respx, trustme y sqlite-vec, solo de la prueba de humo).
       - name: uv sync --locked --group bundle
+        if: ${{ !cancelled() }}
         run: uv sync --locked --group bundle
 
-      # Descarga `cl100k_base.tiktoken` de la URL oficial y comprueba su SHA-256.
-      - name: Empaquetar, probar y medir (base y full)
-        run: uv run --locked --group bundle python scripts/bundle_smoke_build.py --out build/bundle-smoke
+      - name: Prueba de humo completa (empaquetar sin red y probar)
+        if: ${{ !cancelled() }}
+        run: >-
+          uv run --locked --group bundle python scripts/bundle_smoke_build.py
+          --variant full --out build/bundle-smoke/full
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
         with:
           name: engine-bundle-smoke-summary
-          path: apps/engine/build/bundle-smoke/summary.json
+          path: apps/engine/build/bundle-smoke/*/summary.json
           if-no-files-found: warn
           retention-days: 14
