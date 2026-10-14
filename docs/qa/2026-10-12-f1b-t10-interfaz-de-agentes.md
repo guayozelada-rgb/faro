@@ -3,7 +3,7 @@
 - **Spec:** [F1b](../specs/2026-10-05-f1b-capa-ia-y-motor-de-agentes.md) §3, §4.6, §5.1–§5.5, §9.4 y fila T10 de §8.3.
 - **ADR:** 0002 (errores), 0006 (CSP), 0007 (paleta), [0014](../adr/0014-tareas-de-agentes-en-el-protocolo-nucleo-motor.md) §2–§3, [0016](../adr/0016-autonomia-guardarrailes-y-aprobaciones.md).
 - **Contexto usado:** informes de [T7](2026-10-11-f1b-t7-cola-y-programador.md), [T8](2026-10-11-f1b-t8-marco-de-agentes.md) y [T9](2026-10-11-f1b-t9-agente-resumen-del-sitio.md); `packages/shared/{engine.d.ts,engine-operations.json,agent-grants.json}` (28 operaciones); `apps/engine/faro_engine/core/routes/*`; núcleo `src/commands/agents.rs` y `src/agents/activity.rs`.
-- **Estado:** implementado y verificado con `mockIPC`; `revisor-seguridad`: **aprobado con cambios**, los cuatro hallazgos corregidos en el árbol (§11). Pendiente de la prueba manual con `--fake-llm` en Windows (§9).
+- **Estado:** implementado y verificado con `mockIPC`; `revisor-seguridad`: **aprobado con cambios**, los cuatro hallazgos corregidos en el árbol (§11). Prueba manual con `--fake-llm` en Windows: **hecha** (2026-10-13, §9).
 - **Núcleo Rust:** sin cambios. Todo lo que la interfaz necesita ya existe desde T5 (§4).
 
 ## 1. Qué se construyó
@@ -143,6 +143,10 @@ No se ejecutaron aquí: `npm run test:core` (el núcleo no compila sin GTK; no c
 
 ## 9. Prueba manual con `--fake-llm` (Windows 11)
 
+**Verificación manual hecha (2026-10-13).** El usuario ejecutó en su equipo con Windows 11 la prueba completa con `--fake-llm` y funcionó entera. Siguió estos pasos: `git pull`, `npm run setup`, wp-env con el plugin, `.env.local` con `FARO_ALLOW_LOCAL_SITES=1` y `FARO_FAKE_LLM=1`, `npm run dev`, conectar el sitio, guardar la clave, **Agentes → Lanzar**, Bandeja y **Guardar resumen**. Esos pasos están en el README de la raíz ("Probar los agentes sin gastar (IA simulada)", T11). Anotado por `devops-release` en T11 ([informe](2026-10-13-f1b-t11-ci-y-empaquetado.md)).
+
+Lista detallada de lo que había que comprobar:
+
 Requisitos: build de depuración (`npm run dev`), wp-env con el plugin y una clave de IA guardada en la Bóveda. Con `--fake-llm` los agentes no llaman a ningún proveedor ni gastan, pero necesitan una clave guardada para elegir proveedor, y la Bóveda prueba la clave con el proveedor al guardarla (núcleo, ADR 0003): usa una clave real; no se gastará nada con ella en estos pasos.
 
 1. En la raíz, `.env.local` con `FARO_FAKE_LLM=1` y `FARO_ALLOW_LOCAL_SITES=1` (copia de `.env.local.example` si no existe). No escribas claves en ese archivo.
@@ -164,8 +168,8 @@ Requisitos: build de depuración (`npm run dev`), wp-env con el plugin y una cla
 ## 10. Pendiente
 
 - **`revisor-seguridad`:** confirmar las correcciones de §11.
-- **Prueba manual en Windows** (§9): no se pudo ejecutar aquí.
-- **T11 (`devops-release`):** `.env.local.example` con `FARO_FAKE_LLM` (los pasos de §9 lo usan); README con el flujo de agentes en desarrollo; nada de la interfaz bloquea la CI.
+- ~~**Prueba manual en Windows** (§9)~~: hecha por el usuario el 2026-10-13 (§9).
+- ~~**T11 (`devops-release`):** `.env.local.example` con `FARO_FAKE_LLM` (los pasos de §9 lo usan); README con el flujo de agentes en desarrollo; nada de la interfaz bloquea la CI.~~ Hecho en T11 ([informe](2026-10-13-f1b-t11-ci-y-empaquetado.md)).
 - **T12 (`qa-pruebas`):** lista manual de la spec §10 con clave real (pasos 3, 5 y 13) y con `--fake-llm`; medir en un equipo real la cadencia de eventos de una tarea (no debería haber resincronizaciones salvo saltos de `seq`); revisar con lector de pantalla (NVDA) los anuncios de la actividad (`aria-live="polite"` en la lista: cada cambio de costo se anuncia; si resulta ruidoso, limitarlo a cambios de estado es un cambio de spec).
 - **T14 (`arquitecto`):** corregir en la spec §5.5 (y en `locales/es/errors.json`) el texto de `agents.control_unavailable`: hoy dice "Reinicia Faro", lo que deshace una pausa no guardada (§11, hallazgo 1); la interfaz ya no lo muestra al pausar ni al reanudar. La skill `sistema-diseno-faro` gana `RunStatusChip`, `SiteSummaryText` y `Switch`; anotar en la spec las decisiones de §2 (formato de `Intl` "0,12 US$", "Listo · descartado" vía `listApprovals?status=rejected`, botón de límite sin menú, acción desconocida solo descartable) y el reintento acotado de §7.
 - **Traducciones** `en` y `pt-BR`: siguen con `[TODO] `.

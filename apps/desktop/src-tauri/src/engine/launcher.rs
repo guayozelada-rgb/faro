@@ -1,10 +1,12 @@
 //! Cómo se lanza el proceso del motor (ADR 0004).
 //!
 //! - [`DevVenvLauncher`] (solo `debug_assertions`): Python de `apps/engine/.venv`.
-//! - [`UnavailableLauncher`]: builds sin sidecar (release en F0) → `engine.start_failed`.
+//! - [`SidecarLauncher`]: el ejecutable PyInstaller `--onedir` del motor (release). Listo
+//!   desde F1b T11 con su directorio de trabajo fijo; la fase de release lo conecta en
+//!   `default_mode` junto con la verificación de integridad y `externalBin`.
+//! - [`UnavailableLauncher`]: builds sin sidecar (release hasta la fase de release) →
+//!   `engine.start_failed`.
 //! - Lanzador falso en pruebas (`engine::fake`).
-//!
-//! El lanzador de sidecar PyInstaller de la fase de release implementará el mismo trait.
 //!
 //! **Procesos huérfanos en Windows.** El `python.exe` de un `.venv` creado por uv es un
 //! lanzador que crea el intérprete real como proceso hijo. Matar solo el PID lanzado
@@ -368,6 +370,99 @@ impl EngineLauncher for DevVenvLauncher {
     }
 }
 
+/// Lanzador de release: el ejecutable del motor empaquetado con PyInstaller `--onedir`
+/// (`faro-engine`, entrada `faro_engine/__main__.py`; skill `tauri-sidecar-python`).
+///
+/// - Parte de [`engine_command`]: entorno limpio y solo [`ENGINE_ENV_ALLOWLIST`]
+///   (condición 11 de la revisión de T2).
+/// - **Directorio de trabajo fijo = la carpeta del ejecutable**, es decir, la de instalación
+///   (condición 14 de la revisión de T2, §3 del informe de T7): nunca el directorio desde el
+///   que se abrió Faro, `%TEMP%` ni la carpeta de datos. Lo que corre antes del código del
+///   motor (y lo que mira el directorio de trabajo: LiteLLM lo añade a `sys.path` y tiktoken
+///   importaría un `tiktoken_ext/*.py` puesto ahí) solo ve la carpeta del propio motor.
+///   Quien puede escribir ahí ya puede cambiar el motor, así que no abre ninguna vía nueva.
+///   El motor, además, vuelve a fijar ese mismo directorio al arrancar (`engine_workdir`).
+/// - Argumentos fijos: nunca `--dev`, `--allow-local-sites` ni `--fake-llm` (no hay forma
+///   de pedirlos aquí; el motor empaquetado además los rechaza con código 2).
+/// - `program` y `data_dir` deben ser rutas absolutas (revisión de seguridad de T11,
+///   hallazgo 4): una carpeta de datos relativa se resolvería contra el directorio de
+///   trabajo, que es la carpeta de instalación.
+#[derive(Debug, Clone)]
+pub struct SidecarLauncher {
+    program: PathBuf,
+    workdir: PathBuf,
+    data_dir: PathBuf,
+}
+
+impl SidecarLauncher {
+    /// `program`: ruta absoluta del ejecutable del motor; `data_dir`: carpeta de datos de la
+    /// app (`--data-dir`). Una ruta relativa (de cualquiera de las dos) o un ejecutable sin
+    /// carpeta → `engine.start_failed`.
+    pub fn new(program: PathBuf, data_dir: PathBuf) -> Result<Self, AppError> {
+        if !program.is_absolute() {
+            tracing::error!("la ruta del motor empaquetado no es absoluta");
+            return Err(AppError::engine_start_failed("spawn"));
+        }
+        if !data_dir.is_absolute() {
+            tracing::error!("la carpeta de datos del motor empaquetado no es absoluta");
+            return Err(AppError::engine_start_failed("spawn"));
+        }
+        let Some(workdir) = program
+            .parent()
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+        else {
+            tracing::error!("el motor empaquetado no está dentro de una carpeta");
+            return Err(AppError::engine_start_failed("spawn"));
+        };
+        Ok(Self {
+            program,
+            workdir,
+            data_dir,
+        })
+    }
+
+    /// Directorio de trabajo del motor: la carpeta de instalación del ejecutable.
+    pub fn workdir(&self) -> &Path {
+        &self.workdir
+    }
+
+    /// Argumentos del motor: siempre los mismos, sin modos de desarrollo.
+    pub fn args(&self) -> Vec<std::ffi::OsString> {
+        let mut args: Vec<std::ffi::OsString> =
+            ["--host", "127.0.0.1", "--port", "0", "--data-dir"]
+                .into_iter()
+                .map(Into::into)
+                .collect();
+        args.push(self.data_dir.clone().into_os_string());
+        args
+    }
+
+    /// Comando sin argumentos: entorno limpio y directorio de trabajo fijo.
+    fn base_command(&self) -> tokio::process::Command {
+        let mut command = engine_command(&self.program);
+        command.current_dir(&self.workdir);
+        command
+    }
+
+    /// Comando completo con el que se lanza el motor.
+    pub fn command(&self) -> tokio::process::Command {
+        let mut command = self.base_command();
+        command.args(self.args());
+        command
+    }
+}
+
+impl EngineLauncher for SidecarLauncher {
+    fn launch(&self) -> Result<EngineProcess, AppError> {
+        if !self.program.is_file() {
+            tracing::error!("no existe el ejecutable del motor empaquetado");
+            return Err(AppError::engine_start_failed("spawn"));
+        }
+        ChildProcess::spawn(self.command())
+    }
+}
+
 /// Tiempo máximo para recoger un proceso ya matado.
 pub(crate) const REAP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -510,6 +605,132 @@ mod tests {
                 "variable inesperada en el motor: {name}"
             );
         }
+    }
+
+    /// Un ejecutable real del sistema que imprime su directorio de trabajo.
+    fn cwd_probe() -> (PathBuf, Vec<&'static str>) {
+        if cfg!(windows) {
+            let shell = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
+            (PathBuf::from(shell), vec!["/d", "/c", "cd"])
+        } else {
+            let pwd = ["/bin/pwd", "/usr/bin/pwd"]
+                .into_iter()
+                .map(PathBuf::from)
+                .find(|p| p.is_file())
+                .unwrap_or_else(|| panic!("pwd en /bin o /usr/bin"));
+            (pwd, Vec::new())
+        }
+    }
+
+    #[test]
+    fn sidecar_directorio_de_trabajo_es_la_carpeta_de_instalacion() {
+        let install = tempfile::tempdir().unwrap();
+        let program = install.path().join("faro-engine.exe");
+        let data = tempfile::tempdir().unwrap();
+        let launcher = SidecarLauncher::new(program.clone(), data.path().to_path_buf()).unwrap();
+        assert_eq!(launcher.workdir(), install.path());
+        let command = launcher.command();
+        let std_command = command.as_std();
+        assert_eq!(std_command.get_program(), program.as_os_str());
+        assert_eq!(std_command.get_current_dir(), Some(install.path()));
+        assert_ne!(
+            std_command.get_current_dir(),
+            Some(std::env::current_dir().unwrap().as_path()),
+            "nunca el directorio desde el que se abrió Faro"
+        );
+        assert_ne!(
+            std_command.get_current_dir(),
+            Some(std::env::temp_dir().as_path())
+        );
+    }
+
+    #[test]
+    fn sidecar_sin_modos_de_desarrollo_ni_variables_heredadas() {
+        let install = tempfile::tempdir().unwrap();
+        let data = install.path().join("datos");
+        let launcher =
+            SidecarLauncher::new(install.path().join("faro-engine.exe"), data.clone()).unwrap();
+        let expected = ["--host", "127.0.0.1", "--port", "0", "--data-dir"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .chain([data.into_os_string()])
+            .collect::<Vec<_>>();
+        assert_eq!(launcher.args(), expected);
+        let command = launcher.command();
+        let args: Vec<&std::ffi::OsStr> = command.as_std().get_args().collect();
+        assert_eq!(
+            args,
+            expected.iter().map(|a| a.as_os_str()).collect::<Vec<_>>()
+        );
+        for flag in ["--dev", "--allow-local-sites", "--fake-llm"] {
+            assert!(!args.iter().any(|a| *a == flag), "{flag}");
+        }
+        // `engine_command`: entorno limpio (`env_clear`) y las fijas del intérprete.
+        let envs: Vec<(String, Option<String>)> = command
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert!(envs.contains(&("PYTHONUNBUFFERED".into(), Some("1".into()))));
+        for (name, _) in &envs {
+            assert!(
+                ENGINE_ENV_ALLOWLIST
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(name))
+                    || ["PYTHONUNBUFFERED", "PYTHONIOENCODING"].contains(&name.as_str()),
+                "variable inesperada: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn sidecar_rechaza_rutas_relativas_y_ejecutables_que_no_existen() {
+        let install = tempfile::tempdir().unwrap();
+        let data = install.path().join("datos");
+        let relative = SidecarLauncher::new(PathBuf::from("faro-engine.exe"), data.clone());
+        assert_eq!(relative.err().unwrap().code, "engine.start_failed");
+        // Hallazgo 4 de la revisión de T11: carpeta de datos relativa.
+        let relative_data = SidecarLauncher::new(
+            install.path().join("faro-engine.exe"),
+            PathBuf::from("datos"),
+        );
+        assert_eq!(relative_data.err().unwrap().code, "engine.start_failed");
+        let missing = SidecarLauncher::new(
+            install.path().join("no-existe").join("faro-engine.exe"),
+            data,
+        )
+        .unwrap();
+        let err = missing.launch().err().unwrap();
+        assert_eq!(err.code, "engine.start_failed");
+    }
+
+    /// Condición 14 de la revisión de T2 (parte del núcleo): un proceso real lanzado con el
+    /// comando del lanzador de release trabaja en la carpeta del ejecutable, no en la del
+    /// núcleo. El "motor" es un programa del sistema que imprime su directorio de trabajo.
+    #[tokio::test]
+    async fn sidecar_el_proceso_lanzado_trabaja_en_la_carpeta_de_instalacion() {
+        let (program, probe_args) = cwd_probe();
+        let data = tempfile::tempdir().unwrap();
+        let launcher = SidecarLauncher::new(program.clone(), data.path().to_path_buf()).unwrap();
+        let mut command = launcher.base_command();
+        command.args(&probe_args);
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000);
+        let output = command.output().await.unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let printed = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+        let expected = program.parent().unwrap().canonicalize().unwrap();
+        assert_eq!(printed.canonicalize().unwrap(), expected);
+        assert_ne!(
+            expected,
+            std::env::current_dir().unwrap().canonicalize().unwrap(),
+            "la prueba debe correr desde otra carpeta"
+        );
     }
 
     #[test]

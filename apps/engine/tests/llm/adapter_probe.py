@@ -401,6 +401,12 @@ def scenario_matrix() -> dict[str, Any]:
         "cache_entries": len(litellm.in_memory_llm_clients_cache.cache_dict),
         "holders": {p: holders(k) for p, k in KEYS.items()},
         "state": adapter_state(litellm_client),
+        # Revisión de seguridad de T11, hallazgo 2 (tras todas las llamadas).
+        "proxy_modules": sorted(
+            name
+            for name in ("litellm.proxy.proxy_server", "litellm.proxy.prisma_migration")
+            if name in sys.modules
+        ),
     }
     trap.close()
     return report
@@ -522,6 +528,12 @@ def scenario_trap() -> dict[str, Any]:
         "encoding_tokens": len(encoding.encode("hola mundo")),
         "dotenv_marker": os.environ.get("FARO_DOTENV_PROBE"),
         "state": adapter_state(litellm_client),
+        # Revisión de seguridad de T11, hallazgo 2 (tras todas las llamadas).
+        "proxy_modules": sorted(
+            name
+            for name in ("litellm.proxy.proxy_server", "litellm.proxy.prisma_migration")
+            if name in sys.modules
+        ),
     }
 
 

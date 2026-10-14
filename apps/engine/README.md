@@ -7,7 +7,7 @@ Motor local de Faro: servidor FastAPI que el núcleo Tauri lanza como proceso hi
 | Qué | Comando |
 | --- | --- |
 | Instalar | `uv sync --directory apps/engine --locked` (o `npm run setup`) |
-| Pruebas + cobertura | `npm run test:engine` |
+| Pruebas + cobertura | `npm run test:engine` (sin red: `tests/network_guard.py` hace fallar cualquier conexión fuera de `127.0.0.1` en el proceso de pytest; no cubre sus procesos hijos) |
 | Lint | `npm run lint:py` |
 | Formato | `uv run --directory apps/engine ruff format --check .` |
 | Tipos | `uv run --directory apps/engine mypy faro_engine tests scripts` |
@@ -51,9 +51,21 @@ Sin `--dev` nada de esto cambia: EOF y `shutdown` apagan el motor, como exige el
 
 ## Empaquetado con PyInstaller (fase de release)
 
-- Incluir las migraciones `.sql` como datos del paquete (por ejemplo, `--collect-data faro_engine`); sin ellas el motor arranca con `db.migration_failed`.
-- Cuando se use `sqlite-vec`, hará falta `--collect-all sqlite_vec` para que su extensión nativa entre en el paquete.
-- Prueba de empaquetado (spec F1b T2): `uv sync --locked --group bundle` y `uv run --locked --group bundle python scripts/bundle_smoke_build.py`. Construye el motor `--onedir` sin y con las dependencias de F1b (hooks en `scripts/pyinstaller_hooks/`), ejecuta `scripts/bundle_smoke.py` empaquetado y mide el tamaño (salida en `build/bundle-smoke/`). En GitHub: workflow manual `engine-bundle-smoke`.
+- Opciones del build del motor: `engine_pyinstaller_args` en `scripts/bundle_smoke_build.py` (el build de release debe usar estas mismas). Entrada: `faro_engine/__main__.py` (sin otro script de entrada, para que su prólogo quite `SSLKEYLOGFILE` antes de importar nada); `--collect-data faro_engine` (migraciones `.sql`, prompts `.md`, `models.json` y `cl100k_base`: sin ellos el motor no arranca); `--collect-submodules faro_engine` (`agents/framework/graph.py` y `llm/litellm_client.py` se importan con `importlib`); hooks de `scripts/pyinstaller_hooks/` (LiteLLM con lista permitida de módulos; tiktoken); fuera el puente nativo de LiteLLM, `sitecustomize` y las herramientas de desarrollo. Se construye **sin el grupo `dev`** (`uv sync --locked --no-dev --group bundle`).
+- Build sin red: PyInstaller corre con `scripts/pyinstaller_offline` en `PYTHONPATH`; su `sitecustomize` hace fallar cualquier conexión fuera de loopback durante el análisis y el constructor falla si hubo alguna.
+- Cuando se use `sqlite-vec` en producción, hará falta `--collect-all sqlite_vec` para que su extensión nativa entre en el paquete.
+- Prueba de empaquetado (spec F1b T2 y T11), en GitHub con el workflow manual `engine-bundle-smoke` o en local desde `apps/engine`:
+
+  ```
+  uv sync --locked --no-dev --group bundle
+  uv run --locked --no-dev --group bundle python scripts/bundle_smoke_build.py --variant base --variant engine --out build/bundle-smoke/release
+  uv sync --locked --group bundle
+  uv run --locked --group bundle python scripts/bundle_smoke_build.py --variant full --out build/bundle-smoke/full
+  ```
+
+  `engine` es el motor real (`faro-engine`), lanzado como lo hará el núcleo (modos de desarrollo rechazados con código 2, `ready`, `/health`, `/agents`, `shutdown`, sin archivo de `SSLKEYLOGFILE`); `full` empaqueta `scripts/bundle_smoke.py` (base cifrada, `sqlite-vec`, registro de agentes y grafo con `FaroCheckpointSaver`, adaptador real de LiteLLM con los seis modelos del catálogo, TLS, APScheduler y `SSLKEYLOGFILE` con su control); `base` (sin la capa de IA ni los agentes) sirve para medir el aumento de tamaño (límite 150 MiB). Resumen en `build/bundle-smoke/*/summary.json`. Al terminar, vuelve a `uv sync --locked` para recuperar el entorno de desarrollo.
+
+- Los scripts `scripts/manual_*` piden una clave real o salen a internet: solo los ejecutas tú, en tu equipo. Ningún workflow ni script de npm los lanza (`tests/test_ci_workflows.py`) y no entran en el motor empaquetado.
 - Comprobación manual de HTTPS con tu clave real (criterio 8 de ADR 0015 §6, solo en tu equipo): `uv run python scripts/manual_llm_check.py <anthropic|openai|gemini>`. Pide la clave sin mostrarla, no la escribe en ningún archivo y no se conserva tras salir el proceso; antes limpia su entorno para que ninguna variable (p. ej. `OPENAI_BASE_URL`) la desvíe a otro host.
 - Comprobación manual del HTTPS del motor con el almacén de certificados del sistema (F1b T2b, ADR 0012 actualización 2026-10-06; sin claves): `uv run python scripts/manual_tls_check.py [URL]`. Hace un GET sin redirecciones con el cliente del motor y muestra solo `store=system|certifi` y el código HTTP. Por defecto pide `https://pypi.org/simple/truststore/`.
 - Certificados: todo el HTTPS del motor usa `faro_engine/net/tls.py::tls_context()` (almacén del sistema con `truststore`). `SSL_CERT_FILE` y `SSL_CERT_DIR` no tienen efecto: el motor las quita al arrancar. Si un antivirus intercepta TLS también en loopback (p. ej. Norton), las pruebas de `tests/net/test_tls.py` que necesitan aceptar un certificado de prueba por red se omiten con ese motivo; en la CI se ejecutan. Con ese antivirus, `uv add`/`uv lock` necesitan `--system-certs`.

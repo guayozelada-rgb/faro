@@ -4,7 +4,7 @@ Faro es una app de escritorio de SEO y Google Ads para personas y pequeñas empr
 
 La app combina una interfaz React, un núcleo Rust (Tauri 2) y un motor Python local que el núcleo lanza y supervisa.
 
-> Estado: fase F0 (esqueleto) en construcción. Ver la especificación en [`docs/specs/2026-09-28-f0-esqueleto.md`](docs/specs/2026-09-28-f0-esqueleto.md) y las decisiones en [`docs/adr/`](docs/adr/).
+> Estado: fase F1b (capa de IA y primeros agentes) en construcción. Ver las especificaciones en [`docs/specs/`](docs/specs/) (la actual: [`2026-10-05-f1b-capa-ia-y-motor-de-agentes.md`](docs/specs/2026-10-05-f1b-capa-ia-y-motor-de-agentes.md)) y las decisiones en [`docs/adr/`](docs/adr/).
 
 ## Estructura del monorepo
 
@@ -205,6 +205,84 @@ Cuando termines de probar, vuelve a poner `FARO_ALLOW_LOCAL_SITES=0` en `.env.lo
 
 > **El modo de sitios locales nunca funciona en la app instalada.** Solo lo activa un build de depuración (`npm run dev`) o el motor en modo `--dev`. El núcleo de release nunca pasa `--allow-local-sites` y el motor empaquetado se niega a arrancar con ese argumento.
 
+## Probar los agentes sin gastar (IA simulada)
+
+Con la **IA simulada** (`--fake-llm`) puedes lanzar el agente **Resumen del sitio** de principio a fin sin llamar a Anthropic, OpenAI ni Gemini: no se envía tu clave a ningún proveedor y no se gasta dinero. Los costos que muestra la app son de prueba y el resumen dice "Resumen simulado de tu sitio (modo de desarrollo)". Solo funciona en modo desarrollo (`npm run dev`); la app instalada nunca la usa.
+
+Ejecuta los comandos en PowerShell desde la raíz del repositorio. Necesitas lo de [Instalación en Windows](#instalación-en-windows) y Docker Desktop abierto (ver [Requisitos](#requisitos) de la sección anterior).
+
+### 1. Trae la última versión
+
+```powershell
+git pull
+```
+
+### 2. Instala las dependencias
+
+```powershell
+npm run setup
+```
+
+Vuelve a ejecutarlo cada vez que traigas cambios: instala exactamente lo que fijan los lockfiles (también los paquetes nuevos del motor) y genera el zip del plugin.
+
+### 3. Arranca WordPress con wp-env
+
+Sigue los pasos 2, 3 y 4 de [Probar con un WordPress local (wp-env)](#probar-con-un-wordpress-local-wp-env): arranca wp-env, activa el plugin **Faro** y genera el código de conexión. Ten a mano el código de 6 dígitos (caduca en 10 minutos; si caduca, genera otro).
+
+### 4. Activa los modos de desarrollo en `.env.local`
+
+Vuelve a la raíz del repositorio y crea `.env.local` si no existe:
+
+```powershell
+if (-not (Test-Path .env.local)) { Copy-Item .env.local.example .env.local }
+```
+
+Abre `.env.local` y deja estas dos líneas así:
+
+```
+FARO_ALLOW_LOCAL_SITES=1
+FARO_FAKE_LLM=1
+```
+
+- `FARO_ALLOW_LOCAL_SITES=1` deja conectar el WordPress de tu computadora (`http://localhost:8888`).
+- `FARO_FAKE_LLM=1` activa la IA simulada.
+
+Solo vale el valor exacto `1`. No escribas claves en este archivo.
+
+### 5. Abre Faro
+
+```powershell
+npm run dev
+```
+
+Si la app ya estaba abierta, ciérrala y vuelve a ejecutar `npm run dev`: los valores se leen al lanzar el motor. En la terminal debe aparecer el aviso `motor lanzado con --fake-llm (solo desarrollo)`. Si no aparece, revisa el paso 4.
+
+### 6. Conecta el sitio y lanza el agente
+
+1. **Configuración → Sitios conectados → Conectar tu sitio**: escribe `http://localhost:8888` y el código del paso 3. La tarjeta debe quedar como **Conectado**.
+2. **Configuración → Claves de IA**: agrega tu clave de Anthropic (u OpenAI o Gemini). Los agentes la necesitan para elegir proveedor. Al guardarla, Faro la comprueba con el proveedor sin gastar; con la IA simulada no se vuelve a usar.
+3. **Agentes → Lanzar** en la tarjeta **Resumen del sitio**: revisa el costo estimado y pulsa **Lanzar por unos …**. Verás "El agente empezó a trabajar.".
+4. En **Actividad**, la tarea pasa por "En cola", "Trabajando" y, al final, "Espera tu OK". La **Bandeja** muestra un 1 en la barra lateral.
+5. **Bandeja → Guardar resumen**. Verás "Guardamos el resumen." y la tarea termina en "Listo". En **Inicio** aparece "Tu sitio en pocas palabras".
+
+Si **Lanzar** está deshabilitado y arriba dice que los agentes están en pausa, pulsa **Reanudar agentes** en la barra superior.
+
+### Límites de gasto
+
+Faro controla lo que gastan los agentes con dos límites. Con la IA simulada los costos son de prueba, pero cuentan igual: sirven para ver los avisos sin gastar.
+
+- **Máximo por tarea.** Antes de lanzar ves dos números: el costo estimado (lo normal) y "Como mucho" (el máximo). La tarea nunca gasta más que ese máximo: tiene un presupuesto fijo y no puede pasarlo.
+- **Tope diario por clave.** Cada clave de IA tiene un límite de gasto por día: US$5,00 si no lo cambias (puedes poner de 0,50 a 500). El día es el de tu computadora y empieza a medianoche. Si una tarea pudiera pasar lo que te queda del día, Faro no te deja lanzarla; las tareas programadas esperan a mañana. Para cambiarlo: **Configuración → Claves de IA → Cambiar límite diario**.
+
+Lo que ya se gastó en una tarea no se recupera si la cancelas o la pausas.
+
+### Al terminar
+
+1. En `.env.local`, vuelve a poner `FARO_FAKE_LLM=0` y `FARO_ALLOW_LOCAL_SITES=0`.
+2. Apaga wp-env (paso 7 de la sección anterior).
+
+> **Con `FARO_FAKE_LLM=0`, los agentes llaman al proveedor de verdad con tu clave y eso sí gasta**, dentro de los límites de arriba. La IA simulada nunca funciona en la app instalada: el núcleo de release no pasa `--fake-llm` y el motor empaquetado se niega a arrancar con ese argumento.
+
 ## Integración continua
 
 Cada pull request hacia `main`, cada push a `main` y cada ejecución manual lanzan `.github/workflows/ci.yml`:
@@ -212,7 +290,7 @@ Cada pull request hacia `main`, cada push a `main` y cada ejecución manual lanz
 | Trabajo | Runner | Qué comprueba |
 | --- | --- | --- |
 | `ts` | Ubuntu | Prettier, ESLint, `tsc` y Vitest con cobertura (70 %) |
-| `engine` | Ubuntu, Windows y macOS | `ruff format --check`, `ruff check`, `mypy --strict` y pytest con cobertura (80 %; 95 % en seguridad y protocolo) |
+| `engine` | Ubuntu, Windows y macOS | `ruff format --check`, `ruff check`, `mypy --strict` y pytest con cobertura (80 % global; 95 % en cada módulo de `strict_modules` de `apps/engine/pyproject.toml`: seguridad, protocolo, capa de IA, agentes y cola). Dentro del proceso de pytest, las pruebas no pueden salir de `127.0.0.1`: cualquier intento hace fallar la prueba. El bloqueo no llega a los procesos hijos que lanzan algunas pruebas (las sondas llevan el suyo) |
 | `core` | Windows | Build de la interfaz, `cargo fmt --check`, `clippy -D warnings`, pruebas con `cargo llvm-cov` (falla si la cobertura de líneas baja del 80 % global o del 95 % en `vault/`, `secrets/`, `profile/` y `engine/protocol.rs`) y el arranque real del motor (`engine_real`) |
 | `contracts` | Ubuntu | `npm run contracts` no deja diferencias en `packages/shared` |
 | `wp-plugin` | Ubuntu | Plugin de WordPress: PHPCS (WordPress Coding Standards), PHPStan y el zip del plugin (contenido y hash estable) |
@@ -220,7 +298,9 @@ Cada pull request hacia `main`, cada push a `main` y cada ejecución manual lanz
 | `audit` | Ubuntu | `npm audit`, `cargo audit`, `pip-audit`, `composer audit` y `gitleaks` sobre todo el historial |
 | `ci-ok` | Ubuntu | Falla si cualquiera de los anteriores no terminó bien. Es el único check requerido en `main` |
 
-Además, `.github/workflows/codeql.yml` ejecuta CodeQL (Actions, JavaScript/TypeScript, Python y Rust) y `.github/dependabot.yml` propone actualizaciones semanales de npm, Cargo, uv, Composer y GitHub Actions.
+Además, `.github/workflows/codeql.yml` ejecuta CodeQL (Actions, JavaScript/TypeScript, Python y Rust) y `.github/dependabot.yml` propone actualizaciones semanales de npm, Cargo, uv, Composer y GitHub Actions (las dependencias de IA y agentes del motor, en grupos propios).
+
+`.github/workflows/engine-bundle-smoke.yml` solo se lanza a mano (**Actions → engine-bundle-smoke → Run workflow**, en Windows): empaqueta el motor con PyInstaller sin red, lo arranca como lo hará la app instalada y comprueba que funciona sin conexión (`apps/engine/scripts/bundle_smoke_build.py`). Lánzalo antes de integrar cambios en dependencias del motor o en su empaquetado; no entra en `ci-ok`.
 
 Para reproducir la CI en local antes de abrir un PR: `npm run format:check`, `npm run lint`, `npm run typecheck`, `npm run test`, `npm run coverage:core` (si cambias el núcleo Rust) y `npm run contracts` (este último no debe cambiar ningún archivo). La plantilla de PR (`.github/pull_request_template.md`) recoge esta lista y las casillas que piden la revisión de `revisor-seguridad`.
 
