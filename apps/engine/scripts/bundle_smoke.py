@@ -749,11 +749,13 @@ def tls_handshake_in_loopback(keylog: str | None) -> str:
         if cls.__module__ == "ssl" and cls.__name__ == "SSLContext"
     )
     server_context = stdlib_context(ssl.PROTOCOL_TLS_SERVER)
+    server_context.minimum_version = ssl.TLSVersion.TLSv1_2
     # `configure_cert` de trustme comprueba el tipo contra `ssl.SSLContext` (ya sustituido):
     # se carga el certificado desde su archivo temporal.
     with ca.issue_cert("localhost").private_key_and_cert_chain_pem.tempfile() as pem:
         server_context.load_cert_chain(pem)
     client_context = ssl.create_default_context()
+    client_context.minimum_version = ssl.TLSVersion.TLSv1_2
     ca.configure_trust(client_context)
     if keylog:
         client_context.keylog_filename = keylog
