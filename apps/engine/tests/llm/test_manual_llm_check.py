@@ -26,6 +26,7 @@ from tests.conftest import ENGINE_DIR
 from tests.deps.helpers import PROBE_TIMEOUT_S
 from tests.deps.manual_check_probe import DOTENV_MARKER, load_script
 from tests.deps.offline_probe import FAKE_KEYS as PROBE_KEYS
+from tests.network_guard import child_pythonpath
 
 # Claves falsas partidas para que no parezcan secretos (gitleaks).
 FAKE_KEYS = {
@@ -108,7 +109,7 @@ def run_harness(
     """Lanza `tests.deps.manual_check_probe` con `python -c` desde `cwd` (ver su docstring)."""
     base = {k: v for k, v in os.environ.items() if not script._is_scrubbed(k)}
     base.pop("LITELLM_MODE", None)
-    base["PYTHONPATH"] = str(ENGINE_DIR)
+    base["PYTHONPATH"] = child_pythonpath(ENGINE_DIR)  # con el bloqueo de red (T11-C2)
     base["PYTHONIOENCODING"] = "utf-8"
     base |= env
     code = "import sys; from tests.deps.manual_check_probe import main; sys.exit(main())"
