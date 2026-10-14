@@ -465,3 +465,65 @@ describe("agent-grants.json versionado", () => {
     assert.equal(stableJson(sortKeysDeep(parseAgentGrants(versioned))), versioned);
   });
 });
+
+describe("contratos de F1b versionados (spec F1b §9.5)", () => {
+  it("agent-grants.json concede a site_summary exactamente sus cuatro referencias, solo get", () => {
+    const grants = JSON.parse(readFileSync(new URL("agent-grants.json", SHARED), "utf8"));
+    assert.deepEqual(grants, [
+      {
+        kind: "site_summary",
+        max_grant_seconds: 900,
+        requires_site: true,
+        secrets: [
+          { access: ["get"], ref: "llm/anthropic/default" },
+          { access: ["get"], ref: "llm/gemini/default" },
+          { access: ["get"], ref: "llm/openai/default" },
+          { access: ["get"], ref: "wp/{site_id}/token" },
+        ],
+      },
+    ]);
+  });
+
+  it("engine-operations.json tiene las 21 operaciones de agentes de §5.2, sin secretos", () => {
+    const operations = JSON.parse(readFileSync(new URL("engine-operations.json", SHARED), "utf8"));
+    const byId = new Map(operations.map((op) => [op.operationId, op]));
+    const expected = {
+      listAgents: ["GET", "/agents"],
+      estimateAgentRun: ["POST", "/agent-runs/estimate"],
+      startAgentRun: ["POST", "/agent-runs"],
+      listAgentRuns: ["GET", "/agent-runs"],
+      getAgentRun: ["GET", "/agent-runs/{run_id}"],
+      cancelAgentRun: ["POST", "/agent-runs/{run_id}/cancel"],
+      acknowledgeAgentNotices: ["POST", "/agent-runs/notices/ack"],
+      listApprovals: ["GET", "/approvals"],
+      decideApproval: ["POST", "/approvals/{approval_id}/decision"],
+      acceptAgentSuggestion: ["POST", "/agent-runs/{run_id}/suggestion/accept"],
+      listAutonomyRules: ["GET", "/autonomy-rules"],
+      setAutonomyRule: ["PUT", "/autonomy-rules"],
+      deleteAutonomyRule: ["DELETE", "/autonomy-rules/{rule_id}"],
+      listSchedules: ["GET", "/schedules"],
+      createSchedule: ["POST", "/schedules"],
+      updateSchedule: ["PATCH", "/schedules/{schedule_id}"],
+      deleteSchedule: ["DELETE", "/schedules/{schedule_id}"],
+      getLlmUsage: ["GET", "/llm/usage"],
+      setLlmDailyLimit: ["PUT", "/llm/limits/{provider}"],
+      setLlmPreferences: ["PUT", "/llm/preferences"],
+      getSiteSummary: ["GET", "/sites/{site_id}/summary"],
+    };
+    assert.equal(Object.keys(expected).length, 21);
+    for (const [operationId, [method, path]] of Object.entries(expected)) {
+      const op = byId.get(operationId);
+      assert.ok(op, `falta ${operationId}`);
+      assert.deepEqual(
+        {
+          method: op.method,
+          path: op.path,
+          timeout_seconds: op.timeout_seconds,
+          secrets: op.secrets,
+        },
+        { method, path, timeout_seconds: 10, secrets: [] },
+        operationId,
+      );
+    }
+  });
+});

@@ -254,6 +254,82 @@ async def test_catch_up_una_sola_tarea_aunque_falten_tres(world: JobWorld) -> No
     assert world.query("SELECT COUNT(*) FROM agent_runs") == [(1,)]
 
 
+async def _forget(world: JobWorld, schedule_id: str, run: str) -> None:
+    """Quita la programación y cancela su tarea: la siguiente vuelta usa el mismo (agente,
+    sitio), que es único en las dos tablas."""
+    await world.jobs.queue.cancel(run)
+    assert world.database.run_sync(lambda c: store.delete_schedule(c, schedule_id))
+
+
+@pytest.mark.parametrize("cadence", ["daily", "weekly"])
+async def test_catch_up_con_cambio_de_horario_una_tarea_y_la_siguiente_a_su_hora(
+    world: JobWorld, cadence: str
+) -> None:
+    """Spec F1b §9.2 (T12): Faro cerrado mientras `America/Santiago` cambia de horario (en
+    abril atrasa y en septiembre adelanta una hora). Al abrir, **una** tarea `catch_up`
+    aunque falten varias ocurrencias, y la siguiente vuelve a las 9:00 locales con el
+    desfase nuevo (no a las 8:00 ni a las 10:00)."""
+    world.run_control()
+    zone = ZoneInfo(SANTIAGO)
+    changes = _transitions(zone, 2026)
+    assert len(changes) == 2
+    for index, change in enumerate(changes):
+        schedule_id = run_id(600 + index)
+        before = (change - timedelta(days=2)).astimezone(zone)
+        missed = before.replace(hour=9, minute=0, second=0, microsecond=0)
+        weekday = missed.weekday() if cadence == "weekly" else None
+        add_schedule(
+            world,
+            schedule_id,
+            next_run_at=missed.astimezone(UTC),
+            cadence=cadence,
+            weekday=weekday,
+        )
+        # Faro se abre 9 días después, al mediodía local: faltan dos ocurrencias o más.
+        now = (missed + timedelta(days=9)).replace(hour=12).astimezone(UTC)
+        world.clock.now = now
+        assert missed.utcoffset() != now.astimezone(zone).utcoffset()  # cruzó el cambio
+
+        created = await world.jobs.scheduler.catch_up()
+
+        assert len(created) == 1
+        run = world.run(created[0])
+        assert (run.trigger, run.schedule_id) == ("catch_up", schedule_id)
+        following = parse_utc(schedule(world, schedule_id).next_run_at)
+        local = following.astimezone(zone)
+        assert (local.hour, local.minute) == (9, 0)
+        assert local.utcoffset() == now.astimezone(zone).utcoffset()
+        assert now < following <= now + timedelta(days=7 if cadence == "weekly" else 1)
+        if weekday is not None:
+            assert local.weekday() == weekday
+        assert await world.jobs.scheduler.catch_up() == []  # ya no está vencida
+        await _forget(world, schedule_id, created[0])
+
+
+async def test_disparo_la_vispera_del_cambio_de_horario_calcula_las_9_locales(
+    world: JobWorld,
+) -> None:
+    """El disparo de las 9:00 del día anterior al cambio programa el siguiente a las 9:00
+    del día del cambio: 25 h después cuando se atrasa la hora y 23 h cuando se adelanta."""
+    world.run_control()
+    zone = ZoneInfo(SANTIAGO)
+    gaps = []
+    for index, change in enumerate(_transitions(zone, 2026)):
+        schedule_id = run_id(610 + index)
+        eve = (change - timedelta(hours=12)).astimezone(zone).replace(hour=9, minute=0)
+        add_schedule(world, schedule_id, next_run_at=eve.astimezone(UTC))
+        world.clock.now = eve.astimezone(UTC)
+        created = await world.jobs.scheduler.fire(schedule_id)
+        assert created is not None
+        following = parse_utc(schedule(world, schedule_id).next_run_at)
+        local = following.astimezone(zone)
+        assert (local.hour, local.minute) == (9, 0)
+        assert local.date() == eve.date() + timedelta(days=1)
+        gaps.append(following - eve.astimezone(UTC))
+        await _forget(world, schedule_id, created)
+    assert sorted(gaps) == [timedelta(hours=23), timedelta(hours=25)]
+
+
 # --- Trabajos de APScheduler ------------------------------------------------------------
 
 
