@@ -617,7 +617,7 @@ mod tests {
                 .into_iter()
                 .map(PathBuf::from)
                 .find(|p| p.is_file())
-                .expect("pwd en /bin o /usr/bin");
+                .unwrap_or_else(|| panic!("pwd en /bin o /usr/bin"));
             (pwd, Vec::new())
         }
     }
