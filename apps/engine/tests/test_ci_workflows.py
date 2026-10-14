@@ -119,7 +119,12 @@ def test_ningun_script_de_npm_ejecuta_los_scripts_manuales() -> None:
 def test_los_scripts_manuales_existen_y_no_son_modulos_del_motor() -> None:
     """Viven en `scripts/` (fuera de `faro_engine`): no entran en el motor empaquetado."""
     manual = sorted(p.name for p in (ENGINE_DIR / "scripts").glob("manual_*.py"))
-    assert manual == ["manual_llm_check.py", "manual_llm_models_check.py", "manual_tls_check.py"]
+    assert manual == [
+        "manual_llm_check.py",
+        "manual_llm_models_check.py",
+        "manual_site_summary_tokens.py",  # T12: tokens reales de `site_summary`
+        "manual_tls_check.py",
+    ]
     assert list((ENGINE_DIR / "faro_engine").rglob("manual_*")) == []
 
 
