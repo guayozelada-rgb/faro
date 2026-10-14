@@ -12,6 +12,10 @@ informe de T2; T8 y T9). Construye tres variantes con el mismo lock y las mismas
   nada en stdout; arranca con `SSLKEYLOGFILE` definida y no crea el archivo; escribe
   `ready`; `/health` responde con la base lista; `/agents` lista `site_summary` (registro y
   prompts en el paquete); sin token, 401; `shutdown` → código 0; stdout solo con `ready`.
+  Además (condición T11-C3) se lee el **PYZ** del ejecutable (y `base_library.zip` y la
+  carpeta `_internal`) con los lectores de PyInstaller: falla si aparece `sitecustomize`, un
+  script `manual_*`, `respx`, `trustme`, `pytest`/`_pytest` o el paquete `tests` de las
+  pruebas, o si no aparece `faro_engine.core.app` (lectura vacía).
 - `full`: `scripts/bundle_smoke.py` con todas las dependencias, más `respx`, `trustme` y
   `sqlite-vec` (solo de esta prueba): ver sus comprobaciones. Además, el control de la
   condición 17 (`--keylog-control`).
@@ -58,7 +62,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import IO, Any, Final
 
@@ -128,6 +132,12 @@ ENGINE_ENV_ALLOWLIST: Final = frozenset(
         "TZ",
     }
 )
+# Lo que nunca debe ir en el motor real (condición T11-C3): el `sitecustomize` del build sin
+# red, los scripts manuales, los dobles y certificados de prueba, pytest y las pruebas.
+FORBIDDEN_IN_ENGINE: Final = ("sitecustomize", "respx", "trustme", "pytest", "_pytest", "tests")
+FORBIDDEN_PREFIX_IN_ENGINE: Final = "manual_"
+# Control positivo de la lectura del PYZ: sin él, una lista vacía pasaría la comprobación.
+ENGINE_MARKER_MODULE: Final = "faro_engine.core.app"
 REJECTED_FLAGS: Final = (
     ("--fake-llm", "config.fake_llm_rejected"),
     ("--allow-local-sites", "config.local_sites_rejected"),
@@ -499,19 +509,100 @@ def check_engine_run(exe: Path, work: Path) -> dict[str, Any]:
     return result
 
 
+def _module_parts(name: str) -> list[str]:
+    return [part for part in name.replace("\\", "/").replace("/", ".").split(".") if part]
+
+
+def forbidden_modules(names: Iterable[str]) -> list[str]:
+    """Módulos o entradas que no deben ir en el motor real (condición T11-C3)."""
+    found = set()
+    for name in names:
+        parts = _module_parts(name)
+        if parts and (
+            parts[0] in FORBIDDEN_IN_ENGINE
+            or any(part.startswith(FORBIDDEN_PREFIX_IN_ENGINE) for part in parts)
+        ):
+            found.add(name)
+    return sorted(found)
+
+
+def internal_entry_module(name: str) -> str:
+    """Nombre de módulo de una entrada de `_internal` (`respx-0.23.1.dist-info` → `respx`,
+    `sitecustomize.py` → `sitecustomize`)."""
+    return name.split("-", 1)[0].split(".", 1)[0]
+
+
+def archive_report(names: Mapping[str, Sequence[str]]) -> dict[str, Any]:
+    """Veredicto de lo que hay en el paquete: sin prohibidos y con el motor dentro."""
+    internal = [internal_entry_module(name) for name in names.get("internal", ())]
+    pyz = list(names.get("pyz", ()))
+    base = list(names.get("base_library", ()))
+    forbidden = forbidden_modules([*pyz, *base, *internal])
+    marker = ENGINE_MARKER_MODULE in pyz
+    return {
+        "ok": marker and not forbidden,
+        "pyz_modules": len(pyz),
+        "base_library_modules": len(base),
+        "internal_entries": len(internal),
+        "engine_marker": marker,
+        "forbidden": forbidden,
+    }
+
+
+def bundle_module_names(exe: Path) -> dict[str, list[str]]:
+    """Módulos del PYZ (incrustado en el ejecutable o en `_internal/*.pyz`), de
+    `base_library.zip` y entradas de primer nivel de `_internal`, con los lectores de
+    PyInstaller (sin ejecutar nada del paquete)."""
+    import zipfile
+
+    from PyInstaller.archive.readers import CArchiveReader, ZlibArchiveReader
+
+    pyz: list[str] = []
+    package = CArchiveReader(str(exe))
+    for name, entry in package.toc.items():
+        if entry[-1] == "z":  # PKG_ITEM_PYZ
+            pyz += [str(module) for module in package.open_embedded_archive(name).toc]
+    internal = exe.parent / "_internal"
+    base: list[str] = []
+    entries: list[str] = []
+    if internal.is_dir():
+        for path in sorted(internal.rglob("*.pyz")):
+            pyz += [str(module) for module in ZlibArchiveReader(str(path)).toc]
+        library = internal / "base_library.zip"
+        if library.is_file():
+            with zipfile.ZipFile(library) as archive:
+                base = [
+                    n.removesuffix(".pyc").removesuffix("/__init__").replace("/", ".")
+                    for n in archive.namelist()
+                    if n.endswith(".pyc")
+                ]
+        entries = sorted(entry.name for entry in internal.iterdir())
+    return {"pyz": sorted(set(pyz)), "base_library": sorted(set(base)), "internal": entries}
+
+
+def check_engine_archive(exe: Path) -> dict[str, Any]:
+    try:
+        names = bundle_module_names(exe)
+    except Exception as exc:  # noqa: BLE001 - se informa como fallo del humo
+        return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+    return archive_report(names)
+
+
 def run_engine(exe: Path, out: Path) -> dict[str, Any]:
     work = out / "engine-run"
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     started = time.perf_counter()
+    archive = check_engine_archive(exe)
     rejected = check_rejected_flags(exe, work / "rejected-data")
     run = check_engine_run(exe, work)
     rejected_ok = all(
         r["exit_code"] == 2 and r["stdout_empty"] and r["logged"] for r in rejected.values()
     )
     return {
-        "ok": rejected_ok and run["ok"],
+        "ok": rejected_ok and run["ok"] and archive["ok"],
         "seconds": round(time.perf_counter() - started, 1),
+        "archive": archive,
         "rejected_flags": rejected,
         "run": run,
     }
@@ -579,6 +670,7 @@ def markdown(results: dict[str, dict[str, Any]], growth: int | None) -> str:
     engine = results.get("engine", {}).get("smoke")
     if engine is not None:
         run = engine["run"]
+        archive = engine.get("archive", {})
         lines += [
             "",
             "Motor real (`faro-engine`): "
@@ -587,7 +679,8 @@ def markdown(results: dict[str, dict[str, Any]], growth: int | None) -> str:
             )
             + f"; `ready` en {run.get('ready_seconds')} s; `/agents` → {run.get('agents')}; "
             f"`shutdown` → {run.get('exit_code')}; `SSLKEYLOGFILE` creado: "
-            f"{run.get('keylog_created')}.",
+            f"{run.get('keylog_created')}; PYZ: {archive.get('pyz_modules')} módulos, "
+            f"prohibidos: {archive.get('forbidden') or archive.get('error') or 'ninguno'}.",
         ]
     for variant, data in results.items():
         lines += ["", f"<details><summary>Lo más grande de `{variant}`</summary>", ""]
