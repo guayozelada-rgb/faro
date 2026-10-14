@@ -82,6 +82,8 @@ Desde `apps/engine`:
 
 Los dos fallos son los conocidos del proxy de este contenedor (`test_sin_desactivar_langsmith_el_entorno_envia_trazas` y `test_sin_vocabulario_local_gemini_lo_descarga`), con el mismo mensaje que antes de T11; `net/tls.py:204` sigue sin cubrir. **El bloqueo global no los afecta:** las dos corren su escenario en un proceso aparte (`run_probe`), que no carga `conftest.py`. El segundo omitido nuevo es `test_conectar_a_ipv6_publica_falla` (sin IPv6 en el contenedor; en la CI se ejecuta).
 
+**CI del PR (2026-10-14):** `engine (windows-latest)` falló en `tests/sites/test_service.py::test_connect_with_just_enough_margin_succeeds` (`site.timeout`; 2617 passed). La prueba (de F1a T13, no la toca T11) dejaba el reloj de prueba en 44,9 s y el `insert` corre con `asyncio.timeout(work.remaining())`, que mide en segundos **reales**: solo 0,1 s, y en Windows el `insert` tardó unos 0,11 s. Reproducido en Linux con un `insert` de 0,15 s (44,9 falla, 44,0 pasa). Corregido dejando 44,0 (11 s ≥ 10 s de reserva, 1 s real para el `insert`); el límite exacto lo siguen cubriendo `test_connect_without_undo_margin_creates_nothing` (45,5) y `test_connect_slow_insert_is_cut_and_undone` (44,99).
+
 Desde la raíz:
 
 | Comando | Resultado |
