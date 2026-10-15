@@ -52,12 +52,26 @@ gancho solo ve lo que se les escape.
 T11-C3): por eso este módulo solo importa la biblioteca estándar al cargarse (`pytest`, solo
 dentro de `fail_on_network_attempts`).
 
+**Hijos sin el bloqueo** (revisión de seguridad de T12, hallazgo 2): el gancho también
+atiende `subprocess.Popen`, `os.posix_spawn`, `os.exec` y `os.spawn`. Si se lanza un
+intérprete de Python (`sys.executable` u otro `python*`) sin `FARO_TEST_NETWORK_LOG` con el
+archivo de este proceso, sin la carpeta del bloqueo al principio de `PYTHONPATH` o con
+`-I`, `-E` o `-S` (que ignoran `PYTHONPATH` o no cargan `sitecustomize`), el lanzamiento
+falla con `UnguardedChildError` y queda anotado: la prueba falla. Las excepciones a
+propósito van dentro de `with unguarded_child("motivo"):` y están listadas en
+`tests/test_child_network_guard.py`. Solo rige donde hay bloqueo de hijos (pytest y sus
+hijos), no en el humo del empaquetado. En un hijo, si no se puede anotar un intento o un
+fallo al instalar el gancho, el proceso sale con `os._exit(97)` (falla cerrado).
+
+**Proxy del sistema:** además de las variables de entorno, se leen los proxies de
+`urllib.request.getproxies()` (en Windows, también los del registro).
+
 Límites:
 
 - El código nativo que abre sus propios sockets sin pasar por el módulo `socket` de Python
   no lanza los eventos de auditoría (ninguna dependencia del motor lo hace hoy).
-- Un hijo lanzado con `-S`, `-I` o `-E`, o con un `PYTHONPATH` propio sin
-  `child_pythonpath()`, no carga el `sitecustomize` (ninguna prueba lo hace hoy).
+- Un intérprete de Python lanzado a través de un intérprete de órdenes (`shell=True`,
+  `os.system`) o de un programa que no es Python no se reconoce como tal.
 - Un proceso que no es Python (p. ej. `npx wp-env` en la integración) no lleva el gancho.
 """
 
@@ -68,11 +82,13 @@ import contextlib
 import importlib
 import ipaddress
 import os
+import re
+import shlex
 import socket
 import sys
 import tempfile
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 from urllib.parse import urlsplit
@@ -91,6 +107,12 @@ _REVERSE_EVENT: Final = "socket.gethostbyaddr"
 _PROXY_VARS: Final = frozenset({"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"})
 _PROXY_DEFAULT_PORTS: Final = {"http": 80, "https": 443, "socks4": 1080, "socks5": 1080}
 _NAMEINFO_EVENT: Final = "socket.getnameinfo"
+_SPAWN_EVENTS: Final = frozenset({"subprocess.Popen", "os.posix_spawn", "os.exec", "os.spawn"})
+# Opciones de Python que ignoran `PYTHONPATH` (`-E`, `-I`) o no cargan `sitecustomize` (`-S`).
+_GUARD_OFF_OPTIONS: Final = frozenset("IES")
+_PYTHON_NAME: Final = re.compile(r"python(\d+(\.\d+)*)?w?(\.exe)?", re.IGNORECASE)
+# Salida de un hijo que no puede anotar un intento ni un fallo al instalar el gancho.
+CHILD_GUARD_EXIT: Final = 97
 
 
 class NetworkBlockedError(OSError):
@@ -99,6 +121,10 @@ class NetworkBlockedError(OSError):
 
 class DnsBlockedError(socket.gaierror, NetworkBlockedError):
     """Una prueba intentó resolver un nombre que no es de loopback."""
+
+
+class UnguardedChildError(NetworkBlockedError):
+    """Una prueba lanzó un proceso de Python que no llevaría el bloqueo de red."""
 
 
 def _text(host: object) -> str | None:
@@ -156,23 +182,162 @@ def _destination(address: object) -> str | None:
     return None
 
 
+def _loopback_proxy_port(value: str) -> int | None:
+    """Puerto de un proxy en loopback (`http://127.0.0.1:3128`, `localhost:8080`…)."""
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        parts = urlsplit(text if "://" in text else f"http://{text}")
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.hostname is None or not is_loopback_name(parts.hostname):
+        return None
+    scheme = parts.scheme.lower().removesuffix("h")  # `socks5h` → `socks5`
+    return port if port is not None else _PROXY_DEFAULT_PORTS.get(scheme, 80)
+
+
+def _ports(values: Iterable[str]) -> frozenset[int]:
+    return frozenset(p for p in (_loopback_proxy_port(v) for v in values) if p is not None)
+
+
 def proxy_ports(environ: Mapping[str, str]) -> frozenset[int]:
     """Puertos de los proxies del entorno que están en loopback (conectar ahí es salir)."""
-    ports: set[int] = set()
-    for name, value in environ.items():
-        text = value.strip()
-        if name.upper() not in _PROXY_VARS or not text:
-            continue
+    return _ports(value for name, value in environ.items() if name.upper() in _PROXY_VARS)
+
+
+def _getproxies() -> Mapping[str, str]:
+    import urllib.request  # perezoso: solo al instalar el gancho
+
+    return urllib.request.getproxies()
+
+
+def system_proxy_ports(
+    getproxies: Callable[[], Mapping[str, str]] = _getproxies,
+) -> frozenset[int]:
+    """Puertos en loopback de los proxies que usaría `urllib` (entorno y, en Windows, el
+    registro; en macOS, la configuración del sistema). Las claves son esquemas; `no` es la
+    lista de excepciones, no un proxy."""
+    try:
+        proxies = getproxies()
+    except Exception:  # noqa: BLE001 - un registro ilegible no impide el bloqueo
+        return frozenset()
+    return _ports(url for scheme, url in proxies.items() if scheme.lower() != "no")
+
+
+def _env_value(env: Mapping[str, str], name: str) -> str | None:
+    if name in env:
+        return env[name]
+    if sys.platform == "win32":  # pragma: no cover - en Windows no distingue mayúsculas
+        return next((v for k, v in env.items() if k.upper() == name), None)
+    return None
+
+
+def _command(args: object) -> list[str]:
+    """La orden como lista (en Windows, `subprocess` la pasa ya unida en una cadena)."""
+    if isinstance(args, str | bytes | os.PathLike):
+        text = os.fsdecode(args)
         try:
-            parts = urlsplit(text if "://" in text else f"http://{text}")
-            port = parts.port
+            return [part.strip('"') for part in shlex.split(text, posix=False)]
         except ValueError:
+            return [text]
+    if isinstance(args, Sequence):
+        return [
+            os.fsdecode(a) if isinstance(a, str | bytes | os.PathLike) else str(a) for a in args
+        ]
+    return []
+
+
+def _program_name(program: str) -> str:
+    """Nombre del programa con separadores de Windows o de POSIX (en cualquier sistema)."""
+    return program.strip('"').replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def is_python(program: str) -> bool:
+    """¿`program` es un intérprete de Python? (`python`, `python3.12`, `pythonw.exe`,
+    `sys.executable`…)."""
+    if not program:
+        return False
+    if _PYTHON_NAME.fullmatch(_program_name(program)):
+        return True
+    real = os.path.realpath(program)
+    own = {sys.executable, getattr(sys, "_base_executable", sys.executable)}
+    return any(real == os.path.realpath(p) for p in own if p)
+
+
+def guard_off_options(argv: Sequence[str]) -> list[str]:
+    """Opciones `-I`, `-E` o `-S` de la línea de órdenes de Python (también agrupadas, como
+    `-IS`), hasta `-c`, `-m`, el script o `--`."""
+    found: list[str] = []
+    skip_next = False
+    for token in argv[1:]:
+        if skip_next:
+            skip_next = False
             continue
-        if parts.hostname is None or not is_loopback_name(parts.hostname):
+        if token == "--" or not token.startswith("-") or token == "-":
+            break
+        if token.startswith("--"):
             continue
-        scheme = parts.scheme.lower().removesuffix("h")  # `socks5h` → `socks5`
-        ports.add(port if port is not None else _PROXY_DEFAULT_PORTS.get(scheme, 80))
-    return frozenset(ports)
+        cluster = token[1:]
+        for index, option in enumerate(cluster):
+            if option in "cm":
+                return found
+            if option in _GUARD_OFF_OPTIONS:
+                found.append(f"-{option}")
+            if option in "WX":  # llevan valor: el resto del grupo o el siguiente argumento
+                skip_next = index == len(cluster) - 1
+                break
+    return found
+
+
+def spawn_problem(
+    program: str, argv: Sequence[str], env: Mapping[str, str] | None, log: str
+) -> str | None:
+    """Por qué un proceso que se lanza no llevaría el bloqueo, o `None` si lo lleva (o no
+    es Python)."""
+    if not is_python(program):
+        return None
+    environ: Mapping[str, str] = os.environ if env is None else env
+    problems: list[str] = []
+    if _env_value(environ, CHILD_LOG_VAR) != log:
+        problems.append(f"sin {CHILD_LOG_VAR}")
+    entries = [e for e in (_env_value(environ, "PYTHONPATH") or "").split(os.pathsep) if e]
+    if not entries or Path(entries[0]).resolve() != CHILD_GUARD_DIR:
+        problems.append("sin la carpeta del bloqueo al principio de PYTHONPATH")
+    options = guard_off_options(argv)
+    if options:
+        problems.append(f"con {' '.join(options)}")
+    return ", ".join(problems) or None
+
+
+def _spawn_parts(event: str, args: tuple[Any, ...]) -> tuple[str, list[str], Any]:
+    """(programa, orden, entorno) de cada evento de auditoría de lanzamiento."""
+    if event == "subprocess.Popen":  # (executable, args, cwd, env)
+        argv = _command(args[1])
+        program = os.fsdecode(args[0]) if args[0] is not None else (argv[0] if argv else "")
+        return program, argv, args[3]
+    if event == "os.spawn":  # (mode, path, args, env)
+        return os.fsdecode(args[1]), _command(args[2]), args[3]
+    return os.fsdecode(args[0]), _command(args[1]), args[2]  # os.posix_spawn, os.exec
+
+
+_UNGUARDED = threading.local()
+
+
+@contextlib.contextmanager
+def unguarded_child(reason: str) -> Iterator[None]:
+    """Excepción a propósito: lanzar en este hilo un Python sin el bloqueo de las pruebas
+    (p. ej. para probar otro bloqueo). Cada uso está en la lista explícita de
+    `tests/test_child_network_guard.py`."""
+    if not reason.strip():
+        raise ValueError("di por qué el hijo va sin el bloqueo")
+    previous = getattr(_UNGUARDED, "active", False)
+    _UNGUARDED.active = True
+    try:
+        yield
+    finally:
+        _UNGUARDED.active = previous
 
 
 class NetworkGuard:
@@ -188,12 +353,27 @@ class NetworkGuard:
         self.log_path: str | None = None
         # Puertos de loopback de los proxies del entorno al instalar (`proxy_ports`).
         self.proxy_ports: frozenset[int] = frozenset()
+        # Archivo de intentos que deben llevar los hijos (con bloqueo de hijos; si no, None).
+        self.child_log: str | None = None
 
     def _record(self, what: str) -> None:
         with self._lock:
             self._attempts.append(what)
             if self.log_path is not None:
-                write_child_line(self.log_path, f"attempt {os.getpid()} {what}")
+                try:
+                    write_child_line(self.log_path, f"attempt {os.getpid()} {what}")
+                except OSError:  # sin poder avisar al padre, el hijo no sigue (falla cerrado)
+                    os._exit(CHILD_GUARD_EXIT)
+
+    def check_spawn(self, event: str, args: tuple[Any, ...]) -> None:
+        """Un Python lanzado sin el bloqueo de los hijos falla y queda anotado."""
+        if self.child_log is None or getattr(_UNGUARDED, "active", False):
+            return
+        program, argv, env = _spawn_parts(event, args)
+        problem = spawn_problem(program, argv, env, self.child_log)
+        if problem is not None:
+            self._record(f"{event}:{_program_name(program)} ({problem})")
+            raise UnguardedChildError(f"proceso de Python sin el bloqueo de red: {problem}")
 
     def take(self) -> list[str]:
         """Devuelve y vacía los intentos anotados."""
@@ -216,6 +396,9 @@ class NetworkGuard:
             raise NetworkBlockedError(f"red bloqueada en las pruebas: {destination}")
 
     def audit(self, event: str, args: tuple[Any, ...]) -> None:
+        if event in _SPAWN_EVENTS:
+            self.check_spawn(event, args)
+            return
         if not event.startswith("socket."):
             return
         if event in _ADDRESS_EVENTS and len(args) >= 2:
@@ -371,12 +554,14 @@ def install_for_children(path: Path | None = None) -> ChildAttemptLog:
         *(p for p in current if Path(p).resolve() != CHILD_GUARD_DIR)
     )
     os.environ[CHILD_LOG_VAR] = str(path)
+    GUARD.child_log = str(path)
     return ChildAttemptLog(path)
 
 
 def install_in_child(log_path: str) -> NetworkGuard:
     """Lo llama `tests/child_network_guard/sitecustomize.py` al arrancar cada hijo."""
     GUARD.log_path = log_path
+    GUARD.child_log = log_path  # también sus propios hijos (nietos) deben llevarlo
     with contextlib.suppress(OSError):
         write_child_line(log_path, f"start {os.getpid()}")
     return install()
@@ -389,7 +574,7 @@ def install() -> NetworkGuard:
         GUARD.engine_modules_at_install = frozenset(
             name for name in sys.modules if name.split(".")[0] == "faro_engine"
         )
-        GUARD.proxy_ports = proxy_ports(os.environ)
+        GUARD.proxy_ports = proxy_ports(os.environ) | system_proxy_ports()
         _patch_getnameinfo()
         sys.addaudithook(GUARD.audit)
         if sys.platform == "win32":  # pragma: no cover - solo Windows

@@ -518,9 +518,12 @@ def forbidden_modules(names: Iterable[str]) -> list[str]:
     found = set()
     for name in names:
         parts = _module_parts(name)
+        # Un *runtime hook* propio entra como `pyi_rth_<nombre>` o con su nombre.
+        bare = [part.removeprefix("pyi_rth_") for part in parts]
         if parts and (
             parts[0] in FORBIDDEN_IN_ENGINE
-            or any(part.startswith(FORBIDDEN_PREFIX_IN_ENGINE) for part in parts)
+            or "sitecustomize" in parts  # también en una subcarpeta
+            or any(part.startswith(FORBIDDEN_PREFIX_IN_ENGINE) for part in bare)
         ):
             found.add(name)
     return sorted(found)
@@ -533,17 +536,26 @@ def internal_entry_module(name: str) -> str:
 
 
 def archive_report(names: Mapping[str, Sequence[str]]) -> dict[str, Any]:
-    """Veredicto de lo que hay en el paquete: sin prohibidos y con el motor dentro."""
+    """Veredicto de lo que hay en el paquete: sin prohibidos y con el motor dentro.
+
+    Se revisan los módulos del PYZ y de `base_library.zip`, **todas** las entradas del
+    CArchive del ejecutable (también las de tipo `s`: el script de entrada y los *runtime
+    hooks*), las entradas de primer nivel de `_internal` y la ruta relativa de todo
+    `_internal/**/*.py*` (revisión de seguridad de T12, hallazgo 4)."""
     internal = [internal_entry_module(name) for name in names.get("internal", ())]
     pyz = list(names.get("pyz", ()))
     base = list(names.get("base_library", ()))
-    forbidden = forbidden_modules([*pyz, *base, *internal])
+    carchive = list(names.get("carchive", ()))
+    files = list(names.get("internal_files", ()))
+    forbidden = forbidden_modules([*pyz, *base, *carchive, *internal, *files])
     marker = ENGINE_MARKER_MODULE in pyz
     return {
         "ok": marker and not forbidden,
         "pyz_modules": len(pyz),
         "base_library_modules": len(base),
+        "carchive_entries": len(carchive),
         "internal_entries": len(internal),
+        "internal_python_files": len(files),
         "engine_marker": marker,
         "forbidden": forbidden,
     }
@@ -551,20 +563,23 @@ def archive_report(names: Mapping[str, Sequence[str]]) -> dict[str, Any]:
 
 def bundle_module_names(exe: Path) -> dict[str, list[str]]:
     """Módulos del PYZ (incrustado en el ejecutable o en `_internal/*.pyz`), de
-    `base_library.zip` y entradas de primer nivel de `_internal`, con los lectores de
-    PyInstaller (sin ejecutar nada del paquete)."""
+    `base_library.zip`, todas las entradas del CArchive, entradas de primer nivel de
+    `_internal` y rutas relativas de `_internal/**/*.py*`, con los lectores de PyInstaller
+    (sin ejecutar nada del paquete)."""
     import zipfile
 
     from PyInstaller.archive.readers import CArchiveReader, ZlibArchiveReader
 
     pyz: list[str] = []
     package = CArchiveReader(str(exe))
+    carchive = [str(name) for name in package.toc]
     for name, entry in package.toc.items():
         if entry[-1] == "z":  # PKG_ITEM_PYZ
             pyz += [str(module) for module in package.open_embedded_archive(name).toc]
     internal = exe.parent / "_internal"
     base: list[str] = []
     entries: list[str] = []
+    files: list[str] = []
     if internal.is_dir():
         for path in sorted(internal.rglob("*.pyz")):
             pyz += [str(module) for module in ZlibArchiveReader(str(path)).toc]
@@ -577,7 +592,14 @@ def bundle_module_names(exe: Path) -> dict[str, list[str]]:
                     if n.endswith(".pyc")
                 ]
         entries = sorted(entry.name for entry in internal.iterdir())
-    return {"pyz": sorted(set(pyz)), "base_library": sorted(set(base)), "internal": entries}
+        files = sorted(p.relative_to(internal).as_posix() for p in internal.rglob("*.py*"))
+    return {
+        "pyz": sorted(set(pyz)),
+        "base_library": sorted(set(base)),
+        "carchive": sorted(carchive),
+        "internal": entries,
+        "internal_files": files,
+    }
 
 
 def check_engine_archive(exe: Path) -> dict[str, Any]:

@@ -30,7 +30,7 @@ from typing import Any
 import pytest
 
 from tests.conftest import ENGINE_DIR
-from tests.network_guard import CHILD_ENV_VARS
+from tests.network_guard import CHILD_ENV_VARS, unguarded_child
 
 SCRIPTS = ENGINE_DIR / "scripts"
 LAUNCHER_RS = ENGINE_DIR.parents[1] / "apps/desktop/src-tauri/src/engine/launcher.rs"
@@ -107,7 +107,9 @@ def test_la_comparacion_detecta_una_lista_distinta() -> None:
 GOOD = {
     "pyz": ["faro_engine.core.app", "faro_engine.llm.service", "litellm.proxy", "pytest_x"],
     "base_library": ["encodings.utf_8", "collections.abc"],
+    "carchive": ["PYZ.pyz", "pyiboot01_bootstrap", "pyi_rth_inspect", "__main__"],
     "internal": ["base_library.zip", "certifi-2026.7.22.dist-info", "python3.12", "lib-dynload"],
+    "internal_files": ["certifi/py.typed", "faro_engine/llm/tiktoken/x.py", "PYZ-00.pyz"],
 }
 
 
@@ -135,6 +137,15 @@ def test_el_paquete_del_motor_sin_prohibidos_pasa() -> None:
         ("internal", "respx-0.23.1.dist-info"),
         ("internal", "trustme-1.2.1.dist-info"),
         ("internal", "sitecustomize.py"),
+        # Revisión de seguridad de T12, hallazgo 4: CArchive (script y runtime hooks) y
+        # cualquier `*.py*` de `_internal`, con su ruta relativa.
+        ("carchive", "sitecustomize"),
+        ("carchive", "manual_rth_hook"),
+        ("carchive", "pyi_rth_manual_algo"),
+        ("internal_files", "tests/network_guard.py"),
+        ("internal_files", "faro_engine/manual_tokens.pyc"),
+        ("internal_files", "respx/__init__.py"),
+        ("internal_files", "otro/sitecustomize.py"),
     ],
 )
 def test_cada_prohibido_hace_fallar_el_humo(where: str, name: str) -> None:
@@ -152,7 +163,9 @@ def test_una_lectura_vacia_no_pasa() -> None:
         "ok": False,
         "pyz_modules": 0,
         "base_library_modules": 0,
+        "carchive_entries": 0,
         "internal_entries": 0,
+        "internal_python_files": 0,
         "engine_marker": False,
         "forbidden": [],
     }
@@ -207,16 +220,19 @@ def _smoke_child(code: str) -> dict[str, Any]:
         "import bundle_smoke as smoke\n"
         "guard = smoke.install_network_guard()\n"
     )
-    completed = subprocess.run(
-        [sys.executable, "-c", prologue + code],
-        cwd=ENGINE_DIR,
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=120,
-        check=False,
-    )
+    # Excepción a propósito (lista en `tests/test_child_network_guard.py`): el bloqueo que
+    # se prueba es el que instala el humo, y el de los hijos lo taparía (gancho anterior).
+    with unguarded_child("se prueba el bloqueo que instala el propio humo"):
+        completed = subprocess.run(
+            [sys.executable, "-c", prologue + code],
+            cwd=ENGINE_DIR,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            check=False,
+        )
     assert completed.returncode == 0, completed.stderr[-3000:]
     result: dict[str, Any] = json.loads(completed.stdout.strip().splitlines()[-1])
     return result

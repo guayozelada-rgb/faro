@@ -7,7 +7,7 @@ Motor local de Faro: servidor FastAPI que el núcleo Tauri lanza como proceso hi
 | Qué | Comando |
 | --- | --- |
 | Instalar | `uv sync --directory apps/engine --locked` (o `npm run setup`) |
-| Pruebas + cobertura | `npm run test:engine` (sin red: `tests/network_guard.py` hace fallar cualquier conexión fuera de `127.0.0.1`, también al puerto de un proxy del entorno en loopback, en el proceso de pytest y, con `tests/child_network_guard/sitecustomize.py` en su `PYTHONPATH`, en sus procesos hijos; quien cambie `PYTHONPATH` al lanzar un hijo usa `child_pythonpath()`) |
+| Pruebas + cobertura | `npm run test:engine` (sin red: `tests/network_guard.py` hace fallar cualquier conexión fuera de `127.0.0.1`, también al puerto de un proxy del entorno en loopback, en el proceso de pytest y, con `tests/child_network_guard/sitecustomize.py` en su `PYTHONPATH`, en sus procesos hijos; quien cambie `PYTHONPATH` al lanzar un hijo usa `child_pythonpath()`; lanzar un Python sin esas variables o con `-I`/`-E`/`-S` hace fallar la prueba, salvo las excepciones de `unguarded_child` listadas en `tests/test_child_network_guard.py`) |
 | Lint | `npm run lint:py` |
 | Formato | `uv run --directory apps/engine ruff format --check .` |
 | Tipos | `uv run --directory apps/engine mypy faro_engine tests scripts` |

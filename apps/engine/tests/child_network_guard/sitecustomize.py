@@ -11,7 +11,8 @@ hace fallar aunque el hijo se tragara el error. Cada proceso vigilado anota tamb
 arranque (`start <pid>`), para comprobar que el bloqueo llegó.
 
 `tests/network_guard.py` se carga por su ruta (sin importar el paquete `tests` ni tocar
-`sys.path`). Si no se puede instalar, se anota `error` y la prueba falla (falla cerrado).
+`sys.path`). Si no se puede instalar, se anota `error` y la prueba falla; si tampoco se
+puede anotar, el proceso sale con el código 97 (falla cerrado).
 Sin `FARO_TEST_NETWORK_LOG` no hace nada. Después se ejecuta el `sitecustomize` que esta
 carpeta tapa, si lo hay (p. ej. el de la distribución de Linux).
 """
@@ -49,10 +50,18 @@ def _chain() -> None:
     spec.loader.exec_module(module)
 
 
+# Si el gancho no se instala y ni siquiera se puede anotar, el proceso no sigue (falla
+# cerrado; revisión de seguridad de T12, hallazgo 2). El mismo código usa el gancho cuando
+# no puede anotar un intento (`CHILD_GUARD_EXIT` en `tests/network_guard.py`).
+_EXIT_UNGUARDED = 97
+
 if _LOG:
     try:
         _install(_LOG)
     except Exception as exc:  # noqa: BLE001 - falla cerrado: la prueba lo verá en el archivo
-        with open(_LOG, "a", encoding="utf-8") as handle:  # noqa: PTH123
-            handle.write(f"error {os.getpid()} {type(exc).__name__}\n")
+        try:
+            with open(_LOG, "a", encoding="utf-8") as handle:  # noqa: PTH123
+                handle.write(f"error {os.getpid()} {type(exc).__name__}\n")
+        except OSError:
+            os._exit(_EXIT_UNGUARDED)
 _chain()

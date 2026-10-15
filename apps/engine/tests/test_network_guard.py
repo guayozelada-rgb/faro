@@ -26,6 +26,7 @@ from tests.network_guard import (
     is_loopback_name,
     needs_dns,
     proxy_ports,
+    system_proxy_ports,
 )
 
 OUTSIDE_IP = "203.0.113.10"
@@ -274,5 +275,23 @@ def test_conectar_al_proxy_del_entorno_en_loopback_cuenta_como_salir() -> None:
     ]
 
 
-def test_el_bloqueo_de_las_pruebas_lee_el_proxy_del_entorno() -> None:
-    assert GUARD.proxy_ports == proxy_ports(os.environ)
+def test_el_bloqueo_de_las_pruebas_lee_el_proxy_del_entorno_y_del_sistema() -> None:
+    assert GUARD.proxy_ports == proxy_ports(os.environ) | system_proxy_ports()
+
+
+def test_proxies_del_sistema_en_loopback() -> None:
+    """`urllib.request.getproxies()` (en Windows, también el registro): claves = esquemas."""
+    proxies = {
+        "http": "http://127.0.0.1:8888",
+        "https": "127.0.0.1:9443",  # el registro de Windows puede no traer esquema
+        "socks": "socks5://localhost:1080",
+        "ftp": "http://proxy.empresa.test:2121",  # fuera de loopback: ya se bloquea
+        "no": "127.0.0.1:1,localhost",  # excepciones, no un proxy
+    }
+    assert system_proxy_ports(lambda: proxies) == {8888, 9443, 1080}
+
+    def broken() -> dict[str, str]:
+        raise OSError("registro ilegible")
+
+    assert system_proxy_ports(broken) == frozenset()
+    assert system_proxy_ports(dict) == frozenset()
