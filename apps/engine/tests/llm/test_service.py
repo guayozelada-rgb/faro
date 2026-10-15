@@ -596,8 +596,8 @@ async def test_modo_simulado_no_pide_clave_y_marca_el_modelo_fake(world: World) 
     assert world.secrets.requests == []
     assert result.model == FAKE_MODEL
     assert world.step_row()["model"] == FAKE_MODEL
-    # Precio de prueba alto: 6 tokens x 100 USD/Mtok + 12 tokens x 500 USD/Mtok.
-    assert result.cost_micros == 600 + 6000
+    # Precio de prueba alto: 6 tokens x 25 USD/Mtok + 12 tokens x 125 USD/Mtok.
+    assert result.cost_micros == 150 + 1500
 
 
 # --- La clave no sale de la llamada ----------------------------------------------------

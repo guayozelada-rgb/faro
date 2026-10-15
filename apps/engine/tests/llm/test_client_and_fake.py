@@ -155,4 +155,4 @@ def test_modo_desarrollo() -> None:
     catalog = fake_catalog()
     assert len(catalog.models) == 6
     assert {m.model for m in catalog.models} == {FAKE_MODEL}
-    assert catalog.model_for("gemini", "premium").output_micros_per_mtok == 500_000_000
+    assert catalog.model_for("gemini", "premium").output_micros_per_mtok == 125_000_000

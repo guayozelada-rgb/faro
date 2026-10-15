@@ -12,8 +12,10 @@ En el modo `--fake-llm` (solo desarrollo, doble llave en el núcleo, rechazado c
 - `requires_key = False`: el servicio no pide ninguna clave por `secret_request` (la
   concesión de la ejecución sí se pide igual, la pide el trabajador);
 - el catálogo es `fake_catalog()`: el modelo es `"fake"` en los dos niveles de los tres
-  proveedores, con un **precio de prueba alto** (`FAKE_PRICES`) para llegar al tope
-  diario con pocas tareas;
+  proveedores, con un **precio de prueba alto** (`FAKE_INPUT_MICROS_PER_MTOK` y
+  `FAKE_OUTPUT_MICROS_PER_MTOK`) para que el gasto de hoy se note y se pueda llegar al tope
+  diario en la verificación manual, pero con el "como mucho" de cada agente **por debajo
+  del tope predeterminado** de US$5 (si no, el estimado bloquea y no se puede lanzar);
 - las respuestas salen de `DEV_RESPONSES` (vacío en T6; cada agente añade las suyas, p. ej.
   `site_summary` en T9). Un `prompt_id` sin respuesta devuelve `DEFAULT_TEXT`: con salida
   estructurada eso termina en `llm.bad_output`, a propósito.
@@ -31,10 +33,19 @@ from faro_engine.llm.client import PROVIDERS, TIERS, RawCompletion, ResolvedCall
 from faro_engine.llm.errors import FailureKind, LlmCallError
 
 FAKE_MODEL: Final = "fake"
-# Precio de prueba alto: US$100 por millón de tokens de entrada y US$500 de salida. Una
-# llamada de ~2 000 tokens de entrada y ~500 de salida cuesta unos US$0,45.
-FAKE_INPUT_MICROS_PER_MTOK: Final = 100_000_000
-FAKE_OUTPUT_MICROS_PER_MTOK: Final = 500_000_000
+# Precio de prueba alto (dinero de mentira): US$25 por millón de tokens de entrada y US$125
+# de salida, más de 6 veces el modelo más caro de `models.json`.
+# - Máximo garantizado de `site_summary` (71 454 tokens de entrada y 4 000 de salida con
+#   los reintentos): US$2,29, menos de la mitad del tope predeterminado de US$5. Hasta T12
+#   era US$100/US$500 y ese máximo (US$9,15) pasaba el tope: el estimado bloqueaba siempre
+#   con el límite por defecto (informe de T12, §6.3).
+# - Costo real de una tarea simulada con un sitio pequeño (2-5 elementos): unos US$0,04.
+#   Para que el gasto de hoy pase del tope mínimo (US$0,50) hacen falta 13 tareas; con el
+#   tope predeterminado caben unas 66 antes de que el estimado bloquee (gastado + máximo).
+# `tests/agents/site_summary/test_fake_mode.py` lo comprueba: si un agente sube su máximo
+# hasta acercarse al tope, falla ahí y no en la verificación manual.
+FAKE_INPUT_MICROS_PER_MTOK: Final = 25_000_000
+FAKE_OUTPUT_MICROS_PER_MTOK: Final = 125_000_000
 FAKE_MAX_OUTPUT_TOKENS: Final = 128_000
 FAKE_CONTEXT_TOKENS: Final = 1_000_000
 DEFAULT_TEXT: Final = "Respuesta simulada de Faro (modo de desarrollo)."
