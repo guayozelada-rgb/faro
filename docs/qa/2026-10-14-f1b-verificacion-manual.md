@@ -59,30 +59,34 @@ Marca cada paso solo si lo que ves coincide con lo esperado. Si algo no coincide
    Solo vale el valor exacto `1`. No escribas claves en ese archivo.
 
 5. **Abre Faro:** `npm run dev`. En la terminal debe aparecer `motor lanzado con --fake-llm (solo desarrollo)`.
+
+   > **IMPORTANTE: si ese aviso no aparece, no sigas.** Sin él, los agentes usan tu clave de verdad y **gastan dinero real**. Cierra Faro, revisa que `.env.local` diga exactamente `FARO_FAKE_LLM=1` (sin espacios ni comillas) y vuelve a abrirlo. Haz esta comprobación cada vez que abras Faro en la Parte A.
 6. **Conecta el sitio:** en wp-admin → **Ajustes → Faro** → **Generar código de conexión**. En Faro: **Configuración → Sitios conectados → Conectar tu sitio**, escribe `http://localhost:8888` y el código. La tarjeta queda **Conectado**.
 7. **Agrega tu clave de IA** en **Configuración → Claves de IA** (Faro la prueba al guardarla, sin gastar). Con la IA simulada no se vuelve a usar.
-8. **Sube el límite diario a US$20 mientras uses la IA simulada.** Configuración → Claves de IA → **Cambiar límite diario** → `20` → **Guardar límite**. Motivo: con la IA simulada cada tarea dice "Como mucho: US$9,15" (dinero de mentira, precio de prueba alto) y con el límite de US$5 Faro no te deja lanzarla. Está anotado como hallazgo en el informe de T12; **antes de la Parte B lo vuelves a poner en 5**.
+8. **Deja el límite diario en US$5** (el predeterminado). Con la IA simulada cada tarea dice "Como mucho: US$2,29" y gasta unos US$0,04 (dinero de mentira, precio de prueba alto), así que cabe sin cambiar nada.
 
 ### Cómo cambiar entre IA simulada y clave real
 
-- **A IA simulada:** en `.env.local`, `FARO_FAKE_LLM=1`. Cierra la ventana de Faro (o `Ctrl+C` en la terminal) y vuelve a ejecutar `npm run dev`. En la terminal aparece `motor lanzado con --fake-llm (solo desarrollo)`.
+- **A IA simulada:** en `.env.local`, `FARO_FAKE_LLM=1`. Cierra la ventana de Faro (o `Ctrl+C` en la terminal) y vuelve a ejecutar `npm run dev`. En la terminal aparece `motor lanzado con --fake-llm (solo desarrollo)`. **Si no aparece, no sigas con la Parte A: se gastaría dinero real.**
 - **A clave real:** en `.env.local`, `FARO_FAKE_LLM=0`. Cierra Faro y `npm run dev` otra vez. Ese aviso **no** debe aparecer. Desde ese momento, cada tarea gasta con tu clave (dentro de los límites).
 
 ### Dónde mirar
 
 | Qué | Dónde |
 | --- | --- |
-| Log de la app (incluye lo que escribe el motor) | `%LOCALAPPDATA%\app.faro.desktop\logs\faro.<AAAA-MM-DD>.log`, una línea JSON por evento |
+| Log de la app (incluye lo que escribe el motor) | `%LOCALAPPDATA%\app.faro.desktop\logs\faro.<AAAA-MM-DD>.log`, una línea JSON por evento. Cambia de archivo cada día y se guardan los 7 últimos: busca siempre en **todos** |
 | Estimado y máximo de una tarea | Diálogo **Lanzar**: "Costo estimado: unos … Como mucho: …" |
 | Costo final y tokens de una tarea | Clic en la fila de **Actividad** → panel de detalle: "Costo total: …"; pasa el ratón por encima para ver los tokens y "Como mucho" |
 | Tokens de cada llamada al modelo | El log (comando de la medición M1) o el script de la medición M2 |
 | Lo que te cobró el proveedor | Panel de uso de tu cuenta: Anthropic Console (Usage / Cost), OpenAI Platform (Usage) o Google AI Studio (uso de la clave) / facturación de Google Cloud. Puede tardar de minutos a horas en actualizarse |
 
-Para no repetir la ruta del log, al abrir cada PowerShell ejecuta:
+Para no repetir la ruta de los logs, al abrir cada PowerShell (y otra vez si la prueba cruza la medianoche, porque se crea un archivo nuevo) ejecuta:
 
 ```powershell
-$log = (Get-ChildItem "$env:LOCALAPPDATA\app.faro.desktop\logs\faro.*.log" | Sort-Object LastWriteTime | Select-Object -Last 1).FullName
+$logs = (Get-ChildItem "$env:LOCALAPPDATA\app.faro.desktop\logs\faro.*.log").FullName
 ```
+
+Así los comandos de abajo buscan en **todos** los archivos de log, no solo en el de hoy.
 
 ---
 
@@ -94,7 +98,7 @@ $log = (Get-ChildItem "$env:LOCALAPPDATA\app.faro.desktop\logs\faro.*.log" | Sor
 - **Haz esto:** con `npm run dev` abierto, mira **Inicio**. Después, en PowerShell:
 
   ```powershell
-  Select-String -Path $log -Pattern 'db.migration_applied', 'db.ready' | Select-Object -Last 3
+  Select-String -Path $logs -Pattern 'db.migration_applied', 'db.ready' | Select-Object -Last 3
   ```
 
 - **Debe pasar:** la tarjeta del motor dice **Motor conectado**, sin avisos de la base de datos. En el log aparece `db.ready` (y, la primera vez con F1b, `db.migration_applied` con `"name": "agents"` y `"version": 2`).
@@ -102,19 +106,19 @@ $log = (Get-ChildItem "$env:LOCALAPPDATA\app.faro.desktop\logs\faro.*.log" | Sor
 
 ### Paso 2 — Catálogo, estimado y bloqueo por límite
 
-- **Preparación:** sitio conectado, clave guardada, límite en US$20.
+- **Preparación:** sitio conectado, clave guardada, límite en US$5.
 - **Haz esto:**
   1. Ve a **Agentes**. Mira la tarjeta **Resumen del sitio**.
   2. Pulsa **Lanzar**. Mira el diálogo sin lanzar todavía.
   3. Pulsa **Cancelar**. Ve a Configuración → Claves de IA → **Cambiar límite diario** → escribe `0,5` → **Guardar límite**.
   4. Vuelve a **Agentes → Lanzar**.
-  5. Cierra el diálogo y vuelve a poner el límite en `20`.
-- **Debe pasar:** (1) la tarjeta con el icono azul, "Lee tu sitio y te cuenta en pocas palabras qué vendes y a quién." y **Lanzar**. (2) "Costo estimado: unos … Como mucho: …", "Usará tu clave de …" y "Hoy llevas … de …". (4) "Esta tarea podría pasar tu límite de hoy (te quedan …). Súbelo en Configuración o espera a mañana.", el enlace **Cambiar límite** y el botón de lanzar deshabilitado.
+  5. Cierra el diálogo y vuelve a poner el límite en `5`.
+- **Debe pasar:** (1) la tarjeta con el icono azul, "Lee tu sitio y te cuenta en pocas palabras qué vendes y a quién." y **Lanzar**. (2) "Costo estimado: unos … Como mucho: …", "Usará tu clave de …" y "Hoy llevas … de …". (4) con 0,50 el diálogo bloquea, porque el máximo de la tarea simulada (US$2,29) no cabe: "Esta tarea podría pasar tu límite de hoy (te quedan …). Súbelo en Configuración o espera a mañana.", el enlace **Cambiar límite** y el botón de lanzar deshabilitado.
 - **Resultado:** `[ ] Coincide` `[ ] No coincide`
 
 ### Paso 6 — Pausar a mitad, persistencia y reanudar
 
-- **Preparación:** límite en US$20. Ninguna tarea esperando tu OK en ese sitio (si la hay, **Descartar** en la Bandeja).
+- **Preparación:** límite en US$5. Ninguna tarea esperando tu OK en ese sitio (si la hay, **Descartar** en la Bandeja).
 - **Haz esto:**
   1. **Agentes → Lanzar → Lanzar por unos …** e inmediatamente pulsa **Pausar agentes** (botón rojo arriba a la derecha). Con la IA simulada la tarea dura uno o dos segundos: si termina antes de pausar, descártala en la Bandeja y repite.
   2. Mira la barra superior y la fila de la tarea.
@@ -177,10 +181,10 @@ $log = (Get-ChildItem "$env:LOCALAPPDATA\app.faro.desktop\logs\faro.*.log" | Sor
 ### Paso 12 — Llegar al tope del día
 
 - **Haz esto:**
-  1. Con el límite en US$20, lanza una tarea y guárdala o descártala. En Configuración → Claves de IA mira "Hoy: … de …": debe pasar de US$0,50 (cada tarea simulada gasta unos US$0,73 de mentira; si no llega, lanza otra).
+  1. Con el límite en US$5, lanza tareas hasta que en Configuración → Claves de IA "Hoy: … de US$5,00" pase de US$0,50. Cada tarea simulada suma unos US$0,04: si empiezas el día de cero son 13 (las de los pasos anteriores de hoy ya cuentan). No hace falta guardarlas: puedes volver a lanzar en cuanto una queda esperando tu aprobación, y al final las descartas en la Bandeja.
   2. **Cambiar límite diario** → `0,5` → **Guardar límite**.
   3. Abre **Agentes → Lanzar**.
-  4. Vuelve a poner el límite en `20`.
+  4. Vuelve a poner el límite en `5`.
 - **Debe pasar:** (2) en la fila de la clave aparece el chip "Límite de hoy alcanzado". (3) "Esta tarea podría pasar tu límite de hoy (te quedan 0,00 US$)…" con **Cambiar límite** y el botón deshabilitado. El texto "Hoy: … de 0,50 US$" usa el formato de tu idioma.
 - **Resultado:** `[ ] Coincide` `[ ] No coincide`
 
@@ -209,8 +213,8 @@ Con la IA simulada la tarea dura uno o dos segundos y es difícil acertar; puede
 - **Haz esto:** antes de lanzar una tarea, cuenta las lecturas de la lista de tareas que lleva el log; lánzala, espera a "Espera tu OK", guárdala, espera a "Listo" y vuelve a contar:
 
   ```powershell
-  (Select-String -Path $log -Pattern '"operation":"listAgentRuns"').Count
-  Select-String -Path $log -Pattern 'actividad de agente inválida', 'demasiada actividad de agentes'
+  (Select-String -Path $logs -Pattern '"operation":"listAgentRuns"').Count
+  Select-String -Path $logs -Pattern 'actividad de agente inválida', 'demasiada actividad de agentes'
   ```
 
 - **Debe pasar:** la diferencia entre las dos cuentas es pequeña (de 4 a 8: la interfaz vuelve a pedir la lista al lanzar y en cada cambio de estado que no es "Trabajando"). Si sube una por cada paso de la tarea, la interfaz se está resincronizando de más. El segundo comando no muestra nada (ningún evento descartado).
@@ -231,7 +235,7 @@ Con la IA simulada la tarea dura uno o dos segundos y es difícil acertar; puede
 
 **Preparación de toda la parte B:**
 
-1. En Configuración → Claves de IA, vuelve a poner el límite diario en **5** (ahora es dinero de verdad).
+1. En Configuración → Claves de IA, comprueba que el límite diario está en **5** (ahora es dinero de verdad).
 2. En `.env.local`, `FARO_FAKE_LLM=0`. Cierra Faro y `npm run dev`. El aviso `motor lanzado con --fake-llm` **no** debe aparecer.
 3. Si tienes claves de varios proveedores, en **Clave que usan los agentes** elige con cuál vas a probar.
 4. No haya tareas pendientes de ese sitio (guarda o descarta).
@@ -295,7 +299,7 @@ Con el resumen del paso 4 (y, si los haces, con los de otros proveedores):
 Después de cada tarea real (pasos 3 y 5, y una por cada proveedor del que tengas clave, cambiando **Clave que usan los agentes**), ejecuta en PowerShell:
 
 ```powershell
-Get-Content $log | Where-Object { $_ -like '*llm.call_*' } | ForEach-Object { ($_ | ConvertFrom-Json).fields.message | ConvertFrom-Json } | Format-Table timestamp, event, model, prompt_id, attempts, tokens_in, tokens_out, cost_micros, error_code -AutoSize
+Get-Content $logs | Where-Object { $_ -like '*llm.call_*' } | ForEach-Object { ($_ | ConvertFrom-Json).fields.message | ConvertFrom-Json } | Format-Table timestamp, event, model, prompt_id, attempts, tokens_in, tokens_out, cost_micros, error_code -AutoSize
 ```
 
 Cada fila es una llamada al modelo: `llm.call_finished` si fue bien y `llm.call_failed` si falló (con `error_code`). `tokens_out` suma los intentos de esa llamada; `attempts` dice cuántos hubo.
@@ -316,7 +320,7 @@ Cada fila es una llamada al modelo: `llm.call_finished` si fue bien y `llm.call_
 
 ### Medición M2 (real) — Script de medición de tokens por modelo (T9)
 
-`apps/engine/scripts/manual_site_summary_tokens.py` (nuevo en T12; nunca corre en la CI) manda los **mismos dos prompts del agente** con un sitio inventado de las evaluaciones y te dice, por llamada, los tokens que informa el proveedor frente a lo que reservan el motor y el estimado, el motivo de fin (`length` o `max_tokens` = se cortó) y si la salida tiene la forma pedida. No imprime la clave, ni el prompt, ni la respuesta. Hace dos llamadas por proveedor y antes de pedirte la clave muestra lo que pueden costar como mucho (unos US$0,12 con Anthropic).
+`apps/engine/scripts/manual_site_summary_tokens.py` (nuevo en T12; nunca corre en la CI) manda los **mismos dos prompts del agente** con un sitio inventado de las evaluaciones y te dice, por llamada, los tokens que informa el proveedor frente a lo que reservan el motor y el estimado, el motivo de fin (`length` o `max_tokens` = se cortó) y si la salida tiene la forma pedida. No imprime la clave, ni el prompt, ni la respuesta. Hace dos llamadas por proveedor y antes de pedirte la clave muestra lo que pueden costar como mucho (unos US$0,06 con Anthropic).
 
 - **Haz esto,** por cada proveedor del que tengas clave (en PowerShell, desde la raíz del repositorio):
 
@@ -327,7 +331,7 @@ Cada fila es una llamada al modelo: `llm.call_finished` si fue bien y `llm.call_
   cd ../..
   ```
 
-  Cambia `anthropic` por `openai` o `gemini`. Cuando diga "Clave de anthropic (no se mostrará):", pega tu clave **ahí** (en la terminal, no se ve) y pulsa Enter. `--caso al-tope` usa un sitio con 150 páginas de títulos largos: el peor caso de entrada (opcional; cuesta un poco más).
+  Cambia `anthropic` por `openai` o `gemini`. Antes de pedir la clave, el script dice cuánto puede costar como mucho ("Como mucho ~US$0,06 (estimado)…" con Anthropic); si no quieres seguir, pulsa `Ctrl+C`. Pega tu clave **solo** cuando veas exactamente `Clave de anthropic (no se mostrará):` (o el nombre de tu proveedor) y pulsa Enter: no se ve al escribirla. **Si la pegaste en PowerShell por error** (fuera de esa pregunta), revócala en el panel del proveedor y bórrala del historial de PowerShell: abre el archivo que indica `(Get-PSReadLineOption).HistorySavePath` (por ejemplo `notepad (Get-PSReadLineOption).HistorySavePath`), borra la línea con la clave y guarda. `--caso al-tope` usa un sitio con 150 páginas de títulos largos: el peor caso de entrada (opcional; cuesta un poco más).
 - **Debe pasar:** en cada línea, `esquema: sí`, `fin` distinto de `length`/`max_tokens` y **ningún** `AVISO`. La "nota: la entrada pasó la reserva del motor (car./3)" puede salir (es lo que T9 quería medir: la salida estructurada añade tokens) y no es un fallo si no hay `AVISO`.
 - **Pega aquí las líneas que imprime** (no llevan la clave):
 
@@ -372,14 +376,14 @@ Faro solo guarda claves que funcionan (las prueba al guardarlas), así que no pu
 
   ```powershell
   # Claves de IA, por su forma (no escribas tu clave en el comando):
-  Select-String -Path $log -Pattern 'sk-ant-[A-Za-z0-9_-]{8,}', 'sk-(proj-)?[A-Za-z0-9_-]{20,}', 'AIza[0-9A-Za-z_-]{20,}'
+  Select-String -Path $logs -Pattern 'sk-ant-[A-Za-z0-9_-]{8,}', 'sk-(proj-)?[A-Za-z0-9_-]{20,}', 'AIza[0-9A-Za-z_-]{20,}'
   # Prompts:
-  Select-String -Path $log -SimpleMatch -Pattern 'Eres el asistente de Faro', 'Regla de datos', '<datos origen'
+  Select-String -Path $logs -SimpleMatch -Pattern 'Eres el asistente de Faro', 'Regla de datos', '<datos origen'
   # Títulos del sitio (los del paso 5 y otro que tengas en wp-env):
-  Select-String -Path $log -SimpleMatch -Pattern 'HACKEADO', 'Ignora tus instrucciones', 'Sample Page'
+  Select-String -Path $logs -SimpleMatch -Pattern 'HACKEADO', 'Ignora tus instrucciones', 'Sample Page'
   ```
 
-  Y busca unas palabras del resumen que leíste en el paso 4 (no son secretas): `Select-String -Path $log -SimpleMatch -Pattern 'unas palabras del resumen'`.
+  Y busca unas palabras del resumen que leíste en el paso 4 (no son secretas): `Select-String -Path $logs -SimpleMatch -Pattern 'unas palabras del resumen'`.
 - **Debe pasar:** ningún comando muestra resultados, o solo líneas donde el valor aparece como `[redactado]`.
 - **Resultado:** `[ ] Coincide` `[ ] No coincide`
 
