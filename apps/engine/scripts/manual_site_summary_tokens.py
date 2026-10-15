@@ -20,13 +20,16 @@ Qué hace, para un proveedor (`anthropic`, `openai` o `gemini`):
    evaluaciones (`tests/evals/site_summary/cases/<caso>.json`; `tienda-ropa` por defecto) o,
    con `--caso al-tope`, de un sitio inventado con el bloque de elementos lleno (el peor caso
    con texto latino).
-3. Muestra el **máximo** que puede costar y pide la clave con `getpass`: no se muestra, no
+3. Muestra el **máximo** que puede costar, en dólares (con Anthropic, "Como mucho
+   ~US$0,06 (estimado)…"; `Ctrl+C` cancela sin gastar), y pide la clave con `getpass`: no
+   se muestra, no
    va en argumentos ni variables de entorno, no se lee del llavero, no se escribe en ningún
    archivo y no se conserva tras salir el proceso (Python no permite borrar una `str`;
    `del` solo suelta la referencia).
 4. Llama al modelo **económico** con `classify_content` y al **potente** con
    `write_summary`, como el agente. La clasificación de la primera llamada entra en la
-   segunda como datos; si la primera falla, se usa la del caso.
+   segunda como datos; si la primera falla, se usa la del caso, salvo que falle por la
+   clave o el saldo (`invalid_key`, `insufficient_quota`): entonces no se hace la segunda.
 
 Por llamada imprime solo números y códigos: modelo, prompt, caracteres del prompt, lo que
 reserva el motor (`ceil(caracteres / 3)`), el límite de entrada del estimado del agente,
@@ -90,6 +93,9 @@ ENGINE_DIR: Final = Path(__file__).resolve().parents[1]
 CASES_DIR: Final = ENGINE_DIR / "tests" / "evals" / "site_summary" / "cases"
 DEFAULT_CASE: Final = "tienda-ropa"
 FULL_CASE: Final = "al-tope"
+# Fallos de la primera llamada que hacen inútil la segunda (revisión de seguridad de T12,
+# hallazgo 5): no se vuelve a mandar una clave que el proveedor ya rechazó.
+STOP_ERRORS: Final = frozenset({"invalid_key", "insufficient_quota"})
 # Motivos de fin que indican que la respuesta se cortó por `max_output_tokens`.
 CUT_REASONS: Final = frozenset({"length", "max_tokens", "MAX_TOKENS"})
 
@@ -294,6 +300,8 @@ async def run(
         estimate_bound=classify_plan.max_input_tokens,
         key=key,
     )
+    if first.error in STOP_ERRORS:  # clave mala o sin saldo: la segunda fallaría igual
+        return [first]
     if classification is None:
         classification = dict(case["recorded"]["classify_content"]["output"])
     second, _ = await measure(
@@ -320,6 +328,12 @@ def worst_cost(provider: str, case: Mapping[str, Any]) -> int:
         # `max_call_cost` recibe caracteres y reserva `ceil(caracteres / 3)` tokens de entrada.
         total += max_call_cost(model, plan.max_input_tokens * 3, plan.max_output_tokens, today)
     return total
+
+
+def dollars(micros: int) -> str:
+    """Micros de USD en dólares con coma decimal, redondeando hacia arriba al centavo."""
+    cents = -(-micros // 10_000)
+    return f"US${cents // 100},{cents % 100:02d}"
 
 
 def quiet_logging() -> None:
@@ -350,11 +364,17 @@ def main(
     case = load_case(args.caso)
     setup_logging()  # antes de cargar el adaptador (como manual_llm_models_check.py)
     client = (client_factory or load_client)()
+    worst = worst_cost(args.provider, case)
+    _say(f"{args.provider}, caso {args.caso}: 2 llamadas al modelo.")
     _say(
-        f"{args.provider}, caso {args.caso}: 2 llamadas; costo máximo "
-        f"{worst_cost(args.provider, case)} micros de USD"
+        f"Como mucho ~{dollars(worst)} (estimado; {worst} micros de USD). "
+        "Escribe la clave para seguir o Ctrl+C para cancelar."
     )
-    key = (read_key or getpass.getpass)(f"Clave de {args.provider} (no se mostrará): ").strip()
+    try:
+        key = (read_key or getpass.getpass)(f"Clave de {args.provider} (no se mostrará): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        _say("Cancelado: no se hace nada.")
+        return 130
     if not key:
         _say("Sin clave: no se hace nada.")
         return 2
@@ -364,6 +384,11 @@ def main(
         del key
     for measurement in measurements:
         _say(line_for(measurement))
+    if len(measurements) == 1:
+        _say(
+            "La primera llamada falló por la clave o el saldo: no se hace la segunda. "
+            "Revisa la clave en el panel del proveedor."
+        )
     _say("Copia estas líneas en la lista de verificación manual (no contienen la clave).")
     return 0
 

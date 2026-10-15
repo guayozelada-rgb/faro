@@ -117,7 +117,10 @@ def test_sin_clave_no_llama_y_muestra_antes_el_costo_maximo(
     assert run(["anthropic"], client, "  ") == 2
     assert client.calls == []
     out = capsys.readouterr().out
-    assert "costo máximo" in out
+    # Revisión de seguridad de T12, hallazgo 5: el máximo en dólares antes de pedir la clave.
+    assert "Como mucho ~US$0,06" in out
+    assert "(estimado;" in out
+    assert "Ctrl+C para cancelar" in out
     assert "caso tienda-ropa" in out
 
 
@@ -149,13 +152,54 @@ def test_mide_los_dos_prompts_con_su_modelo_y_sin_imprimir_textos(
 def test_si_la_clasificacion_falla_sigue_con_la_del_caso(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    client = Client(fail={"site_summary.classify_content": "insufficient_quota"})
+    client = Client(fail={"site_summary.classify_content": "rate_limited"})
     assert run(["openai"], client, FAKE_KEYS["openai"]) == 0
     assert [c.model for c in client.calls] == ["gpt-6-luna", "gpt-6.1-sol"]
     case = next(c for c in load_cases() if c["id"] == "tienda-ropa")
     recorded = case["recorded"]["classify_content"]["output"]["topics"][0]
     assert recorded in client.calls[1].messages[-1]["content"]
-    assert "FALLO: insufficient_quota" in capsys.readouterr().out
+    assert "FALLO: rate_limited" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("kind", ["invalid_key", "insufficient_quota"])
+def test_con_la_clave_rechazada_no_hace_la_segunda_llamada(
+    capsys: pytest.CaptureFixture[str], kind: str
+) -> None:
+    """Revisión de seguridad de T12, hallazgo 5: no se vuelve a mandar una clave rechazada."""
+    client = Client(fail={"site_summary.classify_content": kind})
+    key = FAKE_KEYS["anthropic"]
+    assert run(["anthropic"], client, key) == 0
+    assert [c.prompt_id for c in client.calls] == ["site_summary.classify_content"]
+    assert client.keys == [key]
+    out = capsys.readouterr().out
+    assert f"FALLO: {kind}" in out
+    assert "no se hace la segunda" in out
+    assert key not in out
+
+
+@pytest.mark.parametrize("error", [KeyboardInterrupt, EOFError])
+def test_cancelar_al_pedir_la_clave_no_llama(
+    capsys: pytest.CaptureFixture[str], error: type[BaseException]
+) -> None:
+    def cancel(_prompt: str) -> str:
+        raise error
+
+    client = Client()
+    code = script.main(
+        ["gemini"], read_key=cancel, client_factory=lambda: client, setup_logging=lambda: None
+    )
+    assert code == 130
+    assert client.calls == []
+    assert "Cancelado" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("micros", "text"),
+    [(0, "US$0,00"), (1, "US$0,01"), (10_000, "US$0,01"), (117_146, "US$0,12"),
+     (2_290_000, "US$2,29"), (9_145_400, "US$9,15")],
+)  # fmt: skip
+def test_dolares(micros: int, text: str) -> None:
+    assert script.dollars(micros) == text
 
 
 def test_avisa_si_la_salida_se_corta_o_la_entrada_pasa_el_limite(
