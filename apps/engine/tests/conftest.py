@@ -12,13 +12,22 @@ from typing import Any
 
 import pytest
 
-from tests.network_guard import NetworkGuard, fail_on_network_attempts, install
+from tests.network_guard import (
+    ChildAttemptLog,
+    NetworkGuard,
+    fail_on_network_attempts,
+    install,
+    install_for_children,
+)
 
 # Spec F1b §4.7 (condición T6-C5): ninguna conexión fuera de loopback en todo el proceso de
 # pytest. Se instala **antes** de importar el motor y sus dependencias (revisión de seguridad
 # de T11, hallazgo 3d): así cubre también lo que hagan al importarse. Ver
 # `tests/network_guard.py`.
 NETWORK_GUARD = install()
+# Condición T11-C2: el mismo bloqueo en los procesos hijos (motor de las pruebas de
+# protocolo, sondas, `python -c …`), que anotan sus intentos en este archivo.
+CHILD_NETWORK_LOG = install_for_children()
 
 import httpx  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
@@ -33,16 +42,25 @@ TEST_PORT = 50123
 
 @pytest.fixture(autouse=True)
 def _block_external_network() -> Iterator[NetworkGuard]:
-    """Automático: la prueba falla si intentó salir de loopback, aunque se tragara el error."""
-    fail_on_network_attempts(NETWORK_GUARD, "fuera de una prueba (antes de esta)")
+    """Automático: la prueba falla si intentó salir de loopback, aunque se tragara el error,
+    en este proceso o en un proceso hijo."""
+    fail_on_network_attempts(
+        NETWORK_GUARD, "fuera de una prueba (antes de esta)", CHILD_NETWORK_LOG
+    )
     yield NETWORK_GUARD
-    fail_on_network_attempts(NETWORK_GUARD, "en esta prueba")
+    fail_on_network_attempts(NETWORK_GUARD, "en esta prueba", CHILD_NETWORK_LOG)
 
 
 @pytest.fixture
 def network_guard(_block_external_network: NetworkGuard) -> NetworkGuard:
     """Para las pruebas que provocan un intento a propósito y lo recogen con `take()`."""
     return _block_external_network
+
+
+@pytest.fixture
+def child_network_log(_block_external_network: NetworkGuard) -> ChildAttemptLog:
+    """Para las pruebas que lanzan a propósito un hijo que intenta salir (`take()`)."""
+    return CHILD_NETWORK_LOG
 
 
 @pytest.fixture

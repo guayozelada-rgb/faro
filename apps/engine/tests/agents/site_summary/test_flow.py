@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import structlog
 
 from faro_engine.agents.framework.approvals import ApprovalService, accept_suggestion, decide
 from faro_engine.agents.framework.spec import GraphBuilder
@@ -46,7 +47,7 @@ from tests.agents.site_summary.conftest import (
 from tests.agents.world import GraphWorld
 from tests.db.helpers import TEST_PROFILE_ID, key
 from tests.fakes.agents import Gate
-from tests.fakes.llm import FakeLLM, FakeReply
+from tests.fakes.llm import FAKE_KEYS, FakeLLM, FakeReply
 from tests.fakes.site_reader import FakeSiteReader, snapshot_of
 from tests.jobs.world import SITE, eventually, run_id, seed
 
@@ -551,3 +552,53 @@ async def test_concesion_caducada_al_leer_el_sitio_se_renueva_una_vez(database: 
         assert world.prompt_ids() == [CLASSIFY, WRITE]
     finally:
         await world.jobs.shutdown()
+
+
+def _dump_database(world: GraphWorld) -> str:
+    """Todas las filas de todas las tablas como texto (los BLOB, decodificados)."""
+    names = [
+        row[0]
+        for row in world.query(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        )
+    ]
+    parts: list[str] = []
+    for name in names:
+        for row in world.query(f'SELECT * FROM "{name}"'):  # noqa: S608 - nombres de la base
+            for value in row:
+                if isinstance(value, bytes):
+                    parts.append(value.decode("utf-8", "replace"))
+                else:
+                    parts.append(str(value))
+    return "\n".join(parts)
+
+
+async def test_la_clave_no_queda_en_la_base_los_checkpoints_la_actividad_ni_los_logs(
+    database: Any,
+) -> None:
+    """Spec F1b §9.2 (T12): con un modelo que pide la clave (como el adaptador real), la
+    clave falsa no aparece en ninguna tabla (tampoco en `agent_checkpoints` ni en
+    `agent_checkpoint_writes`, también mientras la tarea espera el OK), ni en los eventos
+    `agent_activity`, ni en los logs, ni en el resultado."""
+    world = summary_world(database, llm_client=FakeLLM(responses=replies(), needs_key=True))
+    key = FAKE_KEYS["anthropic"]
+    try:
+        with structlog.testing.capture_logs() as logs:
+            run = await launch(world)
+            await world.until(run, "waiting_approval")
+            waiting = _dump_database(world)
+            await decide_on(world, run, "approve")
+            await world.until(run, "succeeded")
+    finally:
+        await world.jobs.shutdown()
+    # No es vacía: la clave sí se pidió y los checkpoints guardan el estado en claro.
+    assert [ref for ref, _ in world.secrets.requests] == ["llm/anthropic/default"] * 2
+    for secret in world.secrets.values:  # sobrescritas al salir del `with`
+        with pytest.raises(ValueError, match="ya se borró"):
+            _ = secret.buffer
+    assert world.query("SELECT COUNT(*) FROM agent_checkpoints") != [(0,)]
+    assert SUMMARY["headline"] in waiting
+    finished = _dump_database(world)
+    for text in (waiting, finished, repr(logs), json.dumps(world.sink.lines)):
+        assert key not in text
+    assert key not in json.dumps(world.result(run))

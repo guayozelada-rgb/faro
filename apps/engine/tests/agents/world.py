@@ -127,4 +127,7 @@ class GraphWorld(JobWorld):
             events = [e for e in self.activity(run_id) if e["kind"] == "run_status"]
             return settled(self, run_id, status)() and events[-1]["status"] == status
 
-        await eventually(done)
+        # Una tarea completa del grafo (dos llamadas, checkpoints y propuesta) pasó de 5 s
+        # en el runner de Windows de la CI con la suite cargada; esperar más no alarga las
+        # que pasan (se sondea cada 5 ms).
+        await eventually(done, within=30)

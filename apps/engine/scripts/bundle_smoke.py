@@ -35,6 +35,15 @@ empaquetar (`uv run python scripts/bundle_smoke.py`). Comprueba, sin red salvo l
   `--keylog-control` (sin el prólogo) el mismo ejecutable sí lo crea: la comprobación no es
   vacía.
 
+Sin red (condición T11-C3): antes de las comprobaciones instala **el mismo gancho de
+auditoría que las pruebas** (`tests/network_guard.py`, PEP 578), que PyInstaller mete en el
+ejecutable de humo (no en el motor real: lo comprueba el constructor). Bloquea y anota
+`connect`, `sendto`, `sendmsg`, la resolución de nombres y el DNS inverso fuera de loopback,
+también desde C (`_socket`), y no se puede quitar. Un control (`network_guard`) comprueba
+dentro del ejecutable que de verdad bloquea: una resolución de `api.openai.com` y una
+conexión a `203.0.113.10` con `_socket` deben fallar y quedar anotadas; si no, el humo
+falla. Cualquier otro intento durante las comprobaciones hace fallar el humo.
+
 Sin `--require-f1b`, si las dependencias de F1b no están en el paquete (variante `base`),
 sus comprobaciones quedan como `skipped`. Escribe una sola línea JSON en stdout y termina con
 código 0 si todo lo exigido pasó. Las claves que usa son falsas y solo viajan por loopback o
@@ -81,14 +90,22 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # noqa: E40
 from pathlib import Path  # noqa: E402
 from typing import Any, TypedDict  # noqa: E402
 
-LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
 FAKE_KEYS = {
     "openai": "sk-faro-smoke-" + "0" * 24,
     "anthropic": "sk-ant-faro-smoke-" + "0" * 20,
     "gemini": "AIzaFaroSmoke" + "0" * 26,
 }
 F1B_MODULES = ("litellm", "langgraph", "apscheduler", "respx", "trustme")
-MANUAL_SCRIPTS = ("manual_llm_check", "manual_llm_models_check", "manual_tls_check")
+MANUAL_SCRIPTS = (
+    "manual_llm_check",
+    "manual_llm_models_check",
+    "manual_site_summary_tokens",
+    "manual_tls_check",
+)
+# Control del bloqueo de red: destinos que nunca se alcanzan (DNS de un proveedor y una IP
+# de documentación, RFC 5737).
+GUARD_CONTROL_HOST = "api.openai.com"
+GUARD_CONTROL_IP = "203.0.113.10"
 # Módulos del proxy de LiteLLM que no deben cargarse nunca en el motor (revisión de
 # seguridad de T11, hallazgo 2): `proxy_server` hace `sys.path.insert(0, abspath("../.."))`
 # al importarse. Excluirlos del paquete con `--exclude-module` queda para release.
@@ -100,35 +117,44 @@ OFFICIAL_URLS = {
 }
 
 
-class _NetworkGuard:
-    """Bloquea toda conexión que no sea a loopback y anota los intentos."""
+def install_network_guard() -> Any:
+    """El gancho de auditoría de las pruebas (`tests/network_guard.py`), también congelado."""
+    from tests.network_guard import install
 
-    def __init__(self) -> None:
-        self.attempts: list[str] = []
-        self._connect = socket.socket.connect
-        self._getaddrinfo = socket.getaddrinfo
+    return install()
 
-    def install(self) -> None:
-        guard = self
 
-        def connect(sock: socket.socket, address: Any) -> None:
-            host = address[0] if isinstance(address, tuple) else str(address)
-            if host in LOOPBACK:
-                guard._connect(sock, address)
-                return
-            guard.attempts.append(f"connect:{host}")
-            raise OSError("bundle_smoke: red bloqueada")
+def network_guard_control(guard: Any) -> dict[str, Any]:
+    """El bloqueo no es vacío: un DNS público y una conexión desde C fallan y se anotan.
 
-        def getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
-            if isinstance(host, bytes):  # httpcore (anyio) pasa el host en bytes
-                host = host.decode("ascii", "replace")
-            if host is None or host in LOOPBACK:
-                return guard._getaddrinfo(host, *args, **kwargs)
-            guard.attempts.append(f"getaddrinfo:{host}")
-            raise OSError("bundle_smoke: red bloqueada")
+    Deja el registro de intentos vacío para las comprobaciones siguientes.
+    """
+    import _socket
 
-        socket.socket.connect = connect  # type: ignore[method-assign,assignment]
-        socket.getaddrinfo = getaddrinfo
+    from tests.network_guard import NetworkBlockedError
+
+    blocked: list[str] = []
+    try:
+        socket.getaddrinfo(GUARD_CONTROL_HOST, 443)
+    except NetworkBlockedError:
+        blocked.append("getaddrinfo")
+    raw = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    try:
+        raw.connect_ex((GUARD_CONTROL_IP, 443))
+    except NetworkBlockedError:
+        blocked.append("connect")
+    finally:
+        raw.close()
+    recorded = sorted(guard.take())
+    expected = sorted(
+        [f"socket.getaddrinfo:{GUARD_CONTROL_HOST}", f"socket.connect:{GUARD_CONTROL_IP}"]
+    )
+    return {
+        "kind": "audit_hook",
+        "blocked": blocked,
+        "recorded": recorded,
+        "ok": blocked == ["getaddrinfo", "connect"] and recorded == expected,
+    }
 
 
 class _FakeProvider(BaseHTTPRequestHandler):
@@ -749,7 +775,12 @@ def tls_handshake_in_loopback(keylog: str | None) -> str:
         if cls.__module__ == "ssl" and cls.__name__ == "SSLContext"
     )
     server_context = stdlib_context(ssl.PROTOCOL_TLS_SERVER)
-    server_context.minimum_version = ssl.TLSVersion.TLSv1_2
+    # TLS 1.2 como mínimo (CodeQL, py/insecure-protocol). No con `server_context.
+    # minimum_version = …`: el setter de `ssl.py` usa la clase global `ssl.SSLContext`
+    # (`super(SSLContext, SSLContext)`), que tras la inyección es la de truststore, y
+    # falla con `AttributeError: … '_ctx'` (T12). Se usa el descriptor de `_ssl`.
+    native = next(cls for cls in stdlib_context.__mro__ if cls.__module__ == "_ssl")
+    native.minimum_version.__set__(server_context, ssl.TLSVersion.TLSv1_2)  # type: ignore[attr-defined]
     # `configure_cert` de trustme comprueba el tipo contra `ssl.SSLContext` (ya sustituido):
     # se carga el certificado desde su archivo temporal.
     with ca.issue_cert("localhost").private_key_and_cert_chain_pem.tempfile() as pem:
@@ -836,8 +867,8 @@ def run_checks(require_f1b: bool, require_vec: bool) -> dict[str, Any]:
     from faro_engine.core.logging import configure_logging
 
     configure_logging()  # logs JSON a stderr; stdout queda para el informe
-    guard = _NetworkGuard()
-    guard.install()
+    guard = install_network_guard()
+    control = network_guard_control(guard)
     # Mismo orden que el motor: contexto del motor y, después, la inyección para LiteLLM.
     from faro_engine.net.tls import install_system_trust_for_libraries
 
@@ -846,9 +877,10 @@ def run_checks(require_f1b: bool, require_vec: bool) -> dict[str, Any]:
         "frozen": bool(getattr(sys, "frozen", False)),
         "python": sys.version.split()[0],
         "platform": sys.platform,
+        "network_guard": control,
         "checks": {},
     }
-    ok = True
+    ok = bool(control["ok"])
     with tempfile.TemporaryDirectory(prefix="faro-bundle-smoke-") as tmp_name:
         for name, check, needs in CHECKS:
             required = (
@@ -872,9 +904,10 @@ def run_checks(require_f1b: bool, require_vec: bool) -> dict[str, Any]:
             detail["status"] = status
             detail["seconds"] = round(time.perf_counter() - started, 2)
             report["checks"][name] = detail
-    report["network_attempts"] = sorted(set(guard.attempts))
+    attempts = guard.take()
+    report["network_attempts"] = sorted(set(attempts))
     report["f1b_modules"] = {m: _available(m) for m in F1B_MODULES}
-    report["ok"] = ok and not guard.attempts
+    report["ok"] = ok and not attempts
     return report
 
 

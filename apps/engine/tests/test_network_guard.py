@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import socket
 import threading
 from collections.abc import Iterator
@@ -24,6 +25,8 @@ from tests.network_guard import (
     fail_on_network_attempts,
     is_loopback_name,
     needs_dns,
+    proxy_ports,
+    system_proxy_ports,
 )
 
 OUTSIDE_IP = "203.0.113.10"
@@ -235,3 +238,60 @@ def test_que_cuenta_como_loopback(host: object, loopback: bool) -> None:
 )
 def test_que_necesita_dns(host: object, dns: bool) -> None:
     assert needs_dns(host) is dns
+
+
+@pytest.mark.parametrize(
+    ("environ", "ports"),
+    [
+        ({"HTTPS_PROXY": "http://127.0.0.1:37565"}, {37565}),
+        ({"https_proxy": "http://localhost:3128", "HTTP_PROXY": "http://[::1]:8080"}, {3128, 8080}),
+        ({"All_Proxy": "socks5h://127.0.0.1"}, {1080}),
+        ({"HTTP_PROXY": "127.0.0.1:9000"}, {9000}),
+        ({"HTTPS_PROXY": "https://127.0.0.2"}, {443}),
+        ({"HTTPS_PROXY": "http://proxy.empresa.test:8080"}, set()),  # fuera: ya se bloquea
+        ({"NO_PROXY": "127.0.0.1:1", "OTRA": "http://127.0.0.1:2"}, set()),
+        ({"HTTP_PROXY": "http://127.0.0.1:no-es-un-puerto"}, set()),
+        ({"HTTP_PROXY": "  "}, set()),
+    ],
+)
+def test_puertos_de_los_proxies_del_entorno(environ: dict[str, str], ports: set[int]) -> None:
+    assert proxy_ports(environ) == ports
+
+
+def test_conectar_al_proxy_del_entorno_en_loopback_cuenta_como_salir() -> None:
+    """Un proxy local reenvía la petición a internet: su puerto de loopback no se permite.
+    En el contenedor de los agentes, así salían LangSmith y la descarga de `cl100k_base`."""
+    guard = NetworkGuard()
+    guard.proxy_ports = frozenset({37565})
+    with pytest.raises(NetworkBlockedError, match="proxy del entorno"):
+        guard.check_address("socket.connect", ("127.0.0.1", 37565))
+    with pytest.raises(NetworkBlockedError):
+        guard.check_address("socket.connect", ("::1", 37565, 0, 0))
+    guard.check_address("socket.connect", ("127.0.0.1", 50123))  # otro puerto: loopback
+    guard.check_address("socket.connect", "faro.sock")  # AF_UNIX
+    assert guard.take() == [
+        "socket.connect:127.0.0.1:37565 (proxy del entorno)",
+        "socket.connect:::1:37565 (proxy del entorno)",
+    ]
+
+
+def test_el_bloqueo_de_las_pruebas_lee_el_proxy_del_entorno_y_del_sistema() -> None:
+    assert GUARD.proxy_ports == proxy_ports(os.environ) | system_proxy_ports()
+
+
+def test_proxies_del_sistema_en_loopback() -> None:
+    """`urllib.request.getproxies()` (en Windows, también el registro): claves = esquemas."""
+    proxies = {
+        "http": "http://127.0.0.1:8888",
+        "https": "127.0.0.1:9443",  # el registro de Windows puede no traer esquema
+        "socks": "socks5://localhost:1080",
+        "ftp": "http://proxy.empresa.test:2121",  # fuera de loopback: ya se bloquea
+        "no": "127.0.0.1:1,localhost",  # excepciones, no un proxy
+    }
+    assert system_proxy_ports(lambda: proxies) == {8888, 9443, 1080}
+
+    def broken() -> dict[str, str]:
+        raise OSError("registro ilegible")
+
+    assert system_proxy_ports(broken) == frozenset()
+    assert system_proxy_ports(dict) == frozenset()

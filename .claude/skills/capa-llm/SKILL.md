@@ -398,7 +398,7 @@ async def _call_with_key(self, call: ResolvedCall, deadline: Deadline) -> RawCom
 ### Modo `--fake-llm` (solo desarrollo)
 
 - El motor lo acepta solo sin `sys.frozen` (si no, sale con código 2). El núcleo lo pasa solo en build de depuración **y** con `FARO_FAKE_LLM=1` exacto (entorno o `.env.local`), igual que `--allow-local-sites`.
-- Usa `FakeLLM` con respuestas fijas por `prompt_id` y un **precio de prueba alto** para poder llegar al tope diario con pocas tareas.
+- Usa `FakeLLM` con respuestas fijas por `prompt_id` y un **precio de prueba alto** para poder llegar al tope diario con pocas tareas, pero con el "como mucho" de cada agente **por debajo del tope predeterminado** (US$5): si no, el estimado bloquea siempre y no se puede lanzar nada (hallazgo §6.3 de T12; desde T12, US$25/US$125 por Mtok y `site_summary` con un máximo de US$2,29). `tests/agents/site_summary/test_fake_mode.py` lo comprueba; un agente nuevo añade la misma prueba.
 - No pide ninguna clave por `secret_request`, pero **sí** pide la concesión de la ejecución (el flujo de concesiones se ejercita igual).
 - Marca cada paso con `model = "fake"`.
 

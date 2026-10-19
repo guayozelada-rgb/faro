@@ -22,6 +22,7 @@ from tests.conftest import ENGINE_DIR
 from tests.deps.helpers import PROBE_TIMEOUT_S
 from tests.llm.adapter_probe import KEYS, QUOTA_CASES
 from tests.llm.test_manual_llm_check import Trap
+from tests.network_guard import child_pythonpath
 
 PROVIDERS = ("openai", "anthropic", "gemini")
 KEY_HEADER = {"openai": "authorization", "anthropic": "x-api-key", "gemini": "x-goog-api-key"}
@@ -46,7 +47,7 @@ def run_probe(
     cwd: Path, scenario: str, env: dict[str, str] | None = None
 ) -> tuple[dict[str, Any], str, str]:
     base = {k: v for k, v in os.environ.items() if not hardening.is_scrubbed(k)}
-    base["PYTHONPATH"] = str(ENGINE_DIR)
+    base["PYTHONPATH"] = child_pythonpath(ENGINE_DIR)  # con el bloqueo de red (T11-C2)
     base["PYTHONIOENCODING"] = "utf-8"
     base.update(env or {})
     code = "import sys; from tests.llm.adapter_probe import main; sys.exit(main())"
