@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -300,3 +301,104 @@ def test_el_apreton_tls_del_humo_funciona_con_truststore_inyectado() -> None:
     assert completed.returncode == 0, completed.stderr[-3000:]
     version = json.loads(completed.stdout.strip().splitlines()[-1])["version"]
     assert version in {"TLSv1.2", "TLSv1.3"}
+
+
+# --- Build sin red: proxies y loopback (hallazgo I1 de T13) ---------------------------------
+
+
+def _offline_sitecustomize(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    """`pyinstaller_offline/sitecustomize.py` sin `FARO_BUILD_NETWORK_LOG`: no instala el
+    gancho en el proceso de las pruebas. Con otro nombre para no tapar un `sitecustomize`."""
+    monkeypatch.delenv("FARO_BUILD_NETWORK_LOG", raising=False)
+    path = SCRIPTS / "pyinstaller_offline" / "sitecustomize.py"
+    spec = importlib.util.spec_from_file_location("faro_pyinstaller_offline_site", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "Https_Proxy",
+        "GLOBAL_AGENT_HTTPS_PROXY",
+    ],
+)
+def test_el_entorno_del_build_no_lleva_proxies(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str
+) -> None:
+    monkeypatch.setenv(name, "http://127.0.0.1:3128")
+    monkeypatch.setenv("FARO_OTRA_VARIABLE", "sigue")
+    env = build.build_env(tmp_path / "red.log")
+    proxies = {k: v for k, v in env.items() if k.upper().endswith("_PROXY")}
+    assert proxies == {"NO_PROXY": "*", "no_proxy": "*"}
+    assert env["FARO_OTRA_VARIABLE"] == "sigue"
+    assert env["FARO_BUILD_NETWORK_LOG"] == str(tmp_path / "red.log")
+    assert env["PYTHONPATH"] == str(build.OFFLINE_DIR)
+
+
+def test_con_el_entorno_del_build_urllib_no_consulta_el_proxy_del_sistema(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Hallazgo H3 de T13: en macOS y Windows, `urllib.request.getproxies()` es
+    `getproxies_environment() or <proxy del sistema>`. Con el entorno del build la primera
+    parte no queda vacía (solo `no`), así que el proxy del sistema no se lee, y todo host se
+    salta el proxy (`proxy_bypass` también mira antes el entorno si no está vacío)."""
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:3128")
+    env = build.build_env(tmp_path / "red.log")
+    for key in list(os.environ):
+        monkeypatch.delenv(key)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert urllib.request.getproxies_environment() == {"no": "*"}
+    assert urllib.request.proxy_bypass("example.com")
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "localhost",
+        "LOCALHOST",
+        "localhost.",
+        "127.0.0.1",
+        "127.8.9.10",
+        "::1",
+        "[::1]",
+        b"localhost",
+        b"127.0.0.1",
+    ],
+)
+def test_el_build_sin_red_acepta_loopback(monkeypatch: pytest.MonkeyPatch, host: object) -> None:
+    assert _offline_sitecustomize(monkeypatch)._is_loopback(host) is True
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "proxy.localhost",
+        "x.localhost",
+        "evil.localhost.",
+        "localhost.example.com",
+        "notlocalhost",
+        "10.0.0.1",
+        "8.8.8.8",
+        "::2",
+        "",
+        None,
+        127,
+    ],
+)
+def test_el_build_sin_red_no_acepta_otros_nombres(
+    monkeypatch: pytest.MonkeyPatch, host: object
+) -> None:
+    assert _offline_sitecustomize(monkeypatch)._is_loopback(host) is False

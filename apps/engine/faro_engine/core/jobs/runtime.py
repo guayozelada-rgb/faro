@@ -47,7 +47,7 @@ from faro_engine.core.jobs.queue import RunQueue
 from faro_engine.core.jobs.recovery import expire_approvals, recover
 from faro_engine.core.jobs.runner import AgentCatalog, AgentServices
 from faro_engine.core.jobs.scheduler import Scheduler, Timer, apscheduler_timer, system_timezone
-from faro_engine.core.jobs.worker import GrantSource, Worker
+from faro_engine.core.jobs.worker import GRANT_RATE_LIMITED_BACKOFF_SECONDS, GrantSource, Worker
 from faro_engine.llm.service import LlmService
 
 log = structlog.get_logger(__name__)
@@ -86,6 +86,7 @@ class JobSystem:
         expiry_interval: float = APPROVAL_EXPIRY_INTERVAL_SECONDS,
         stop_wait: float = STOP_WAIT_SECONDS,
         cancel_wait: float = CANCEL_WAIT_SECONDS,
+        grant_rate_limited_backoff: float = GRANT_RATE_LIMITED_BACKOFF_SECONDS,
         objectives: tuple[Objective, ...] = (),
         services: AgentServices | None = None,
     ) -> None:
@@ -116,6 +117,7 @@ class JobSystem:
             clock=clock,
             sleep=sleep,
             services=services,
+            grant_rate_limited_backoff=grant_rate_limited_backoff,
         )
         self._sleep = sleep
         self._catch_up_delay = catch_up_delay

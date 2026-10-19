@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from faro_engine.core import protocol
-from faro_engine.core.errors import AGENT_GRANT_DENIED, AGENTS_PAUSED
+from faro_engine.core.errors import AGENT_GRANT_DENIED, AGENTS_GRANT_RATE_LIMITED, AGENTS_PAUSED
 from faro_engine.core.jobs.grants import (
     EVENT_RUN_GRANT_RELEASE,
     EVENT_RUN_GRANT_REQUEST,
@@ -100,12 +100,16 @@ async def test_null_site_and_provider_are_sent_as_null() -> None:
     assert core.lines[0]["provider"] is None
 
 
-@pytest.mark.parametrize("code", [AGENTS_PAUSED, AGENT_GRANT_DENIED])
-async def test_core_errors_are_raised_without_details(code: str) -> None:
+@pytest.mark.parametrize(
+    ("code", "status"),
+    [(AGENTS_PAUSED, 409), (AGENTS_GRANT_RATE_LIMITED, 429), (AGENT_GRANT_DENIED, 403)],
+)
+async def test_core_errors_are_raised_without_details(code: str, status: int) -> None:
     client, _core = _client(lambda _r: {"error": code})
     with pytest.raises(RunGrantError) as caught:
         await _ask(client)
     assert caught.value.code == code
+    assert caught.value.status == status
     assert caught.value.details == {}
 
 
@@ -114,6 +118,7 @@ async def test_core_errors_are_raised_without_details(code: str) -> None:
     [
         {"error": "vault.secret_not_allowed"},
         {"error": "agents.paused", "reason": "paused"},
+        {"error": "agents.grant_rate_limited", "reason": "rate_limited"},
         {"ok": True},
         {"ok": True, "expires_in_seconds": 0},
         {"ok": True, "expires_in_seconds": 901},

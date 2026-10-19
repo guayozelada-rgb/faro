@@ -326,6 +326,7 @@ class SitesService:
             )
             with pairing.credentials as credentials:
                 create_sent = False
+                insert_sent = False
                 try:
                     # Sin tiempo para deshacer no se crea nada; solo se revoca el `pair`.
                     work.check()
@@ -357,6 +358,9 @@ class SitesService:
                     )
                     # La base tampoco puede comerse la reserva del deshacer.
                     work.check()
+                    # Desde aquí la fila puede quedar escrita aunque llegue una cancelación
+                    # o el `timeout`: el hilo de la base termina el `INSERT` igualmente.
+                    insert_sent = True
                     try:
                         async with asyncio.timeout(work.remaining()):
                             await self._insert(record, now)
@@ -364,7 +368,12 @@ class SitesService:
                         raise site_error(SITE_TIMEOUT) from None
                 except BaseException:
                     await self._undo_connect(
-                        http, wp, found.api_root, credentials, ref if create_sent else None
+                        http,
+                        wp,
+                        found.api_root,
+                        credentials,
+                        ref=ref if create_sent else None,
+                        site_id=site_id if insert_sent else None,
                     )
                     raise
         log.info("sites.connected", site_id=site_id)
@@ -392,12 +401,17 @@ class SitesService:
         wp: WordPressClient,
         api_root: str,
         credentials: SiteCredentials,
+        *,
         ref: str | None,
+        site_id: str | None,
     ) -> None:
         """Vinculación a medias, con su propio plazo (`UNDO_RESERVE_SECONDS`, sin pasar
         del final de la operación): borra el secreto si se pidió crearlo (`ref`; si no
-        llegó a crearse, el núcleo lo rechaza sin más) y después revoca la conexión en el
-        sitio, sin reintentos y con `UNDO_REVOKE_SECONDS` como mucho. Las dos de buena fe.
+        llegó a crearse, el núcleo lo rechaza sin más), la fila del sitio si se pidió
+        insertarla (`site_id`: una cancelación o el `timeout` pueden llegar con el `INSERT`
+        ya confirmado; sin esto el sitio quedaba activo y sin clave) y después revoca la
+        conexión en el sitio, sin reintentos y con `UNDO_REVOKE_SECONDS` como mucho. Todo
+        de buena fe.
         """
         log.warning("sites.connect_rolled_back")
         undo = self._deadline.capped(UNDO_RESERVE_SECONDS)
@@ -407,6 +421,12 @@ class SitesService:
                 await self._ctx.secrets.delete(ref, max_wait=undo.remaining())
             except FaroError as exc:
                 log.error("sites.rollback_delete_failed", error_code=exc.code)
+        if site_id is not None:
+            # `site_id` es nuevo (`new_id`): solo puede ser la fila de esta vinculación.
+            try:
+                await self._db(lambda conn: repository.delete_site(conn, site_id))
+            except Exception as exc:  # noqa: BLE001 - de buena fe; en el log, solo la clase
+                log.error("sites.rollback_row_delete_failed", error_type=type(exc).__name__)
         try:
             with http.limited_to(undo.capped(UNDO_REVOKE_SECONDS)):
                 await wp.revoke(api_root, credentials, retries=0)

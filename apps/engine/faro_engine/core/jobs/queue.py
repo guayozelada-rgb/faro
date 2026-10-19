@@ -20,7 +20,8 @@ La cola **es** la tabla: una tarea en espera es una fila `queued`. Este módulo 
 - eventos de pasos y de propuestas (`emit_event`) para `StepRecorder` y el marco.
 
 Motivos (`status_reason`) que usa la cola: `daily_limit` (en cola hasta otro día),
-`agents_paused` (pausa global), `interrupted` (cierre del motor), `cancel_requested` (el
+`agents_paused` (pausa global), `interrupted` (cierre del motor), `grant_rate_limited` (el
+núcleo limitó el ritmo de concesiones; vuelve a la cola tras esperar), `cancel_requested` (el
 usuario canceló una tarea en curso; se detiene en el siguiente límite), `user_cancelled` y
 `dependency_failed`.
 
@@ -52,13 +53,16 @@ log = structlog.get_logger(__name__)
 DAILY_LIMIT: Final = "daily_limit"
 AGENTS_PAUSED_REASON: Final = "agents_paused"
 INTERRUPTED: Final = "interrupted"
+# El núcleo limitó el ritmo de concesiones (`agents.grant_rate_limited`): `queued` mientras
+# el trabajador espera, o `paused` si llegó al renovar la concesión a mitad de tarea.
+GRANT_RATE_LIMITED: Final = "grant_rate_limited"
 CANCEL_REQUESTED: Final = "cancel_requested"
 # Tarea de un plan cuya tarea previa falló o se canceló (spec F1b §4.2, orquestador).
 DEPENDENCY_FAILED: Final = "dependency_failed"
 # Estado final de una tarea que falló: cierra sus propuestas abiertas (`transition`).
 FAILED: Final = "failed"
 # Tareas en pausa que vuelven a la cola cuando los agentes pueden trabajar.
-RESUMABLE_REASONS: Final = (AGENTS_PAUSED_REASON, INTERRUPTED)
+RESUMABLE_REASONS: Final = (AGENTS_PAUSED_REASON, INTERRUPTED, GRANT_RATE_LIMITED)
 
 
 def _utc_now() -> datetime:
@@ -185,10 +189,23 @@ class RunQueue:
         priority: int | None = None,
         result: Mapping[str, Any] | None = None,
         fields: Mapping[str, object] | None = None,
+        unless_reason: str | None = None,
+        reset_started: bool = False,
     ) -> RunRecord | None:
         """Transición condicional con su evento. `None` si la tarea ya no estaba en
         `from_status`. `result` (JSON del agente) y `fields` se guardan en la misma
         transacción.
+
+        Con `unless_reason`, tampoco cambia (`None`) si la tarea tiene ese motivo: el
+        trabajador lo usa con `cancel_requested` para que una cancelación pedida mientras
+        corría el último paso no se pierda al pasar a `waiting_approval` (hallazgo M1 de
+        la revisión de T13). La lectura y la escritura van en la misma transacción. El
+        trabajador lo usa en toda salida de `running` que no termina la tarea (`paused`,
+        `queued`, `waiting_approval`, sugerencia): si no, `resume_paused` la volvería a
+        encolar con la cancelación perdida (hallazgo H1 de la segunda revisión de T13).
+
+        `reset_started` borra `started_at` en la misma transacción (una tarea devuelta a la
+        cola sin invocarse sigue siendo un primer arranque; hallazgo H2).
 
         A `failed`, en la **misma** transacción, sus propuestas abiertas (`pending`, o
         `approved` sin ejecutar) pasan a `cancelled` (condición T8-C1 de la revisión de
@@ -198,6 +215,10 @@ class RunQueue:
 
         def write(conn: Connection) -> tuple[RunRecord | None, int]:
             with atomic(conn):
+                if unless_reason is not None:
+                    current = runs.get_run(conn, run_id)
+                    if current is not None and current.status_reason == unless_reason:
+                        return None, 0
                 changed = runs.transition_run(
                     conn,
                     run_id,
@@ -210,6 +231,8 @@ class RunQueue:
                 )
                 if not changed:
                     return None, 0
+                if reset_started:
+                    runs.clear_started_at(conn, run_id, status=to_status, now=now)
                 extra = dict(fields or {})
                 if result is not None:
                     extra["result"] = to_json(result)

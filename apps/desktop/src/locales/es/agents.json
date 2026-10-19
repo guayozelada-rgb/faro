@@ -41,7 +41,8 @@
     "interrupted": "Se interrumpió al cerrar Faro. Seguirá sola.",
     "agents_paused": "Seguirá cuando reanudes los agentes.",
     "dependency_failed": "Se canceló porque la tarea anterior no terminó.",
-    "user_cancelled": "La cancelaste tú."
+    "user_cancelled": "La cancelaste tú.",
+    "grant_rate_limited": "Hay varias tareas seguidas; esta empieza en un momento, sola."
   },
   "catalog": {
     "title": "Qué hacer ahora",

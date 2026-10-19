@@ -423,3 +423,19 @@ def test_set_and_clear_status_reason(conn: Connection) -> None:
         runs.set_status_reason(conn, "run-1", status="otro", reason=None, now=T1)
     with pytest.raises(ValueError, match="estado"):
         runs.clear_status_reason(conn, status="otro", reason="x", now=T1)
+
+
+def test_clear_started_at_only_in_its_status(conn: Connection) -> None:
+    add_run(conn)
+    assert runs.transition_run(conn, "run-1", from_status="queued", to_status="running", now=T1)
+    assert not runs.clear_started_at(conn, "run-1", status="queued", now=T2)
+    started = runs.get_run(conn, "run-1")
+    assert started is not None
+    assert started.started_at == T1
+    assert runs.transition_run(conn, "run-1", from_status="running", to_status="queued", now=T2)
+    assert runs.clear_started_at(conn, "run-1", status="queued", now=T2)
+    cleared = runs.get_run(conn, "run-1")
+    assert cleared is not None
+    assert (cleared.started_at, cleared.updated_at) == (None, T2)
+    with pytest.raises(ValueError, match="estado"):
+        runs.clear_started_at(conn, "run-1", status="otro", now=T2)

@@ -414,6 +414,19 @@ def transition_run(
     return int(cursor.rowcount) == 1
 
 
+def clear_started_at(conn: Connection, run_id: str, *, status: str, now: str) -> bool:
+    """Borra `started_at` solo si la tarea sigue en `status`: una tarea que volvió a la cola
+    sin invocarse sigue siendo un primer arranque, también tras reiniciar el motor
+    (hallazgo H2 de la segunda revisión de T13)."""
+    if status not in RUN_STATUSES:
+        raise ValueError("estado desconocido")
+    cursor = conn.execute(
+        "UPDATE agent_runs SET started_at = NULL, updated_at = ? WHERE id = ? AND status = ?",
+        (now, run_id, status),
+    )
+    return int(cursor.rowcount) == 1
+
+
 def set_status_reason(
     conn: Connection, run_id: str, *, status: str, reason: str | None, now: str
 ) -> bool:

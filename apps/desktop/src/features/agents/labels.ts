@@ -56,6 +56,7 @@ const KNOWN_REASONS: readonly string[] = [
   "agents_paused",
   "dependency_failed",
   "user_cancelled",
+  "grant_rate_limited",
 ];
 
 /** Texto del motivo de una tarea o `null` si no hay o es desconocido. */

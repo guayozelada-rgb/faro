@@ -41,7 +41,8 @@
     "interrupted": "[TODO] Se interrumpió al cerrar Faro. Seguirá sola.",
     "agents_paused": "[TODO] Seguirá cuando reanudes los agentes.",
     "dependency_failed": "[TODO] Se canceló porque la tarea anterior no terminó.",
-    "user_cancelled": "[TODO] La cancelaste tú."
+    "user_cancelled": "[TODO] La cancelaste tú.",
+    "grant_rate_limited": "[TODO] Hay varias tareas seguidas; esta empieza en un momento, sola."
   },
   "catalog": {
     "title": "[TODO] Qué hacer ahora",

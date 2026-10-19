@@ -57,7 +57,7 @@ Líneas nuevas, una línea JSON compacta cada una:
 ```json
 {"event":"run_grant_request","id":"<uuid>","run_id":"<uuid>","agent":"site_summary","site_id":"<uuid>"|null,"provider":"anthropic"|"openai"|"gemini"|null,"trigger":"user"|"schedule"|"catch_up"}
 {"event":"run_grant_response","id":"<uuid>","ok":true,"expires_in_seconds":900}
-{"event":"run_grant_response","id":"<uuid>","error":"agents.paused"|"agent.grant_denied"}
+{"event":"run_grant_response","id":"<uuid>","error":"agents.paused"|"agents.grant_rate_limited"|"agent.grant_denied"}
 {"event":"run_grant_release","run_id":"<uuid>","status":"succeeded"|"failed"|"cancelled"|"waiting_approval"|"paused"}
 {"event":"agent_activity","run_id":"<uuid>","seq":1,"occurred_at":"…Z","kind":"run_status"|"step_started"|"step_finished"|"approval_requested","agent":"…","site_id":"<uuid>"|null,"status":"…","step":"…"|null,"step_cost_micros":0,"run_cost_micros":0,"run_tokens":0,"error_code":"…"|null}
 {"event":"agents_control","paused":true,"llm_providers":["anthropic","openai"]}

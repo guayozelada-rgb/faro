@@ -429,6 +429,72 @@ async def test_connect_slow_insert_is_cut_and_undone(
     assert world.wp.connection is None
 
 
+async def test_connect_timeout_after_insert_commit_removes_the_row(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # El `INSERT` ya se confirmó cuando llega el `timeout` (el hilo de la base lo termina
+    # aunque se cancele la espera): el sitio no puede quedar activo y sin clave.
+    clock = FakeClock()
+    _advance_on_http(world, clock, "GET", "/faro/v1/status", 44.99)
+    original = SitesService._insert
+
+    async def insert_then_stall(self: SitesService, record: SiteRecord, now: str) -> None:
+        await original(self, record, now)
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(SitesService, "_insert", insert_then_stall)
+    code = world.wp.create_code()
+    with pytest.raises(FaroError) as info:
+        await world.service(clock=clock).connect(SITE_URL, code)
+    assert info.value.code == "site.timeout"
+    assert world.query("SELECT id FROM sites") == []
+    assert world.query("SELECT id FROM site_connections") == []
+    assert world.vault.store == {}
+    assert world.wp.connection is None
+
+
+async def test_connect_cancelled_after_insert_commit_removes_the_row(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = SitesService._insert
+
+    async def insert_then_cancelled(self: SitesService, record: SiteRecord, now: str) -> None:
+        await original(self, record, now)
+        raise asyncio.CancelledError  # la cancelación llega con la fila ya escrita
+
+    monkeypatch.setattr(SitesService, "_insert", insert_then_cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await _connect(world)
+    assert world.query("SELECT id FROM sites") == []
+    assert world.vault.store == {}
+    assert world.wp.connection is None
+    # Se puede volver a conectar el mismo sitio (la URL quedó libre).
+    monkeypatch.setattr(SitesService, "_insert", original)
+    site = await _connect(world)
+    assert world.vault.store.keys() == {_ref(site.id)}
+
+
+async def test_connect_undo_tolerates_row_delete_failure(
+    world: World, monkeypatch: pytest.MonkeyPatch, log_stream: io.StringIO
+) -> None:
+    async def insert_then_fail(self: SitesService, record: SiteRecord, now: str) -> None:
+        raise FaroError("site.server_error", "x", 502)
+
+    def broken_delete(conn: Connection, site_id: str) -> bool:
+        raise DatabaseError("disk I/O error")
+
+    monkeypatch.setattr(SitesService, "_insert", insert_then_fail)
+    monkeypatch.setattr(repository, "delete_site", broken_delete)
+    with pytest.raises(FaroError) as info:
+        await _connect(world)
+    assert info.value.code == "site.server_error"  # el error original, no el de deshacer
+    output = log_stream.getvalue()
+    assert "sites.rollback_row_delete_failed" in output
+    assert "disk I/O error" not in output  # solo la clase
+    assert world.vault.store == {}
+    assert world.wp.connection is None
+
+
 async def test_connect_with_just_enough_margin_succeeds(world: World) -> None:
     # Quedan 11 s ≥ 10 s de reserva. No más justo: el `insert` corre con
     # `asyncio.timeout(work.remaining())`, que mide en segundos reales; con 44,9 solo le
