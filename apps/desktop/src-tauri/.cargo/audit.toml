@@ -21,6 +21,16 @@ ignore = [
     # no devuelve nada para Windows ni macOS.
     # Fecha: 2026-09-29. Revisar al añadir soporte Linux.
     "RUSTSEC-2024-0370",
+    # RUSTSEC-2026-0370 | zvariant 5.15.0 | unmaintained (integrado en zbus 6 como `wire`).
+    # RUSTSEC-2026-0371 | zbus_names 4.3.4 | unmaintained (integrado en zbus 6 como `names`).
+    # RUSTSEC-2026-0372 | zvariant_derive 5.15.0 | unmaintained (macros en zbus 6).
+    # Solo Linux: los arrastra zbus 5.19, que tauri-plugin-opener 2.7 solo declara con
+    # `cfg(target_os = "linux" | BSD)`. `cargo tree -i zbus|zvariant|zbus_names|zvariant_derive`
+    # no devuelve nada para Windows ni macOS. Sin versión corregida en la línea 5 de zbus.
+    # Fecha: 2026-10-19. Quitar cuando tauri-plugin-opener pase a zbus 6 o al añadir Linux.
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
 ]
 
 [output]
