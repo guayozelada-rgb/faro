@@ -89,8 +89,12 @@ fn data_dir() -> tempfile::TempDir {
 /// Perfil y llave de prueba (no son del usuario; solo viven en la carpeta temporal).
 const TEST_PROFILE: &str = "0192f0a0-1234-7abc-8def-0123456789ab";
 const TEST_DB_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"; // gitleaks:allow
-/// El motor espera la línea `db_key` hasta 10 s; con ella debe llegar a `ready` bastante antes.
-const READY_WITH_KEY_MAX: Duration = Duration::from_secs(9);
+/// Tope de tiempo hasta `ready` con la llave enviada. La prueba de que el motor recibió la
+/// línea `db_key` es `database.state == "ready"` en `/health`; este tope solo detecta un
+/// arranque anormalmente lento, y es el mismo que da el supervisor del núcleo
+/// (`ready_timeout`, 20 s). Con LiteLLM y LangGraph (F1b) el arranque en frío de un runner
+/// de Windows ya pasó de 11 s, así que 9 s fallaba sin que hubiera ningún error.
+const READY_WITH_KEY_MAX: Duration = Duration::from_secs(20);
 
 /// Cabecera de un archivo SQLite sin cifrar.
 const SQLITE_HEADER: &[u8] = b"SQLite format 3\0";
@@ -207,7 +211,7 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
     let to_ready = launched.elapsed();
     assert!(
         to_ready < READY_WITH_KEY_MAX,
-        "ready tardó {to_ready:?}: el motor no recibió la línea db_key"
+        "ready tardó {to_ready:?}: arranque anormalmente lento"
     );
 
     let base = format!("http://127.0.0.1:{}", ready.port);
