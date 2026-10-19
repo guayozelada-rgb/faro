@@ -48,8 +48,11 @@ ENGINE_SECRETS_UNAVAILABLE: Final = "engine.secrets_unavailable"
 
 # Concesiones por ejecución de los agentes (ADR 0014 §1, spec F1b §5.1 y §5.5). Los envía
 # el núcleo en `run_grant_response`; el motor también usa `agent.grant_denied` si no hay
-# respuesta a tiempo o el canal está cerrado (falla cerrado).
+# respuesta a tiempo o el canal está cerrado (falla cerrado). `agents.grant_rate_limited`:
+# el núcleo limita el ritmo de concesiones por tipo de agente (10 seguidas y luego una por
+# minuto); no es un fallo de la tarea, el trabajador la devuelve a la cola y espera.
 AGENTS_PAUSED: Final = "agents.paused"
+AGENTS_GRANT_RATE_LIMITED: Final = "agents.grant_rate_limited"
 AGENT_GRANT_DENIED: Final = "agent.grant_denied"
 
 # Cola, tareas y programaciones de los agentes (spec F1b §4.3, §5.2 y §5.5). Su estado
@@ -141,6 +144,9 @@ _BASE_MESSAGES: Final[Mapping[str, str]] = {
         "Esta acción no está disponible en el modo de desarrollo externo."
     ),
     AGENTS_PAUSED: "Los agentes están en pausa. Reanúdalos para empezar.",
+    AGENTS_GRANT_RATE_LIMITED: (
+        "Los agentes empezaron muchas tareas seguidas. Esta seguirá sola en un minuto."
+    ),
     AGENT_GRANT_DENIED: (
         "El agente no obtuvo permiso para usar tus claves. Reinicia Faro e intenta de nuevo."
     ),

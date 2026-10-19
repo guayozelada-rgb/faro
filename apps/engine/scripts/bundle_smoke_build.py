@@ -255,9 +255,29 @@ def largest_entries(folder: Path, limit: int = 12) -> list[tuple[str, int]]:
     return sorted(sizes, key=lambda item: item[1], reverse=True)[:limit]
 
 
+# Proxies del entorno, en cualquier combinación de mayúsculas. El gancho de
+# `scripts/pyinstaller_offline` deja conectar a loopback, y con un proxy en loopback
+# (`HTTPS_PROXY=http://127.0.0.1:<puerto>`) un import durante el análisis saldría a internet
+# sin quedar anotado (hallazgo I1 de T13; como `tests/deps/helpers.py::run_probe`). Se quita
+# toda variable que acabe en `_PROXY`: `urllib.request.getproxies_environment()` las lee todas.
+PROXY_SUFFIX = "_PROXY"
+# Sin ninguna variable de proxy, `urllib.request.getproxies()` lee el proxy del sistema en
+# macOS (SystemConfiguration) y Windows (registro), y uno en loopback dejaría salir un import
+# igual. Con `NO_PROXY=*` el entorno no queda vacío, no se consulta el sistema y todo host se
+# salta el proxy (hallazgo H3 de la segunda revisión de T13). Las dos grafías: unas
+# bibliotecas leen solo la minúscula y otras solo la mayúscula.
+BUILD_ENV_NO_PROXY = {"NO_PROXY": "*", "no_proxy": "*"}
+
+
 def build_env(network_log: Path) -> dict[str, str]:
-    """Entorno de PyInstaller: sin red (ver `scripts/pyinstaller_offline`) y LiteLLM local."""
-    env = {k: v for k, v in os.environ.items() if k.upper() != "PYTHONPATH"}
+    """Entorno de PyInstaller: sin red (ver `scripts/pyinstaller_offline`), sin proxies (ni
+    del entorno ni del sistema) y LiteLLM local."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k.upper() != "PYTHONPATH" and not k.upper().endswith(PROXY_SUFFIX)
+    }
+    env.update(BUILD_ENV_NO_PROXY)
     env.update(
         {
             "PYTHONPATH": str(OFFLINE_DIR),

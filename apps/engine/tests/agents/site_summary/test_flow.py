@@ -16,6 +16,7 @@ import pytest
 import structlog
 
 from faro_engine.agents.framework.approvals import ApprovalService, accept_suggestion, decide
+from faro_engine.agents.framework.autonomy import AutonomyPolicy
 from faro_engine.agents.framework.spec import GraphBuilder
 from faro_engine.agents.site_summary import graph as summary_graph
 from faro_engine.agents.site_summary.estimate import planned_calls
@@ -23,7 +24,7 @@ from faro_engine.agents.site_summary.spec import SPEC
 from faro_engine.agents.site_summary.tools import make_read_site_content
 from faro_engine.core.audit import AuditLog
 from faro_engine.core.db.database import open_profile_database
-from faro_engine.core.errors import SITE_TIMEOUT, site_error
+from faro_engine.core.errors import SITE_TIMEOUT, FaroError, site_error
 from faro_engine.core.jobs.control import AgentsControlState
 from faro_engine.core.jobs.recovery import expire_approvals
 from faro_engine.core.secrets import SecretError
@@ -270,6 +271,56 @@ async def test_sitio_quitado_mientras_esperaba(sworld: GraphWorld) -> None:
     assert approval is not None
     assert approval.status == "cancelled"
     assert sworld.summaries(run) == []
+
+
+@pytest.mark.parametrize("level", [0, 1])
+@pytest.mark.parametrize("signal", [True, False], ids=["con_aviso", "solo_marca"])
+async def test_cancelar_mientras_propone_no_deja_nada_abierto(
+    sworld: GraphWorld, monkeypatch: pytest.MonkeyPatch, level: int, signal: bool
+) -> None:
+    """Hallazgo M1 de la revisión de T13: una cancelación pedida mientras corre el nodo
+    que propone (sin otro límite entre pasos detrás) no se pierde al llegar al `interrupt`
+    (nivel 1) ni al final con sugerencia (nivel 0). `solo_marca`: la ruta marcó
+    `cancel_requested` pero el aviso al trabajador no llegó a tiempo (la transición lo
+    comprueba en la base)."""
+    sworld.set_level(level, kind=KIND)
+    original = AutonomyPolicy.decide
+    answers: list[str] = []
+
+    async def decide_and_cancel(self: AutonomyPolicy, *args: Any, **kwargs: Any) -> Any:
+        current = sworld.jobs.worker.current_run_id
+        assert current is not None
+        result = await sworld.jobs.queue.cancel(current)  # como `cancelAgentRun`
+        answers.append(result.outcome)
+        if signal:
+            sworld.jobs.worker.request_cancel(current)
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(AutonomyPolicy, "decide", decide_and_cancel)
+    run = await launch(sworld)
+    await sworld.until(run, "cancelled")
+
+    assert answers == ["running"]  # la ruta contestó `running/cancel_requested`
+    record = sworld.run(run)
+    assert (record.status_reason, record.error_code) == ("user_cancelled", None)
+    assert sworld.run_statuses(run)[-1] == "cancelled"
+    assert "waiting_approval" not in sworld.run_statuses(run)
+    approval = sworld.approval(run)
+    if level == 1:
+        assert approval is not None
+        assert approval.status == "cancelled"  # no queda `pending` en la Bandeja
+    else:
+        assert approval is None
+        with pytest.raises(FaroError) as caught:
+            await accept_suggestion(
+                sworld.jobs.queue,
+                AuditLog(sworld.database),
+                run,
+                actions=lambda _kind, action: SPEC.action_spec(action),
+            )
+        assert caught.value.code == "agent.no_suggestion"
+    assert sworld.summaries(run) == []
+    await eventually(lambda: sworld.grants.releases == [(run, "cancelled")])
 
 
 async def test_pausa_a_mitad_y_sigue_desde_su_paso(database: Any) -> None:

@@ -16,19 +16,27 @@
 //! línea de aviso; el resto se descarta hasta el día siguiente. Con 7 archivos, el log
 //! ocupa como mucho unos 7 × 64 MiB.
 //!
-//! Una línea es de decisión si contiene `"target":"faro_lib::decision"` tal cual: los
-//! valores de los campos van escapados en JSON (sus comillas salen como `\"`), así que
-//! un texto que venga del motor no puede hacerse pasar por una decisión. Cada `write`
-//! recibe una línea entera (`RedactingWriter` escribe el evento de una vez y
+//! Una línea es de decisión si es un objeto JSON cuya clave `target` **de nivel
+//! superior** vale `faro_lib::decision` (condición 7c de T5): un campo anidado (dentro de
+//! `fields` o `span`) con ese nombre y valor no cuenta, y una clave `target` repetida
+//! tampoco (el objeto no se acepta). Antes de leer el JSON se busca la marca
+//! `"target":"faro_lib::decision"`: las líneas sin ella, casi todas, no se analizan. Cada
+//! `write` recibe una línea entera (`RedactingWriter` escribe el evento de una vez y
 //! `non_blocking` lo pasa igual).
+//!
+//! Las decisiones que el motor provoca con solicitudes aceptadas (usos de secretos,
+//! concesiones emitidas y liberadas) tienen su propio ritmo acotado
+//! ([`crate::secrets::decisions`]), para que nunca agoten la reserva.
 //!
 //! Los rechazos que un motor puede provocar se agregan ([`crate::secrets::audit`]) y los
 //! demás avisos repetibles se muestrean ([`super::sample`]).
 
+use std::borrow::Cow;
 use std::io::{self, Write};
 use std::path::Path;
 
 use chrono::NaiveDate;
+use serde::Deserialize;
 
 use super::{LOG_FILE_PREFIX, LOG_FILE_SUFFIX};
 
@@ -38,7 +46,7 @@ pub const MAX_LOG_BYTES_PER_DAY: u64 = 64 * 1024 * 1024;
 pub const RESERVED_LOG_BYTES_PER_DAY: u64 = 16 * 1024 * 1024;
 /// Target de `tracing` de las decisiones del núcleo, que usan la reserva.
 pub const DECISION_TARGET: &str = "faro_lib::decision";
-/// Marca de una línea de decisión en el JSON del archivo.
+/// Marca de una línea de decisión en el JSON del archivo (filtro previo).
 const DECISION_MARK: &[u8] = br#""target":"faro_lib::decision""#;
 /// Mensaje de la línea que se escribe al agotar la parte general.
 pub const LOG_CAP_NOTICE: &str =
@@ -69,9 +77,20 @@ impl CapLimits {
     }
 }
 
-/// ¿Es una línea de decisión del núcleo?
+/// Solo la clave `target` de nivel superior (el resto del objeto se ignora).
+#[derive(Deserialize)]
+struct TopLevelTarget<'a> {
+    #[serde(borrow, default)]
+    target: Option<Cow<'a, str>>,
+}
+
+/// ¿Es una línea de decisión del núcleo? (`target` de nivel superior; ver el módulo).
 pub fn is_decision_line(buf: &[u8]) -> bool {
-    buf.windows(DECISION_MARK.len()).any(|w| w == DECISION_MARK)
+    if !buf.windows(DECISION_MARK.len()).any(|w| w == DECISION_MARK) {
+        return false;
+    }
+    serde_json::from_slice::<TopLevelTarget<'_>>(buf)
+        .is_ok_and(|line| line.target.as_deref() == Some(DECISION_TARGET))
 }
 
 /// Escritor con tope diario de bytes y reserva para las decisiones.
@@ -259,6 +278,51 @@ mod tests {
         assert!(!is_decision_line(forged.to_string().as_bytes()));
         assert!(!is_decision_line(b"{\"target\":\"faro_lib::secrets\"}"));
         assert_eq!(CapLimits::DEFAULT.general(), 48 * 1024 * 1024);
+    }
+
+    /// Condición 7c de T5: solo cuenta la clave `target` de nivel superior.
+    #[test]
+    fn un_target_anidado_no_pasa_por_decision() {
+        // Como las escribe el formateador JSON de `tracing` (campos antes que `target`).
+        let real = br#"{"timestamp":"2026-10-19T10:00:00.000000Z","level":"INFO","fields":{"message":"m","op":"get"},"target":"faro_lib::decision"}
+"#;
+        assert!(is_decision_line(real));
+        for forged in [
+            // Campo anidado con ese nombre y valor, `target` real de otro módulo.
+            serde_json::json!({
+                "fields": {"message": "m", "target": "faro_lib::decision"},
+                "target": "faro_lib::engine",
+            }),
+            // En `span`, sin `target` de nivel superior.
+            serde_json::json!({"span": {"target": "faro_lib::decision"}, "level": "WARN"}),
+            serde_json::json!({"fields": {"target": "faro_lib::decision"}}),
+        ] {
+            let line = format!("{forged}\n");
+            assert!(line.contains(r#""target":"faro_lib::decision""#), "{line}");
+            assert!(!is_decision_line(line.as_bytes()), "{line}");
+        }
+        // Clave repetida o línea que no es JSON: no es decisión.
+        assert!(!is_decision_line(
+            br#"{"target":"faro_lib::decision","target":"faro_lib::engine"}"#
+        ));
+        assert!(!is_decision_line(
+            br#"texto "target":"faro_lib::decision" suelto"#
+        ));
+        // Y esas líneas no usan la reserva.
+        let sink = Sink::default();
+        let limits = CapLimits {
+            total: 200,
+            reserve: 190,
+        };
+        let mut writer = CappedWriter::with_clock(sink.clone(), limits, fixed_day(), 0);
+        let forged = serde_json::json!({
+            "fields": {"target": "faro_lib::decision"},
+            "target": "faro_lib::engine",
+        });
+        writer.write_all(format!("{forged}\n").as_bytes()).unwrap();
+        let text = sink.text();
+        assert!(text.contains(LOG_CAP_NOTICE), "{text}");
+        assert!(!text.contains("faro_lib::engine"), "{text}");
     }
 
     #[test]

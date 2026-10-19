@@ -162,6 +162,8 @@ class JobWorld:
     llm_client: FakeLLM = field(default_factory=FakeLLM)
     secrets: FakeSecrets = field(default_factory=FakeSecrets)
     timezone: str = "America/Santiago"
+    # Distinta de la espera de `catch_up` (60 s) para soltarlas por separado.
+    grant_rate_limited_backoff: float = 61.0
     _jobs: JobSystem | None = None
     _llm: LlmService | None = None
 
@@ -195,6 +197,7 @@ class JobWorld:
                 timer_factory=lambda: self.timer,
                 stop_wait=0.5,
                 cancel_wait=2.0,
+                grant_rate_limited_backoff=self.grant_rate_limited_backoff,
             )
         return self._jobs
 

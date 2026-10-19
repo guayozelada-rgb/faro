@@ -9,6 +9,13 @@ fuera de loopback y la anota en ese archivo; el constructor falla si el archivo 
 intento. Cada proceso vigilado anota también su arranque (`start <pid>`), para comprobar que
 el bloqueo llegó a los subprocesos.
 
+Loopback es solo `localhost` exacto y las IP de loopback. Conectar a loopback se permite, así
+que un proxy en loopback (`HTTPS_PROXY=http://127.0.0.1:<puerto>`) sería una salida a internet
+que este gancho no ve. Por eso `build_env` quita del entorno de PyInstaller toda variable
+`*_PROXY` y fija `NO_PROXY=*` y `no_proxy=*`, para que `urllib.request.getproxies()` tampoco
+lea el proxy del sistema en macOS y Windows (hallazgos I1 y H3 de las revisiones de T13; lo
+mismo que `tests/network_guard.py` en T12).
+
 Sin `FARO_BUILD_NETWORK_LOG` no hace nada. No entra en el motor empaquetado (lo comprueba
 la prueba de humo `engine`).
 """
@@ -34,7 +41,9 @@ def _is_loopback(host: object) -> bool:
     if not isinstance(host, str):
         return False
     name = host.strip().strip("[]").split("%", 1)[0].lower().rstrip(".")
-    if name == "localhost" or name.endswith(".localhost"):
+    # Solo `localhost` exacto: un `*.localhost` lo resuelve el DNS del sistema o un proxy, y
+    # nada garantiza que acabe en loopback (hallazgo I1 de la revisión de T13).
+    if name == "localhost":
         return True
     try:
         return ipaddress.ip_address(name).is_loopback

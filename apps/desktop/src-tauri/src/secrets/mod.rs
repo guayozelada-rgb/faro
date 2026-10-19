@@ -24,7 +24,9 @@
 //! auditoría sin el valor ([`audit`]). Los rechazos, que un motor puede provocar sin
 //! límite, se agregan por (acción, motivo) en el log y en la auditoría
 //! ([`audit::AuditQueue::record`]); lo que sí ejecuta el llavero queda en el log como
-//! decisión del núcleo (target [`DECISION_TARGET`], con reserva en el tope diario).
+//! decisión del núcleo (target [`DECISION_TARGET`], con reserva en el tope diario),
+//! con ritmo acotado: solo los primeros usos por concesión y referencia van uno a uno y el
+//! resto sale resumido al terminar la concesión ([`decisions`], condición 7 de T5).
 //!
 //! `wp/{site_id}/token` solo se concede si el sitio es del perfil activo
 //! ([`sites::SiteRegistry`]). El valor de un secreto solo existe en `SecretString` o
@@ -37,6 +39,7 @@
 //! `get` y desaparecen al pausar los agentes.
 
 pub mod audit;
+pub mod decisions;
 pub mod operations;
 pub mod refs;
 pub mod request;
@@ -64,6 +67,7 @@ use crate::error::AppError;
 use crate::logging::DECISION_TARGET;
 use crate::profile::{new_uuid_v7, NIL_PROFILE_ID};
 use crate::secrets::audit::{Action, Actor, AuditEvent, AuditQueue, DetailKey, Outcome};
+use crate::secrets::decisions::{DecisionLimits, DecisionLog, GrantEnd, UseTally};
 use crate::secrets::operations::{OperationSpec, TemplateKind};
 use crate::secrets::refs::{is_canonical_uuid, parse_ref, wp_ref, RefKind};
 use crate::secrets::request::{
@@ -145,6 +149,8 @@ struct Grant {
     profile_id: Option<String>,
     refs: Vec<(String, Vec<Op>)>,
     new_slot: Option<NewSlot>,
+    /// Usos de secretos con esta concesión (para acotar sus líneas de decisión).
+    uses: UseTally,
 }
 
 #[derive(Debug)]
@@ -158,6 +164,8 @@ struct BrokerState {
     agents_paused: bool,
     /// Último número de serie de concesión entregado.
     last_serial: u64,
+    /// Ritmo de las decisiones que provoca el motor (condición 7 de T5).
+    decisions: DecisionLog,
 }
 
 impl Default for BrokerState {
@@ -169,6 +177,7 @@ impl Default for BrokerState {
             grants: HashMap::new(),
             agents_paused: true,
             last_serial: 0,
+            decisions: DecisionLog::new(DecisionLimits::DEFAULT),
         }
     }
 }
@@ -189,9 +198,60 @@ impl BrokerState {
         self.last_serial
     }
 
-    /// Quita las concesiones caducadas.
+    /// Quita las concesiones caducadas (con el resumen de sus usos).
     fn prune(&mut self, now: Instant) {
-        self.grants.retain(|_, grant| grant.expires_at > now);
+        self.retire_where(GrantEnd::Expired, now, |grant| grant.expires_at <= now);
+    }
+
+    /// Quita las concesiones que cumplen `remove` y escribe el resumen de sus usos sin
+    /// registrar. Devuelve cuántas quitó.
+    fn retire_where(
+        &mut self,
+        end: GrantEnd,
+        now: Instant,
+        mut remove: impl FnMut(&Grant) -> bool,
+    ) -> usize {
+        let decisions = &mut self.decisions;
+        let before = self.grants.len();
+        self.grants.retain(|run_id, grant| {
+            if !remove(grant) {
+                return true;
+            }
+            decisions.retire(run_id, &grant.origin.label, &grant.uses, end, now);
+            false
+        });
+        before - self.grants.len()
+    }
+
+    /// Quita la concesión `run_id` (con el resumen de sus usos).
+    fn retire(&mut self, run_id: &str, end: GrantEnd) -> Option<Grant> {
+        let grant = self.grants.remove(run_id)?;
+        self.decisions.retire(
+            run_id,
+            &grant.origin.label,
+            &grant.uses,
+            end,
+            Instant::now(),
+        );
+        Some(grant)
+    }
+
+    /// Motor detenido o reiniciado: quita todas y escribe lo que quedaba sin registrar.
+    fn retire_all(&mut self) {
+        self.retire_where(GrantEnd::EngineStopped, Instant::now(), |_| true);
+        self.decisions.flush_unlogged();
+    }
+
+    /// ¿Va al log uno a uno este uso de la concesión `run_id` (número `serial`)?
+    fn note_use(&mut self, context: &Context<'_>, failed: bool, now: Instant) -> bool {
+        let decisions = &mut self.decisions;
+        match self.grants.get_mut(context.run_id) {
+            Some(grant) if grant.serial == context.serial => {
+                decisions.note_use(&mut grant.uses, context.secret_ref, context.op, failed, now)
+            }
+            // La concesión terminó mientras se usaba el llavero: solo el tope común.
+            _ => decisions.admit_line(now, 1),
+        }
     }
 }
 
@@ -265,7 +325,7 @@ impl fmt::Debug for GrantGuard {
 
 impl Drop for GrantGuard {
     fn drop(&mut self) {
-        self.broker.lock().grants.remove(&self.run_id);
+        self.broker.lock().retire(&self.run_id, GrantEnd::Finished);
     }
 }
 
@@ -297,6 +357,14 @@ impl SecretBroker {
             state: Mutex::new(BrokerState::default()),
             keyring: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// Solo pruebas: otros límites de ritmo de las decisiones del motor.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_decision_limits(self, limits: DecisionLimits) -> Self {
+        self.lock().decisions = DecisionLog::new(limits);
+        self
     }
 
     /// Solo pruebas: otra tabla de agentes (la incrustada está vacía hasta T9).
@@ -333,14 +401,15 @@ impl SecretBroker {
         state.profile_id = profile_id
             .filter(|p| is_canonical_uuid(p) && *p != NIL_PROFILE_ID)
             .map(str::to_owned);
-        state.grants.clear();
+        state.retire_all();
     }
 
-    /// El motor se detuvo o se va a reiniciar: todas las concesiones desaparecen.
+    /// El motor se detuvo o se va a reiniciar: todas las concesiones desaparecen (con el
+    /// resumen de sus usos y de las decisiones sin registrar).
     pub fn engine_stopped(&self) {
         let mut state = self.lock();
         state.running = false;
-        state.grants.clear();
+        state.retire_all();
     }
 
     /// Concesiones activas (diagnóstico y pruebas).
@@ -362,9 +431,9 @@ impl SecretBroker {
     pub fn pause_agents(&self) -> usize {
         let mut state = self.lock();
         state.agents_paused = true;
-        let before = state.grants.len();
-        state.grants.retain(|_, grant| !grant.origin.is_run());
-        before - state.grants.len()
+        state.retire_where(GrantEnd::Paused, Instant::now(), |grant| {
+            grant.origin.is_run()
+        })
     }
 
     /// Reanuda: vuelven a concederse (con todas las comprobaciones).
@@ -473,6 +542,7 @@ impl SecretBroker {
                 profile_id,
                 refs,
                 new_slot,
+                uses: UseTally::default(),
             },
         );
         drop(state);
@@ -500,6 +570,7 @@ impl SecretBroker {
                 profile_id,
                 refs,
                 new_slot: None,
+                uses: UseTally::default(),
             },
         );
     }
@@ -526,6 +597,7 @@ impl SecretBroker {
                 profile_id,
                 refs,
                 new_slot: None,
+                uses: UseTally::default(),
             },
         );
     }
@@ -851,15 +923,22 @@ impl SecretBroker {
                 reason,
             ),
         };
-        tracing::info!(
-            target: DECISION_TARGET,
-            op = context.op.as_str(),
-            secret_ref = context.secret_ref,
-            operation = context.origin.as_ref().map(|o| &*o.label),
-            result = outcome.as_str(),
-            error_code = code,
-            "solicitud de secreto del motor"
-        );
+        // El motor puede repetir un uso aceptado sin límite: solo los primeros por
+        // concesión, referencia y operación van uno a uno; el resto, en el resumen.
+        let logged = self
+            .lock()
+            .note_use(context, outcome != Outcome::Ok, Instant::now());
+        if logged {
+            tracing::info!(
+                target: DECISION_TARGET,
+                op = context.op.as_str(),
+                secret_ref = context.secret_ref,
+                operation = context.origin.as_ref().map(|o| &*o.label),
+                result = outcome.as_str(),
+                error_code = code,
+                "solicitud de secreto del motor"
+            );
+        }
         let mut event = self.event(context, action, outcome);
         if let Some(code) = code {
             event = event.detail(DetailKey::ErrorCode, code);

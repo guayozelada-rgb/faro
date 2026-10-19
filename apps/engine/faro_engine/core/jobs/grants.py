@@ -9,7 +9,12 @@ Antes de cada ejecución de un agente, el trabajador pide al núcleo una concesi
 y el núcleo responde por stdin con el mismo `id`:
 
     {"event":"run_grant_response","id":"<uuid>","ok":true,"expires_in_seconds":900}
-    {"event":"run_grant_response","id":"<uuid>","error":"agents.paused"|"agent.grant_denied"}
+    {"event":"run_grant_response","id":"<uuid>",
+     "error":"agents.paused"|"agents.grant_rate_limited"|"agent.grant_denied"}
+
+`agents.grant_rate_limited`: el núcleo limita el ritmo de concesiones por tipo de agente
+(10 seguidas y luego una por minuto). No es un fallo: el trabajador devuelve la tarea a la
+cola (o la deja en pausa si era una renovación) y espera antes de volver a pedir.
 
 Al terminar la ejecución (siempre, en un `finally`) el trabajador la libera, sin respuesta:
 
@@ -41,7 +46,12 @@ from typing import Any, Final
 import anyio.to_thread
 import structlog
 
-from faro_engine.core.errors import AGENT_GRANT_DENIED, AGENTS_PAUSED, FaroError
+from faro_engine.core.errors import (
+    AGENT_GRANT_DENIED,
+    AGENTS_GRANT_RATE_LIMITED,
+    AGENTS_PAUSED,
+    FaroError,
+)
 from faro_engine.core.ids import new_id
 from faro_engine.core.jobs.control import LLM_PROVIDERS
 from faro_engine.core.protocol import ProtocolWriter
@@ -61,14 +71,19 @@ RELEASE_STATUSES: Final = frozenset(
 )
 AGENT_KIND_PATTERN: Final = re.compile(r"[a-z][a-z0-9_]{1,47}")
 # Errores que puede enviar el núcleo y su estado HTTP si llegan a una ruta.
-GRANT_ERROR_STATUS: Final[Mapping[str, int]] = {AGENTS_PAUSED: 409, AGENT_GRANT_DENIED: 403}
+GRANT_ERROR_STATUS: Final[Mapping[str, int]] = {
+    AGENTS_PAUSED: 409,
+    AGENTS_GRANT_RATE_LIMITED: 429,
+    AGENT_GRANT_DENIED: 403,
+}
 
 _OK_KEYS: Final = frozenset({"event", "id", "ok", "expires_in_seconds"})
 _ERROR_KEYS: Final = frozenset({"event", "id", "error"})
 
 
 class RunGrantError(FaroError):
-    """Concesión denegada (`agents.paused` o `agent.grant_denied`). Sin motivo ni detalles."""
+    """Concesión denegada (`agents.paused`, `agents.grant_rate_limited` o
+    `agent.grant_denied`). Sin motivo ni detalles."""
 
     def __init__(self, code: str) -> None:
         base = FaroError.of(code, GRANT_ERROR_STATUS[code])

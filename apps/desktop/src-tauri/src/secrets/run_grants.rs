@@ -6,7 +6,8 @@
 //!          "site_id":"<uuid>"|null,"provider":"anthropic"|"openai"|"gemini"|null,
 //!          "trigger":"user"|"schedule"|"catch_up"}
 //! núcleo → {"event":"run_grant_response","id":"<uuid>","ok":true,"expires_in_seconds":900}
-//!        | {"event":"run_grant_response","id":"<uuid>","error":"agents.paused"|"agent.grant_denied"}
+//!        | {"event":"run_grant_response","id":"<uuid>",
+//!           "error":"agents.paused"|"agents.grant_rate_limited"|"agent.grant_denied"}
 //! motor → {"event":"run_grant_release","run_id":"<uuid>",
 //!          "status":"succeeded"|"failed"|"cancelled"|"waiting_approval"|"paused"}
 //! ```
@@ -22,7 +23,11 @@
 //! 5. `provider` presente, de la lista y con `llm/<provider>/default` en la tabla del
 //!    agente (`provider: null` se deniega; un agente sin plantillas `llm/*` nunca obtiene
 //!    concesión);
-//! 6. como mucho [`MAX_ACTIVE_RUN_GRANTS`] concesiones de ejecución activas.
+//! 6. como mucho [`MAX_ACTIVE_RUN_GRANTS`] concesiones de ejecución activas;
+//! 7. ritmo de emisión por tipo de agente ([`super::decisions`]: 10 seguidas y luego una
+//!    por minuto) → `agents.grant_rate_limited` (motivo `rate_limited`). Solo gasta ficha
+//!    una concesión que se emite. Es el único rechazo con código propio: no es un fallo
+//!    de la ejecución, el motor devuelve la tarea a la cola y vuelve a pedir más tarde.
 //!
 //! El sitio se comprueba fuera del candado (lee el índice del disco); por eso, antes de
 //! guardar la concesión, se repiten bajo el candado la pausa, el `run_id`, la generación,
@@ -30,7 +35,8 @@
 //! agente declara `wp/{site_id}/token`, `wp/<site_id>/token: get`; caduca a
 //! `min(max_grant_seconds, 900)` s y queda atada a la generación del motor y al perfil.
 //!
-//! Todo rechazo responde `agent.grant_denied` (o `agents.paused`) **sin motivo**: el motivo
+//! Todo rechazo responde `agent.grant_denied` (o `agents.paused`, o
+//! `agents.grant_rate_limited`) **sin motivo ni detalles**: el motivo
 //! solo va al log y a la auditoría. `run_grant_release` solo borra la concesión de
 //! ejecución de su `run_id` (nunca una de operación) y no tiene respuesta.
 //!
@@ -39,7 +45,9 @@
 //! existen o de una concesión de operación), se agrega por (acción, motivo) en el log y en
 //! la auditoría (`details.count`; ver [`super::audit`]). La liberación de una concesión
 //! que no existe se audita como `denied` (`not_active`). Las concesiones emitidas y las
-//! liberadas quedan en el log como decisiones del núcleo (target [`DECISION_TARGET`]).
+//! liberadas quedan en el log como decisiones del núcleo (target [`DECISION_TARGET`]),
+//! dentro del tope común de líneas que provoca el motor ([`super::decisions`]; las que no
+//! caben se cuentan y salen resumidas).
 
 use serde::Deserialize;
 
@@ -51,6 +59,8 @@ use crate::vault::Provider;
 pub const MAX_ACTIVE_RUN_GRANTS: usize = 4;
 /// Respuesta con los agentes en pausa.
 pub const AGENTS_PAUSED: &str = "agents.paused";
+/// Ritmo de emisión por agente superado (condición 7 de T5): la tarea espera, no falla.
+pub const GRANT_RATE_LIMITED: &str = "agents.grant_rate_limited";
 /// Cualquier otro rechazo.
 pub const GRANT_DENIED: &str = "agent.grant_denied";
 
@@ -302,6 +312,11 @@ impl SecretBroker {
         if active >= MAX_ACTIVE_RUN_GRANTS {
             return Err(deny(GRANT_DENIED, "too_many_grants"));
         }
+        // 7. Ritmo por agente (condición 7 de T5): lo último, para que solo gaste ficha
+        // una concesión que se emite.
+        if !state.decisions.allow_run_grant(&spec.kind, Instant::now()) {
+            return Err(deny(GRANT_RATE_LIMITED, "rate_limited"));
+        }
         // La concesión sale solo de la tabla y de la petición ya validada.
         let mut refs = vec![(provider.secret_ref().to_owned(), vec![Op::Get])];
         let granted_site = site_id.filter(|_| spec.declares_site_token());
@@ -320,6 +335,7 @@ impl SecretBroker {
                 profile_id,
                 refs,
                 new_slot: None,
+                uses: UseTally::default(),
             },
         );
         Ok(Issued {
@@ -374,8 +390,7 @@ impl SecretBroker {
                 .map(|grant| grant.origin.is_run());
             match (current, is_run) {
                 (true, Some(true)) => state
-                    .grants
-                    .remove(&release.run_id)
+                    .retire(&release.run_id, GrantEnd::Released)
                     .map(|grant| grant.origin),
                 (true, Some(false)) => {
                     // Una concesión de operación nunca se libera desde el motor.
@@ -394,13 +409,15 @@ impl SecretBroker {
         let status = release.status.as_str();
         let event = match &removed {
             Some(origin) => {
-                // Cada una corresponde a una concesión emitida: no hace falta agregar.
-                tracing::info!(
-                    target: DECISION_TARGET,
-                    run_id = release.run_id.as_str(),
-                    status,
-                    "concesión de agente liberada"
-                );
+                // Una por concesión emitida, dentro del tope común de líneas del motor.
+                if self.lock().decisions.admit_line(Instant::now(), 1) {
+                    tracing::info!(
+                        target: DECISION_TARGET,
+                        run_id = release.run_id.as_str(),
+                        status,
+                        "concesión de agente liberada"
+                    );
+                }
                 let event = AuditEvent::new(Actor::System, Action::GrantReleased, Outcome::Ok)
                     .run_id(&release.run_id);
                 with_origin(event, origin).detail(DetailKey::Reason, status)
@@ -417,16 +434,18 @@ impl SecretBroker {
     }
 
     fn record_issued(&self, facts: &Facts<'_>, issued: &Issued) {
-        tracing::info!(
-            target: DECISION_TARGET,
-            run_id = facts.run_id,
-            agent = facts.agent,
-            trigger = facts.trigger.map(Trigger::as_str),
-            provider = issued.provider.as_str(),
-            site_id = issued.site_id.as_deref(),
-            expires_in_seconds = issued.seconds,
-            "concesión de agente emitida"
-        );
+        if self.lock().decisions.admit_line(Instant::now(), 1) {
+            tracing::info!(
+                target: DECISION_TARGET,
+                run_id = facts.run_id,
+                agent = facts.agent,
+                trigger = facts.trigger.map(Trigger::as_str),
+                provider = issued.provider.as_str(),
+                site_id = issued.site_id.as_deref(),
+                expires_in_seconds = issued.seconds,
+                "concesión de agente emitida"
+            );
+        }
         let mut event = AuditEvent::new(Actor::System, Action::GrantIssued, Outcome::Ok)
             .detail(DetailKey::Provider, issued.provider.as_str());
         event = facts.apply(event);

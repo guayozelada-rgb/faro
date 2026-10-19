@@ -298,11 +298,11 @@ core/jobs/  control.py    estado de agents_control (pausado hasta recibirlo) y p
 - **Trabajador** (uno):
   1. espera a que haya tarea y no haya pausa;
   2. comprueba el tope diario con el máximo de la tarea; si no cabe y es programada, la deja `queued` con `status_reason = 'daily_limit'` hasta el día siguiente (aviso en Inicio); si es del usuario, falla con `llm.daily_limit_reached`;
-  3. `run_grant_request` (`agent`, `site_id`, `provider` elegido, `trigger`); `agents.paused` → la tarea vuelve a `queued`; `agent.grant_denied` → `failed`;
+  3. `run_grant_request` (`agent`, `site_id`, `provider` elegido, `trigger`); `agents.paused` → la tarea vuelve a `queued`; `agents.grant_rate_limited` (actualizado 2026-10-19: el núcleo limita el ritmo de concesiones por tipo de agente, 10 seguidas y luego una por minuto) → la tarea vuelve a `queued` con `status_reason = 'grant_rate_limited'`, sin gastar, y el trabajador espera 60 s antes de pedir otra (la cortan una pausa, el apagado o la cancelación de esa tarea); así un `catch_up` de más de 10 sitios no falla desde la 11.ª; `agent.grant_denied` → `failed`;
   4. fija `current_run_id` y ejecuta el runner del agente (`ainvoke` con entrada nueva, `None` si continúa tras un corte, o `Command(resume=…)` si viene de una aprobación);
   5. `interrupt` → `waiting_approval`; `RunStopped` por pausa → `paused`; por cancelación → `cancelled`; error con código → `failed`; fin → `succeeded`;
   6. `run_grant_release` siempre (en un `finally`) y evento `run_status`.
-- **Concesión caducada** a mitad de tarea: el `secret_request` falla con `vault.secret_not_allowed`; el trabajador pide una concesión nueva **una vez** y repite el paso; si vuelve a fallar, `failed` con `agent.grant_denied`.
+- **Concesión caducada** a mitad de tarea: el `secret_request` falla con `vault.secret_not_allowed`; el trabajador pide una concesión nueva **una vez** y repite el paso; si vuelve a fallar, `failed` con `agent.grant_denied`. Si la renovación responde `agents.paused`, la tarea queda `paused` (`agents_paused`); si responde `agents.grant_rate_limited` (actualizado 2026-10-19), queda `paused` (`grant_rate_limited`), el trabajador espera 60 s como en el paso 3 y la vuelve a encolar: sigue desde su último checkpoint.
 - **Pausa** (`agents_control` con `paused = true`): no se toma ninguna tarea; la que corre se detiene en el siguiente límite entre pasos (`StepRecorder`) y queda `paused` (`status_reason = 'agents_paused'`). **Reanudar**: las `paused` por `agents_paused` vuelven a `queued`.
 - **Cancelar** (`cancelAgentRun`, actualizado 2026-10-07): `queued`/`paused`/`waiting_approval` → `cancelled` al momento; `running` → se marca y el trabajador la detiene en el siguiente límite entre pasos. En los dos casos, `core/store/run_control.py::cancel_run` pasa a `cancelled`, en la misma transacción que la tarea, sus propuestas `pending` **y** las `approved` que aún no se ejecutaron (`approved → cancelled`, ADR 0016, actualización A): nunca queda una aprobación ejecutable colgada de una tarea cancelada.
 - **Apagado** (`shutdown`): se pide parar en el siguiente límite; lo que no termine en el plazo de gracia (10 s) se queda `running` y la recuperación del siguiente arranque lo pasa a `paused` (`interrupted`) y lo re-encola, salvo pausa global.
@@ -372,7 +372,7 @@ Registro: `AgentSpec(kind="site_summary", version=1, requires_site=True, secrets
 | Dirección | Evento | Campos |
 | --- | --- | --- |
 | motor → núcleo | `run_grant_request` | `id`, `run_id`, `agent`, `site_id` \| `null`, `provider` \| `null`, `trigger` (`user` \| `schedule` \| `catch_up`) |
-| núcleo → motor | `run_grant_response` | `id` + `ok: true` y `expires_in_seconds`, **o** `error` (`agents.paused` \| `agent.grant_denied`) |
+| núcleo → motor | `run_grant_response` | `id` + `ok: true` y `expires_in_seconds`, **o** `error` (`agents.paused` \| `agents.grant_rate_limited` \| `agent.grant_denied`) |
 | motor → núcleo | `run_grant_release` | `run_id`, `status` (`succeeded` \| `failed` \| `cancelled` \| `waiting_approval` \| `paused`) |
 | motor → núcleo | `agent_activity` | `run_id`, `seq`, `occurred_at`, `kind` (`run_status` \| `step_started` \| `step_finished` \| `approval_requested`), `agent`, `site_id` \| `null`, `status`, `step` \| `null`, `step_cost_micros`, `run_cost_micros`, `run_tokens`, `error_code` \| `null` |
 | núcleo → motor | `agents_control` | `paused`, `llm_providers` (lista de `anthropic` \| `openai` \| `gemini`) |
