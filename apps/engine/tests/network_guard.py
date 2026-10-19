@@ -229,9 +229,10 @@ def system_proxy_ports(
 def _env_value(env: Mapping[str, str], name: str) -> str | None:
     if name in env:
         return env[name]
-    if sys.platform == "win32":  # pragma: no cover - en Windows no distingue mayúsculas
-        return next((v for k, v in env.items() if k.upper() == name), None)
-    return None
+    # En Windows no distingue mayúsculas. En una sola expresión para que mypy no dé por
+    # inalcanzable ninguna rama en ninguna plataforma (`--platform win32` y Linux).
+    windows = sys.platform == "win32"
+    return next((v for k, v in env.items() if k.upper() == name), None) if windows else None
 
 
 def _command(args: object) -> list[str]:
