@@ -326,7 +326,7 @@ export function mockAgentsIpc(handlers: AgentsIpcHandlers = {}): AgentsIpcMock {
   const calls: IpcCall[] = [];
   const listeners = new Map<number, { event: string; handler: number }>();
   let nextEventId = 1;
-  let control: unknown = { paused: false, changed_at: null };
+  let control: unknown = { paused: false, changed_at: null, saved: true };
 
   mockIPC((cmd, args) => {
     calls.push({ cmd, args });
@@ -346,13 +346,13 @@ export function mockAgentsIpc(handlers: AgentsIpcHandlers = {}): AgentsIpcMock {
         if (handlers.pause) {
           return handlers.pause(undefined);
         }
-        control = { paused: true, changed_at: "2026-10-12T12:00:00Z" };
+        control = { paused: true, changed_at: "2026-10-12T12:00:00Z", saved: true };
         return control;
       case "agents_resume_all":
         if (handlers.resume) {
           return handlers.resume(undefined);
         }
-        control = { paused: false, changed_at: "2026-10-12T12:01:00Z" };
+        control = { paused: false, changed_at: "2026-10-12T12:01:00Z", saved: true };
         return control;
       case "vault_list_keys":
         return handlers.listKeys

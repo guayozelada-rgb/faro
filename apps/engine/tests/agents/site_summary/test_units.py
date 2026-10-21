@@ -185,6 +185,58 @@ def test_los_elementos_se_acotan_por_bytes() -> None:
     assert _bytes(block) <= ITEMS_BLOCK_BYTES + BLOCK_WRAPPER_BYTES
 
 
+def test_los_prompts_mas_grandes_caben_en_su_cota_con_el_esquema() -> None:
+    """Revisión de T14, B2: con los bloques a su tope en bytes (emojis), la cota que pasa
+    el nodo cubre los bytes del prompt **más** el `response_format` enviado
+    (`LlmRequest.input_bytes`): `LlmRequest` la acepta."""
+    wide = EMOJI_4_BYTES
+    items = [
+        {"kind": kind, "title": wide * 200, "url": f"https://x.test/{kind}/{i}/"}
+        for kind in ("page", "post", "product")
+        for i in range(50)
+    ]
+    state = SiteSummaryState(
+        site_name=wide * 500,
+        items=items,
+        counts={"pages": 10**9, "posts": 10**9, "products": 10**9},
+    )
+    items_block = g.items_block(state)
+    biggest = {
+        "version": 1,
+        "site_kind": "restaurant",
+        "topics": [wide * 50] * 6,
+        "offerings": [wide * 60] * 8,
+        "audience": wide * 200,
+        "language": "zh-Hant-TW-xxxxxxxx",
+    }
+    assert SPEC.prompts is not None
+    rendered = [
+        (
+            SPEC.prompts.render(
+                "site_summary.classify_content",
+                1,
+                instructions_vars={"n_items": len(items_block.items)},
+                data=[g.site_block(state), items_block],
+            ),
+            estimate_module.classify_input_bound(),
+        ),
+        (
+            SPEC.prompts.render(
+                "site_summary.write_summary",
+                1,
+                instructions_vars={},
+                data=[g.classification_block(biggest), g.site_block(state)],
+            ),
+            estimate_module.write_input_bound(),
+        ),
+    ]
+    for prompt, bound in rendered:
+        request = prompt.request(input_tokens_bound=bound)
+        assert request.structure_bytes > 0
+        assert request.input_bytes <= bound
+        assert request.input_bytes > 2 * estimate_input_tokens(request.prompt_chars)
+
+
 def test_ayudas_del_grafo() -> None:
     assert g.path_of("https://x.test/a/b/?c=1") == "/a/b/?c=1"
     assert g.path_of("https://x.test") == "/"
@@ -290,20 +342,27 @@ def test_estimado_con_0_10_y_1000_elementos(provider: str) -> None:
 @pytest.mark.parametrize("n_items", [0, 10, 150])
 def test_cada_llamada_cabe_en_lo_reservado(provider: str, n_items: int) -> None:
     """Coherencia: lo que reserva `LlmService` en cada llamada del prompt más grande posible
-    (`ceil(caracteres / 3)` + `max_output_tokens`) cabe en lo que reservó el estimado."""
+    (con la cota que pasa el nodo, T9-C1) es justo lo que reservó el estimado para ella."""
     catalog = default_catalog()
-    for call in estimate_module.planned_calls(n_items):
+    calls = estimate_module.planned_calls(n_items)
+    bounds = [estimate_module.classify_input_bound(), estimate_module.write_input_bound()]
+    assert [call.input_tokens_bound for call in calls] == bounds
+    for call in calls:
         model = catalog.model_for(cast(Any, provider), tier_for(call.task_kind))
         alone = estimate_calls(
             [call], catalog=catalog, provider=cast(Any, provider), day=DAY, retries=0
         )
-        reserved = max_call_cost(model, call.max_prompt_chars, call.max_output_tokens, DAY)
-        assert reserved <= alone.max_cost_micros
-        assert (
-            estimate_input_tokens(call.max_prompt_chars) + call.max_output_tokens
-            <= alone.token_budget
+        reserved = max_call_cost(
+            model,
+            call.max_prompt_chars,
+            call.max_output_tokens,
+            DAY,
+            input_tokens_bound=call.input_tokens_bound,
         )
+        assert reserved == alone.max_cost_micros
+        assert call.max_input_tokens + call.max_output_tokens == alone.token_budget
         assert call.max_input_tokens >= estimate_input_tokens(call.max_prompt_chars)
+        assert call.max_input_tokens == call.input_tokens_bound
 
 
 def test_los_prompts_usan_las_salidas_maximas_de_la_spec() -> None:

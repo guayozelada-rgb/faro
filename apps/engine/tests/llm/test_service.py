@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import sys
 import types
 from datetime import UTC, datetime
@@ -18,14 +19,20 @@ from zoneinfo import ZoneInfo
 
 import pytest
 import structlog
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from faro_engine.core.errors import FaroError
 from faro_engine.core.secrets import SecretError
 from faro_engine.core.store.credentials import add_usage, set_daily_limit
 from faro_engine.core.store.settings import PREFERRED_PROVIDER, set_setting
 from faro_engine.llm.catalog import default_catalog
-from faro_engine.llm.client import RawCompletion, ResolvedCall, ToolSpec
+from faro_engine.llm.client import (
+    RawCompletion,
+    ResolvedCall,
+    ToolSpec,
+    response_format_for,
+    tool_param,
+)
 from faro_engine.llm.errors import LlmCallError
 from faro_engine.llm.fake import FAKE_MODEL, FakeLLM, fake_catalog
 from faro_engine.llm.pricing import max_call_cost
@@ -202,15 +209,16 @@ async def test_presupuesto_de_costo_agotado_sin_pedir_la_clave(world: World) -> 
 
 
 async def test_presupuesto_de_tokens_agotado_sin_pedir_la_clave(world: World) -> None:
-    add_run(world.database, "run-tokens", "step-tokens", token_budget=106)
+    # Sin cota del agente se reserva un token por byte (21) del prompt (revisión de T14, B1).
+    add_run(world.database, "run-tokens", "step-tokens", token_budget=120)
     with pytest.raises(FaroError) as info:
         await world.service().call(
             Run(run_id="run-tokens"), Step(step_id="step-tokens"), make_request()
         )
     assert info.value.code == "agent.budget_exhausted"
     assert world.secrets.requests == []
-    # Justo en el límite (7 + 100 = 107 tokens) sí cabe.
-    add_run(world.database, "run-justo", "step-justo", token_budget=107)
+    # Justo en el límite (21 + 100 = 121 tokens) sí cabe.
+    add_run(world.database, "run-justo", "step-justo", token_budget=121)
     await world.service().call(Run(run_id="run-justo"), Step(step_id="step-justo"), make_request())
 
 
@@ -231,6 +239,136 @@ async def test_tope_diario_alcanzado_sin_pedir_la_clave(world: World) -> None:
     world.database.run_sync(spend)
     error = await expect_error(world, "llm.daily_limit_reached")  # 4 999 960 + 51 > 5 000 000
     assert error.details == {"provider": "anthropic"}
+    assert world.secrets.requests == []
+
+
+CHINESE = "儿童纯棉睡衣" * 100  # 600 caracteres, 1 800 bytes UTF-8
+
+
+async def test_cota_de_entrada_reserva_del_tope_con_texto_en_chino(world: World) -> None:
+    """Condición T9-C1: con la cota del agente se reserva un token por byte, no
+    `ceil(caracteres / 3)`; si no cabe, `llm.daily_limit_reached` antes de llamar."""
+    request = make_request(content=CHINESE, input_tokens_bound=1_800)
+    model = default_catalog().model_for("anthropic", "economy")
+    day = world.service().today()
+    by_chars = max_call_cost(model, request.prompt_chars, 100, day)  # 20 + 50
+    by_bound = max_call_cost(model, request.prompt_chars, 100, day, input_tokens_bound=1_800)
+    assert (by_chars, by_bound) == (70, 180 + 50)
+
+    def spend(conn: Any) -> None:
+        add_usage(
+            conn,
+            usage_id="u-1",
+            secret_ref=ANTHROPIC_REF,
+            provider="anthropic",
+            usage_date="2026-10-09",
+            tokens_in=0,
+            tokens_out=0,
+            cost_micros=5_000_000 - 100,  # cabría `by_chars`, no `by_bound`
+            now="2026-10-09T10:00:00Z",
+        )
+
+    world.database.run_sync(spend)
+    await expect_error(world, "llm.daily_limit_reached", request)
+    assert world.secrets.requests == []
+    assert world.llm.calls == []
+    assert world.service().limiter.reserved(ANTHROPIC_REF) == 0
+
+
+async def test_cota_de_entrada_cuenta_en_el_presupuesto_y_en_el_maximo_sin_usage(
+    world: World,
+) -> None:
+    """La cota es la entrada máxima de la llamada en todo: presupuesto de la tarea y costo
+    contado cuando el intento no informa tokens."""
+    add_run(world.database, "run-cota", "step-cota", token_budget=1_000 + 100 - 1)
+    request = make_request(input_tokens_bound=1_000)
+    with pytest.raises(FaroError) as info:
+        await world.service().call(Run(run_id="run-cota"), Step(step_id="step-cota"), request)
+    assert info.value.code == "agent.budget_exhausted"
+
+    world.llm.responses = {
+        "test.prompt": [FakeFailure("timeout"), FakeReply(text="ok", tokens_in=7, tokens_out=10)]
+    }
+    result = await call(world, request)
+    # Máximo del intento perdido con la cota (100 + 50) + real (1 + 5).
+    assert result.cost_micros == 150 + 6
+    step = world.step_row()
+    assert step["cost_estimated"] == 1
+    assert (step["tokens_in"], step["tokens_out"]) == (1_000 + 7, 100 + 10)
+
+
+def test_cota_por_debajo_de_los_bytes_del_prompt_es_un_error_de_codigo() -> None:
+    with pytest.raises(ValidationError, match="input_tokens_bound"):
+        make_request(content="儿童", input_tokens_bound=5)  # 6 bytes
+    assert make_request(content="儿童", input_tokens_bound=6).prompt_bytes == 6
+
+
+def test_cota_cuenta_el_esquema_y_las_herramientas() -> None:
+    """Revisión de T14, B2: la cota cubre también el JSON del `response_format` y de las
+    herramientas que se envían, no solo los bytes de los mensajes."""
+    plain = make_request(content="儿童")
+    assert (plain.structure_bytes, plain.input_bytes) == (0, 6)
+    request = make_request(content="儿童", output_schema=Summary, tools=(TOOL,))
+    extra = sum(
+        len(json.dumps(part, ensure_ascii=False).encode("utf-8"))
+        for part in (response_format_for(Summary), tool_param(TOOL))
+    )
+    assert extra > 0
+    assert (request.structure_bytes, request.input_bytes) == (extra, 6 + extra)
+    for over in ({"output_schema": Summary}, {"tools": (TOOL,)}):
+        with pytest.raises(ValidationError, match="input_tokens_bound"):
+            make_request(content="儿童", input_tokens_bound=6, **over)
+    with pytest.raises(ValidationError, match="input_tokens_bound"):
+        make_request(
+            content="儿童",
+            output_schema=Summary,
+            tools=(TOOL,),
+            input_tokens_bound=6 + extra - 1,
+        )
+    bound = make_request(
+        content="儿童", output_schema=Summary, tools=(TOOL,), input_tokens_bound=6 + extra
+    )
+    assert bound.input_tokens_bound == 6 + extra
+
+
+async def test_sin_cota_se_reserva_un_token_por_byte(world: World) -> None:
+    """Revisión de T14, B1: una petición sin cota del agente reserva como mínimo los bytes
+    del prompt, del esquema y de las herramientas, nunca solo `ceil(caracteres / 3)`."""
+    request = make_request(content=CHINESE)
+    assert request.input_tokens_bound is None
+    model = default_catalog().model_for("anthropic", "economy")
+    day = world.service().today()
+    by_chars = max_call_cost(model, request.prompt_chars, 100, day)
+    by_bytes = max_call_cost(model, request.prompt_chars, 100, day, input_tokens_bound=1_800)
+    assert (by_chars, by_bytes) == (70, 180 + 50)
+
+    def spend(conn: Any) -> None:
+        add_usage(
+            conn,
+            usage_id="u-1",
+            secret_ref=ANTHROPIC_REF,
+            provider="anthropic",
+            usage_date="2026-10-09",
+            tokens_in=0,
+            tokens_out=0,
+            cost_micros=5_000_000 - 100,  # cabría `by_chars`, no `by_bytes`
+            now="2026-10-09T10:00:00Z",
+        )
+
+    world.database.run_sync(spend)
+    await expect_error(world, "llm.daily_limit_reached", request)
+    assert world.secrets.requests == []
+    assert world.llm.calls == []
+
+
+async def test_sin_cota_el_presupuesto_cuenta_esquema_y_herramientas(world: World) -> None:
+    request = make_request(output_schema=Summary, tools=(TOOL,))
+    tokens = request.input_bytes + 100
+    assert request.input_bytes > request.prompt_bytes
+    add_run(world.database, "run-b1", "step-b1", token_budget=tokens - 1)
+    with pytest.raises(FaroError) as info:
+        await world.service().call(Run(run_id="run-b1"), Step(step_id="step-b1"), request)
+    assert info.value.code == "agent.budget_exhausted"
     assert world.secrets.requests == []
 
 
@@ -317,6 +455,7 @@ async def test_reservas_concurrentes_no_pasan_el_tope(world: World) -> None:
         request.prompt_chars,
         15_000,
         NOW.date(),
+        input_tokens_bound=request.input_bytes,
     )
     gated.gate.set()
     accepted = first if rejected is second else second
@@ -402,12 +541,12 @@ async def test_intento_sin_respuesta_cuenta_el_maximo_como_gastado(world: World)
         "test.prompt": [FakeFailure("timeout"), FakeReply(text="ok", tokens_in=7, tokens_out=10)]
     }
     result = await call(world)
-    # Máximo del intento perdido (1 + 50) + real (1 + 5).
-    assert result.cost_micros == 51 + 6
+    # Máximo del intento perdido (3 + 50, 21 tokens por los bytes) + real (1 + 5).
+    assert result.cost_micros == 53 + 6
     step = world.step_row()
     assert step["cost_estimated"] == 1
-    assert (step["tokens_in"], step["tokens_out"]) == (7 + 7, 100 + 10)
-    assert world.usage_rows() == [(ANTHROPIC_REF, "2026-10-09", 2, 14, 110, 57)]
+    assert (step["tokens_in"], step["tokens_out"]) == (21 + 7, 100 + 10)
+    assert world.usage_rows() == [(ANTHROPIC_REF, "2026-10-09", 2, 28, 110, 59)]
 
 
 async def test_pausa_durante_la_espera_no_reintenta(world: World) -> None:
@@ -537,7 +676,7 @@ async def test_herramienta_no_ofrecida_o_argumentos_malos_son_salida_invalida(
 async def test_respuesta_sin_tokens_cuenta_el_maximo(world: World) -> None:
     world.llm.responses = {"test.prompt": FakeReply(text="ok", report_usage=False)}
     result = await call(world)
-    assert result.cost_micros == 51
+    assert result.cost_micros == 53
     assert world.step_row()["cost_estimated"] == 1
 
 
@@ -553,8 +692,8 @@ async def test_llamada_cancelada_cuenta_el_maximo_como_estimado(world: World) ->
     with pytest.raises(asyncio.CancelledError):
         await task
     step = world.step_row()
-    assert (step["attempts"], step["cost_micros"], step["cost_estimated"]) == (1, 51, 1)
-    assert world.usage_rows() == [(ANTHROPIC_REF, "2026-10-09", 1, 7, 100, 51)]
+    assert (step["attempts"], step["cost_micros"], step["cost_estimated"]) == (1, 53, 1)
+    assert world.usage_rows() == [(ANTHROPIC_REF, "2026-10-09", 1, 21, 100, 53)]
     assert service.limiter.reserved(ANTHROPIC_REF) == 0
 
 
@@ -799,7 +938,7 @@ async def test_doble_cancelacion_no_suelta_la_reserva_antes_del_registro(
         await task
     assert seen
     assert seen[0] > 0
-    assert world.usage_rows() == [(ANTHROPIC_REF, "2026-10-09", 1, 7, 100, 51)]
+    assert world.usage_rows() == [(ANTHROPIC_REF, "2026-10-09", 1, 21, 100, 53)]
     assert world.step_row()["cost_estimated"] == 1
     assert service.limiter.reserved(ANTHROPIC_REF) == 0
 

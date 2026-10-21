@@ -33,7 +33,9 @@ describe("Pausar agentes (spec F1b §3.1)", () => {
   );
 
   it("el estado inicial sale del núcleo: en pausa → Reanudar agentes y aviso", async () => {
-    const ipc = mockAgentsIpc({ controlState: () => ({ paused: true, changed_at: null }) });
+    const ipc = mockAgentsIpc({
+      controlState: () => ({ paused: true, changed_at: null, saved: true }),
+    });
     renderApp("/agents");
 
     const resume = await within(header()).findByRole("button", { name: "Reanudar agentes" });
@@ -77,7 +79,7 @@ describe("Pausar agentes (spec F1b §3.1)", () => {
 
   it("Reanudar agentes: toast y sin aviso", async () => {
     const user = userEvent.setup();
-    mockAgentsIpc({ controlState: () => ({ paused: true, changed_at: null }) });
+    mockAgentsIpc({ controlState: () => ({ paused: true, changed_at: null, saved: true }) });
     renderApp("/");
 
     await user.click(await within(header()).findByRole("button", { name: "Reanudar agentes" }));
@@ -91,7 +93,7 @@ describe("Pausar agentes (spec F1b §3.1)", () => {
     const user = userEvent.setup();
     let paused = false;
     mockAgentsIpc({
-      controlState: () => ({ paused, changed_at: null }),
+      controlState: () => ({ paused, changed_at: null, saved: !paused }),
       pause: () => {
         paused = true;
         return rejectWith(faroError("agents.control_unavailable"))();
@@ -110,18 +112,63 @@ describe("Pausar agentes (spec F1b §3.1)", () => {
     expect(document.body.textContent).not.toMatch(/Reinicia/i);
   });
 
+  it("el aviso de pausa sin guardar sale del núcleo: sobrevive a recargar la ventana", async () => {
+    // Ventana recién abierta (o recargada) sin pulsar nada: el núcleo dice `saved: false`.
+    const ipc = mockAgentsIpc({
+      controlState: () => ({ paused: true, changed_at: "2026-10-12T12:00:00Z", saved: false }),
+    });
+    renderApp("/agents");
+
+    const extra = await screen.findByTestId("agents-pause-not-saved");
+    expect(extra).toHaveTextContent(PAUSE_NOT_SAVED);
+    expect(screen.getByTestId("agents-paused-banner")).toHaveTextContent(BANNER);
+    expect(within(header()).getByRole("button", { name: "Reanudar agentes" })).toBeEnabled();
+    expect(ipc.callsTo("agents_pause_all")).toHaveLength(0);
+    expect(document.body.textContent).not.toMatch(/Reinicia/i);
+  });
+
+  it("pausa guardada (saved: true): sin aviso extra", async () => {
+    mockAgentsIpc({ controlState: () => ({ paused: true, changed_at: null, saved: true }) });
+    renderApp("/");
+
+    expect(await screen.findByTestId("agents-paused-banner")).toHaveTextContent(BANNER);
+    expect(screen.queryByTestId("agents-pause-not-saved")).not.toBeInTheDocument();
+  });
+
+  it("cuando el núcleo vuelve a decir saved: true, el aviso desaparece", async () => {
+    const user = userEvent.setup();
+    let saved = false;
+    mockAgentsIpc({
+      controlState: () => ({ paused: true, changed_at: null, saved }),
+      resume: rejectWith(faroError("agents.control_unavailable")),
+    });
+    renderApp("/");
+
+    await screen.findByTestId("agents-pause-not-saved");
+    // Reanudar falla (no se reanuda) y el aviso sigue: el núcleo aún dice `saved: false`.
+    await user.click(within(header()).getByRole("button", { name: "Reanudar agentes" }));
+    expect(await screen.findByText(RESUME_FAILED)).toBeInTheDocument();
+    expect(screen.getByTestId("agents-pause-not-saved")).toBeInTheDocument();
+    // Si el núcleo logra guardarla después, la siguiente lectura quita el aviso.
+    saved = true;
+    await user.click(within(header()).getByRole("button", { name: "Reanudar agentes" }));
+    await waitFor(() => {
+      expect(screen.queryByTestId("agents-pause-not-saved")).not.toBeInTheDocument();
+    });
+  });
+
   it("al reanudar con éxito se olvida que la pausa no estaba guardada", async () => {
     const user = userEvent.setup();
     let paused = false;
     mockAgentsIpc({
-      controlState: () => ({ paused, changed_at: null }),
+      controlState: () => ({ paused, changed_at: null, saved: !paused }),
       pause: () => {
         paused = true;
         return rejectWith(faroError("agents.control_unavailable"))();
       },
       resume: () => {
         paused = false;
-        return { paused: false, changed_at: null };
+        return { paused: false, changed_at: null, saved: true };
       },
     });
     renderApp("/");
@@ -150,7 +197,7 @@ describe("Pausar agentes (spec F1b §3.1)", () => {
   it("error al reanudar: toast y el botón vuelve a Reanudar agentes", async () => {
     const user = userEvent.setup();
     mockAgentsIpc({
-      controlState: () => ({ paused: true, changed_at: null }),
+      controlState: () => ({ paused: true, changed_at: null, saved: true }),
       resume: rejectWith(faroError("agents.control_unavailable")),
     });
     renderApp("/");

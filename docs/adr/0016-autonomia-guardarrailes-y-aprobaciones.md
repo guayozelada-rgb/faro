@@ -1,7 +1,7 @@
 # ADR 0016 — Autonomía de los agentes, guardarraíles fijos y modelo de aprobaciones
 
 - **Fecha:** 2026-10-05
-- **Estado:** Aceptado (2026-10-05, con la aprobación de la spec F1b); actualizado el 2026-10-07 (F1b T4, ver al final)
+- **Estado:** Aceptado (2026-10-05, con la aprobación de la spec F1b); actualizado el 2026-10-07 (F1b T4) y en el cierre de F1b (T14, 2026-10-20), ver al final
 - **Spec:** [F1b — Capa de IA y motor de agentes](../specs/2026-10-05-f1b-capa-ia-y-motor-de-agentes.md)
 - **Relacionados:** ADR 0014 (pausa global y concesiones por ejecución), ADR 0015 (motor de agentes)
 - **Reglas de `CLAUDE.md` que concreta:** 3 (nada que publique o gaste sin autonomía y Bandeja) y 4 (campañas en pausa)
@@ -123,3 +123,16 @@ Pendiente para F5: decidir si una aprobación `approved` que lleva tiempo sin ej
 ### D. Auditoría de autonomía y aprobaciones
 
 Las claves de `details` de `autonomy.changed`, `approval.decided` y `approval.executed` son propias de cada acción y tienen forma exacta (`ACTION_DETAIL_KEYS` y `DETAIL_VALUE_PATTERNS` en `core/audit.py`). Se describen en [ADR 0010, actualización 2026-10-07](0010-protocolo-nucleo-motor-secretos-y-auditoria.md#actualización-2026-10-07-f1b-t4-claves-de-auditoría-por-acción).
+
+## Actualización (2026-10-20, cierre de F1b, T14)
+
+Lo que el código de T8–T13 concreta o cambia de este ADR ([informe de T8](../qa/2026-10-11-f1b-t8-marco-de-agentes.md) §2, [T9](../qa/2026-10-11-f1b-t9-agente-resumen-del-sitio.md), [T13](../qa/2026-10-19-f1b-t13-revision-seguridad.md)):
+
+- **§1, catálogo.** Las acciones se declaran en el `AgentSpec` de cada agente (`action_specs`) y las registra `agents/framework/actions.py`. `register_actions` rechaza una clase de efecto fuera de `internal|publish|spend` y, además de la clase, un `action_kind` con un verbo de borrado (`delete`, `remove`, `drop`, `borrar`, `eliminar`…).
+- **§2, nivel 0.** La sugerencia **no** espera con `interrupt` (se vería como "Espera tu OK" y caducaría): la tarea termina `succeeded` y el `payload` validado queda en `agent_runs.result["suggestion"]`. `acceptAgentSuggestion` crea la aprobación `approved` (`decided_by = user`) y, en la misma transacción, reabre la tarea (`runs.reopen_succeeded_run`, `succeeded` → `queued`); al reanudar solo corre el nodo ejecutor, sin LLM.
+- **§2, `publish` y `spend` en F1b.** Se pueden declarar con nivel máximo ≤ 1, la decisión nunca pasa de `propose` y el ejecutor no las ejecuta (F4/F5). `setAutonomyRule` rechaza un nivel por encima del máximo de alguna acción del agente (`autonomy.invalid_level`).
+- **§5, una propuesta por tarea y acción**, con clave `"<run_id>:<action_kind>"`. Solo el nodo de tipo `approval` propone, y ese nodo no puede llamar al LLM ni a herramientas (`call_llm` y `run_tool_calls` lanzan error; condición T8-C2): al reanudar, también tras rechazar, no gasta nada.
+- **§5, decidir antes de tiempo.** Si la tarea aún está `running`, `queued` o `paused` (entre el nodo que propone y el `interrupt`), `decideApproval` responde `approval.not_ready` (409, reintentable). Una propuesta vencida se marca al decidir y responde 410.
+- **§5, fallos y cancelaciones.** Al terminar en `failed`, las propuestas `pending` y `approved` sin ejecutar pasan a `cancelled` en la misma transacción (condición T8-C1). Una cancelación pedida gana sobre cualquier final que dejaría trabajo abierto (`waiting_approval`, `paused`, `queued` o `succeeded` con sugerencia): la tarea acaba `cancelled` y sus propuestas se cierran (T13, hallazgos M1 y H1). Un apagado con la cancelación pedida deja la tarea `cancelled`, no `interrupted`.
+- **§5, caducidad.** Solo caducan las `pending`. Si una aprobación `approved` sin ejecutar debe caducar (por ejemplo, con los agentes en pausa días) se decide antes de habilitar `spend` (F5; condición 3 de T4).
+- **Consecuencias, `limits`.** Siguen sin esquema (`LIMITS_CONFIGURABLE = False`): se definen en F4/F5 antes de exponer el nivel 2 de una acción (condición 4 de T4).

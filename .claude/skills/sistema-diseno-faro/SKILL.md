@@ -54,17 +54,28 @@ Los valores exactos pueden ajustarse solo para cumplir contraste (≥ 4,5:1 en t
 - Contenido con ancho máximo 1280 px y márgenes de 32 px.
 
 ## Componentes
-Base (shadcn/ui personalizado): Button (primary, secondary, ghost, destructive), Input, Select, Switch, Tabs, Tooltip, Dialog, Sheet (panel lateral), Toast, Skeleton, Badge.
+Base (shadcn/ui personalizado, en `src/components/ui/`): Button (primary, secondary, ghost, destructive), Input, Label, Switch, Tabs, Tooltip, Dialog, Sheet (panel lateral), DropdownMenu, Toast (`sonner`), Skeleton, Badge. Select se agregará cuando una pantalla lo use.
 
 Propios de Faro (en `src/components/faro/`):
-- **ApprovalCard**: qué quiere hacer el agente, por qué (evidencia), vista previa, costo/ahorro, botones Aprobar / Editar / Rechazar.
-- **AgentFeed**: lista en vivo de pasos (agente, acción, costo, estado) con punto animado mientras trabaja.
-- **AiBadge**: chip azul claro (`ai`) con icono ✦ y texto "Hecho por IA".
+- **AiBadge**: chip azul claro (`ai`) con icono ✦ y texto "Hecho por IA". Marca todo lo que generó o propone un agente.
+- **AgentFeed**: actividad en vivo, una fila por tarea (agente, sitio, paso actual, costo acumulado y estado); `aria-live="polite"`; Enter o clic abre el detalle. Se actualiza con los eventos `engine://agents` (`useAgentActivity`).
+- **RunStatusChip**: estado de una tarea con icono y texto, nunca solo color: `queued`, `paused` y `cancelled` en neutro, `running` en `ai`, `waiting_approval` ("Espera tu OK") en `warning`, `succeeded` en `success`, `failed` en `critical`. Un estado desconocido muestra un genérico.
+- **ApprovalCard**: qué quiere hacer el agente, por qué (evidencia), vista previa **como texto**, y **Guardar resumen** / **Descartar** (sin **Editar** en F1b). Una acción desconocida solo se puede descartar.
+- **CostEstimate**: costo antes de lanzar ("unos …, como mucho …"), la clave que se usará y el gasto de hoy; desglose de modelos y tokens en un tooltip; si algo impide lanzar, el motivo en lugar del costo. Dinero siempre con `formatUsdMicros` (`lib/format/money.ts`, `Intl.NumberFormat` en el idioma del usuario: "0,12 US$"; por debajo de un centavo, "menos de 0,01 US$").
+- **SiteSummaryText**: resumen del sitio escrito por la IA, siempre como texto (`{texto}` en JSX, saltos de línea con CSS; nunca HTML, Markdown ni enlaces automáticos).
 - **ConnectionChip**: estado de una integración (Conectada, Falla, Vencida, Sin conectar).
-- **CostEstimate**: costo estimado antes de ejecutar (LLM + SerpAPI) con desglose en tooltip.
-- **MetricCard**: valor, variación y mini tendencia.
-- **DifficultyMeter**: semáforo con texto (Fácil/Media/Difícil), nunca solo color.
-- **ClusterCard**, **EditorialCalendar**, **ContentEditor** (dos columnas), **AdPreview** (se agregan en fases posteriores).
+- **EmptyState**: estado vacío con el valor de la sección y, si hay algo que hacer, una acción.
+- **MetricCard**, **DifficultyMeter** (semáforo con texto, nunca solo color), **ClusterCard**, **EditorialCalendar**, **ContentEditor** (dos columnas), **AdPreview**: se agregan en fases posteriores.
+
+En la estructura de la app (`src/app/`):
+- **PauseAgentsButton** (barra superior, siempre visible, `critical`): llama a los comandos `agents_pause_all`/`agents_resume_all` del núcleo. Con los agentes en pausa, aviso visible y **Lanzar** deshabilitado. Si la pausa no se pudo guardar (`saved: false` de `agents_control_state`, o `agents.control_unavailable` al pausar), aviso extra con icono `critical`: "si cierras Faro, los agentes volverán a trabajar". Nunca sugiere reiniciar Faro.
+- **RouteError**: `errorElement` alrededor de las secciones; un error al dibujar una sección no tumba la barra lateral ni la superior (**Pausar agentes** sigue disponible) y nunca muestra el contenido del error.
+
+Reglas para lo que viene del motor:
+- Textos de agentes (resultados, propuestas, resúmenes) siempre como texto: sin `dangerouslySetInnerHTML`, sin Markdown a HTML, sin enlaces automáticos.
+- Identificadores del motor (`status`, `step`, `error_code`, `trigger`, nivel de modelo, proveedor, acción) se traducen **por catálogo** (`features/agents/labels.ts` y `locales/*`); uno desconocido muestra un texto genérico ("Un agente", "Trabajando", "Sin información"), nunca la clave en crudo.
+- Lecturas que fallan porque el motor no está listo se reintentan cuando vuelve (`useRefetchWhenEngineReady`), con reintentos acotados: nunca en bucle.
+- Autonomía: solo se ofrecen niveles hasta el máximo de las acciones del agente (`maxLevelFor`); subir a "Piloto automático" pide confirmación.
 
 ## Estados obligatorios en cada pantalla
 1. **Vacío**: ilustración lineal simple, una frase del valor y una acción principal ("Conecta tu sitio para ver su salud").

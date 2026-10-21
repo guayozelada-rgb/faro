@@ -115,8 +115,11 @@ class RenderedPrompt:
         if self._token is not _RENDER_TOKEN:
             raise TypeError("solo prompts.render arma mensajes para el modelo")
 
-    def request(self, tools: Sequence[ToolSpec] = ()) -> LlmRequest:
-        """El `LlmRequest` de este prompt (el proveedor y el modelo los elige `LlmService`)."""
+    def request(
+        self, tools: Sequence[ToolSpec] = (), *, input_tokens_bound: int | None = None
+    ) -> LlmRequest:
+        """El `LlmRequest` de este prompt (el proveedor y el modelo los elige `LlmService`).
+        `input_tokens_bound`: la cota de entrada del `PlannedCall` del agente (T9-C1)."""
         return LlmRequest(
             task_kind=self.template.task_kind,
             messages=self.messages,
@@ -125,6 +128,7 @@ class RenderedPrompt:
             prompt_id=self.template.prompt_id,
             prompt_version=self.template.version,
             tools=tuple(tools),
+            input_tokens_bound=input_tokens_bound,
         )
 
 

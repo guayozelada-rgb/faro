@@ -6,7 +6,6 @@ import { afterEach, beforeEach, expect } from "vitest";
 
 import { toast } from "sonner";
 
-import { resetPauseNotSavedForTests } from "@/features/agents/pauseNotSaved";
 import { resetEngineReadyRetriesForTests } from "@/features/agents/queries";
 import { resetSiteActivityForTests } from "@/features/sites/siteActivity";
 import { resetAutoCheckSessionForTests } from "@/features/sites/useAutoCheckSites";
@@ -52,7 +51,6 @@ beforeEach(() => {
   resetAutoCheckSessionForTests();
   resetSiteActivityForTests();
   resetEngineReadyRetriesForTests();
-  resetPauseNotSavedForTests();
 });
 
 afterEach(() => {

@@ -128,7 +128,7 @@ impl AppError {
     pub fn agents_control_unavailable() -> Self {
         Self::new(
             "agents.control_unavailable",
-            "No pudimos guardar el estado de los agentes. Reinicia Faro; si se repite, escríbenos.",
+            "No pudimos guardar el estado de los agentes. Intenta de nuevo. Si cierras Faro antes, una pausa sin guardar se pierde y los agentes vuelven a trabajar.",
         )
     }
 

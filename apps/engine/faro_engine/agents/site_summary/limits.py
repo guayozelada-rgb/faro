@@ -5,8 +5,8 @@ máximo y el presupuesto de tokens de la tarea.
 Cada `DataBlock` del agente lleva un `max_chars` explícito, y los elementos del sitio se
 acotan además por **bytes UTF-8** (`untrusted.fit_items`): ningún tokenizador da más tokens
 que bytes, así que el estimado reserva un token por byte y el máximo queda garantizado
-aunque el sitio esté en chino, en árabe o lleno de emojis (donde `ceil(caracteres / 3)`, el
-cálculo de `LlmService`, se queda corto).
+aunque el sitio esté en chino, en árabe o lleno de emojis (donde `ceil(caracteres / 3)` se
+queda corto). Los nodos pasan esa cota a `LlmService`, que reserva con ella (T9-C1).
 """
 
 from __future__ import annotations

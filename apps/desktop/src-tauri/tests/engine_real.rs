@@ -89,8 +89,6 @@ fn data_dir() -> tempfile::TempDir {
 /// Perfil y llave de prueba (no son del usuario; solo viven en la carpeta temporal).
 const TEST_PROFILE: &str = "0192f0a0-1234-7abc-8def-0123456789ab";
 const TEST_DB_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"; // gitleaks:allow
-/// El motor espera la línea `db_key` hasta 10 s; con ella debe llegar a `ready` bastante antes.
-const READY_WITH_KEY_MAX: Duration = Duration::from_secs(9);
 
 /// Cabecera de un archivo SQLite sin cifrar.
 const SQLITE_HEADER: &[u8] = b"SQLite format 3\0";
@@ -172,7 +170,6 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
     };
 
     let token = protocol::generate_token().unwrap();
-    let launched = Instant::now();
     stdin
         .write_all(format!("{}\n", token.expose_secret()).as_bytes())
         .await
@@ -204,11 +201,8 @@ async fn engine_real_protocolo_health_y_apagado_sin_huerfanos() {
     .await
     .expect("sin ready en 30 s");
     assert!(ready.port >= protocol::MIN_PORT);
-    let to_ready = launched.elapsed();
-    assert!(
-        to_ready < READY_WITH_KEY_MAX,
-        "ready tardó {to_ready:?}: el motor no recibió la línea db_key"
-    );
+    // Que la llave llegó lo prueba `database.state == "ready"` más abajo, no el tiempo hasta
+    // `ready`: con cobertura en Windows el arranque pasa de 9 s aunque la llave llegue.
 
     let base = format!("http://127.0.0.1:{}", ready.port);
 

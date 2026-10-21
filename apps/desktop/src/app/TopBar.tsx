@@ -1,8 +1,7 @@
 import { CircleAlert, TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { usePauseNotSaved } from "@/features/agents/pauseNotSaved";
-import { useAgentsPaused } from "@/features/agents/useAgentsControl";
+import { useAgentsPaused, usePauseNotSaved } from "@/features/agents/useAgentsControl";
 
 import { PauseAgentsButton } from "./PauseAgentsButton";
 

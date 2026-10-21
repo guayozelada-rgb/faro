@@ -32,11 +32,12 @@ Qué hace, para un proveedor (`anthropic`, `openai` o `gemini`):
    clave o el saldo (`invalid_key`, `insufficient_quota`): entonces no se hace la segunda.
 
 Por llamada imprime solo números y códigos: modelo, prompt, caracteres del prompt, lo que
-reserva el motor (`ceil(caracteres / 3)`), el límite de entrada del estimado del agente,
-los tokens de entrada y de salida que informa el proveedor, `max_output_tokens`, el motivo de
-fin, si la salida cumple el esquema y el costo con los precios del catálogo, más un aviso si
-la salida llegó al máximo (se cortó) o si la entrada pasó el límite del estimado. Nunca la
-clave, el prompt, la respuesta ni los mensajes de error del proveedor.
+reserva el motor (`ceil(caracteres / 3)` o la cota del nodo, la mayor; T9-C1), el límite
+de entrada del estimado del agente, los tokens de entrada y de salida que informa el
+proveedor, `max_output_tokens`, el motivo de fin, si la salida cumple el esquema y el costo
+con los precios del catálogo, más un aviso si la salida llegó al máximo (se cortó) o si la
+entrada pasó el límite del estimado. Nunca la clave, el prompt, la respuesta ni los
+mensajes de error del proveedor.
 
 Uso, desde `apps/engine` (en PowerShell igual):
 
@@ -62,7 +63,11 @@ from typing import Any, Final, cast
 
 from pydantic import BaseModel, ValidationError
 
-from faro_engine.agents.site_summary.estimate import planned_calls
+from faro_engine.agents.site_summary.estimate import (
+    classify_input_bound,
+    planned_calls,
+    write_input_bound,
+)
 from faro_engine.agents.site_summary.fake import CLASSIFICATION as FALLBACK_CLASSIFICATION
 from faro_engine.agents.site_summary.graph import (
     CLASSIFY,
@@ -86,7 +91,7 @@ from faro_engine.llm.client import (
     Tier,
 )
 from faro_engine.llm.errors import LlmCallError
-from faro_engine.llm.pricing import call_cost, estimate_input_tokens, max_call_cost
+from faro_engine.llm.pricing import call_cost, max_call_cost, max_input_tokens
 from faro_engine.llm.service import LlmService
 
 ENGINE_DIR: Final = Path(__file__).resolve().parents[1]
@@ -164,7 +169,7 @@ def classify_request(state: SiteSummaryState) -> LlmRequest:
         PROMPT_VERSION,
         instructions_vars={"n_items": len(items.items)},
         data=[site_block(state), items],
-    ).request()
+    ).request(input_tokens_bound=classify_input_bound())
 
 
 def write_request(state: SiteSummaryState, classification: Mapping[str, Any]) -> LlmRequest:
@@ -176,7 +181,7 @@ def write_request(state: SiteSummaryState, classification: Mapping[str, Any]) ->
         PROMPT_VERSION,
         instructions_vars={},
         data=[classification_block(classification), site_block(state)],
-    ).request()
+    ).request(input_tokens_bound=write_input_bound())
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +191,7 @@ class Measurement:
     model: str
     prompt: str
     prompt_chars: int
-    engine_reserve: int  # `ceil(caracteres / 3)`: lo que reserva `LlmService`
+    engine_reserve: int  # entrada que reserva `LlmService` (con la cota del nodo, T9-C1)
     estimate_bound: int  # entrada que reserva el estimado del agente (`max_input_tokens`)
     max_output_tokens: int
     tokens_in: int | None = None
@@ -232,7 +237,7 @@ async def measure(
         model=model.model,
         prompt=request.prompt_id,
         prompt_chars=request.prompt_chars,
-        engine_reserve=estimate_input_tokens(request.prompt_chars),
+        engine_reserve=max_input_tokens(request.prompt_chars, request.input_tokens_bound),
         estimate_bound=estimate_bound,
         max_output_tokens=request.max_output_tokens,
     )
@@ -325,8 +330,13 @@ def worst_cost(provider: str, case: Mapping[str, Any]) -> int:
     total = 0
     for tier, plan in zip(tiers, plans, strict=True):
         model = catalog.model_for(cast("Provider", provider), tier)
-        # `max_call_cost` recibe caracteres y reserva `ceil(caracteres / 3)` tokens de entrada.
-        total += max_call_cost(model, plan.max_input_tokens * 3, plan.max_output_tokens, today)
+        total += max_call_cost(
+            model,
+            plan.max_prompt_chars,
+            plan.max_output_tokens,
+            today,
+            input_tokens_bound=plan.input_tokens_bound,
+        )
     return total
 
 

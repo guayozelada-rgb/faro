@@ -496,11 +496,11 @@ async def test_connect_undo_tolerates_row_delete_failure(
 
 
 async def test_connect_with_just_enough_margin_succeeds(world: World) -> None:
-    # Quedan 11 s ≥ 10 s de reserva. No más justo: el `insert` corre con
-    # `asyncio.timeout(work.remaining())`, que mide en segundos reales; con 44,9 solo le
-    # quedaban 0,1 s reales y en Windows (CI) a veces no le bastaban.
+    # Quedan 15 s ≥ 10 s de reserva. No más justo: el `insert` corre con
+    # `asyncio.timeout(work.remaining())`, que mide en segundos reales; con 44,9 (0,1 s
+    # reales) y luego con 44,0 (1 s real) a veces no le bastaba en Windows (CI).
     clock = FakeClock()
-    _advance_on_http(world, clock, "POST", "/pair", 44.0)
+    _advance_on_http(world, clock, "POST", "/pair", 40.0)
     code = world.wp.create_code()
     site = await world.service(clock=clock).connect(SITE_URL, code)
     assert world.vault.store.keys() == {_ref(site.id)}

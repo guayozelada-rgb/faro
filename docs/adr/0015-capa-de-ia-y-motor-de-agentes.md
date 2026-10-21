@@ -1,7 +1,7 @@
 # ADR 0015 — Capa de IA y motor de agentes: dependencias, checkpoints, programador y contenido remoto como datos
 
 - **Fecha:** 2026-10-05
-- **Estado:** Aceptado (2026-10-05, con la aprobación de la spec F1b)
+- **Estado:** Aceptado (2026-10-05, con la aprobación de la spec F1b); dependencias confirmadas en T2 (2026-10-05) y actualizado en el cierre de F1b (T14, 2026-10-20, al final)
 - **Spec:** [F1b — Capa de IA y motor de agentes](../specs/2026-10-05-f1b-capa-ia-y-motor-de-agentes.md)
 - **Relacionados:** ADR 0009 (base cifrada, `sqlite-vec` por verificar), ADR 0010 y 0014 (secretos), ADR 0012 (red saliente), ADR 0016 (autonomía)
 - **Skills nuevas:** `capa-llm`, `agentes-langgraph`, `herramientas-de-agente`, `prompts-y-evals`
@@ -96,3 +96,34 @@ Planes B: LiteLLM → adaptador propio sobre `httpx`; APScheduler → bucle sobr
 - Las tareas programadas no corren con la app cerrada; la interfaz lo dice al programar y avisa al ejecutar las pendientes.
 - Las cuatro skills nuevas recogen estas reglas para que cada agente futuro las siga.
 - Si en T2 alguna dependencia no cumple, se aplica su plan B sin volver a abrir la spec, salvo LangGraph (ver §6).
+
+## Actualización (2026-10-20, cierre de F1b, T14)
+
+### Resultado de la verificación de dependencias (T2, §6)
+
+[Informe de T2](../qa/2026-10-05-f1b-t2-dependencias.md). Ningún plan B hizo falta.
+
+| Dependencia | Versión | Veredicto |
+| --- | --- | --- |
+| LiteLLM | 1.104.0 | Cumple con condiciones: el endurecimiento de §1 es obligatorio (`llm/hardening.py`). |
+| LangGraph | 1.2.13 (`langgraph-checkpoint` 4.2.0) | Cumple, con LangSmith siempre apagado (`agents/framework/tracing.py`). |
+| APScheduler | 3.11.3 (`<4`) | Cumple. |
+| `truststore` | 0.10.4 | Necesaria (criterio 8: Norton intercepta HTTPS) y cumple; ADR 0012, actualización 2026-10-06 (T2b). |
+| `sqlite-vec` | 0.1.9 | Cumple; sigue solo en el grupo `dev` (§4). |
+
+Tamaño `--onedir` en Windows: de 42,4 MiB a 113,8 MiB (+71,4 MiB, límite 150). PyInstaller necesita `hook-litellm.py` (con lista permitida de submódulos, sin el proxy) y `hook-tiktoken.py`. Criterio 8 con la clave real: Anthropic y `gpt-6-luna` de OpenAI comprobados; Gemini, pendiente del usuario (spec F1b §12).
+
+### Diferencias con el texto de §1 a §7
+
+- **§1, hosts.** El adaptador no "nunca acepta `api_base`": lo fija él mismo al host oficial de cada proveedor (`hardening.API_BASE`) y rechaza cualquier otro valor, cabeceras extra y modelos fuera del catálogo. Variables obligatorias antes de importar LiteLLM (`hardening.required_env()`): `LITELLM_MODE=PRODUCTION`, `LITELLM_LOCAL_MODEL_COST_MAP`, `LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS` (sin ella LiteLLM descarga la tabla de cabeceras beta de Anthropic) y `CUSTOM_TIKTOKEN_CACHE_DIR` (la caché local de `tiktoken`, cuyo `cl100k_base` va dentro del motor con su SHA-256 comprobado); el resto de variables de LiteLLM, LangSmith y los proveedores se borran del entorno. Plazo por llamada: 60 s.
+- **§1, herramientas.** El adaptador real rechaza hoy cualquier llamada con herramientas: ninguna se ofrece al modelo en F1b (`read_site` es un nodo del grafo). Habilitarlas exige antes una prueba por proveedor con `respx` (T6-C4, pendiente).
+- **§1, catálogo.** `models.json` añade `long_context` (precio distinto por encima de un umbral de entrada), `price_changes` (cambios de precio con fecha) y `source` (página oficial de precios) a cada modelo. El nivel `premium` de Anthropic es Opus. La reserva de cada llamada usa la cota de tokens de entrada que da el agente (`input_tokens_bound`, un token por byte) cuando supera `caracteres / 3` (condición T9-C1, hecha en T14); la cota es obligatoria en `NodeContext.call_llm`, cubre los bytes del prompt más el JSON del esquema y de las herramientas, y una petición sin cota reserva esos bytes (revisión de T14, B1 y B2).
+- **§1, la clave.** `LlmClient.prepare()` valida la llamada (modelo, catálogo, salida) **antes** de pedir la clave; con `--fake-llm` (`requires_key = False`) no se pide ninguna.
+- **§2, checkpoints.** El checkpoint se guarda entero (con `channel_values`) en una fila. `JsonOnlySerializer` admite solo tipos JSON y una lista cerrada de tipos internos de LangGraph 1.2.13: `Interrupt` y, de las excepciones de `__error__`, solo el nombre de la clase. `configurable` solo lleva `thread_id` (= `agent_runs.id`). Al terminar se poda con `aprune` (solo el último checkpoint). En nivel 0 no hay `interrupt()`: la sugerencia queda en `agent_runs.result["suggestion"]` y aceptarla reabre la tarea (ADR 0016, actualización del cierre).
+- **§3, programador.** APScheduler solo programa trabajos `date` (uno por programación, el siguiente disparo); la próxima fecha la calcula `next_occurrence` con `zoneinfo` y la zona del sistema sale de `tzlocal` (dependencia directa). Un disparo que no puede crear la tarea se registra como `jobs.schedule_skipped`. El arranque usa `serve_with_jobs` en `run()` (no `lifespan`) y el apagado espera 5 s a que pare el trabajador y 2 s a que se cancele.
+- **§5.1, `UntrustedText`** vive en `agents/framework/untrusted.py` (no en `agents/`). Además de controles y bidireccionales quita los caracteres de formato (`Cf`). El reparto entre campos y bloques se hace por bytes (`fit_items`).
+- **§7, red en las pruebas.** El bloqueo es un gancho de auditoría de Python (PEP 578, `tests/network_guard.py`), que también se instala en los procesos hijos (`tests/child_network_guard/`); el build de PyInstaller corre también sin red (`pyinstaller_offline/sitecustomize.py`), sin proxies y con `NO_PROXY=*`.
+
+### Pendiente
+
+Todo lo que queda abierto de este ADR está en la spec F1b §12: T6-C4 (herramientas), mediciones de tokens y Gemini con clave real, y excluir del empaquetado el proxy de LiteLLM (release).

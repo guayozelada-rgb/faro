@@ -252,7 +252,8 @@ async def test_renovar_con_el_nucleo_en_pausa_deja_la_tarea_en_pausa(world: JobW
     await world.add_run(R1)
     world.run_control()
     await eventually(lambda: "paused" in world.statuses(R1))
-    assert world.grants.releases[0] == (R1, "paused")
+    # La liberación va en un `finally` después de la transición: se espera, no se lee al vuelo.
+    await eventually(lambda: world.grants.releases[:1] == [(R1, "paused")])
     await eventually(status_is(world, R1, "succeeded"))  # sigue sin pausa en el motor
 
 
@@ -401,7 +402,13 @@ async def test_dos_llamadas_a_la_vez_desde_el_trabajador_no_pasan_el_tope(
     world.llm_client = gated
     request = make_request(max_output_tokens=100)
     model = world.llm.catalog.model_for("anthropic", "economy")
-    one = max_call_cost(model, request.prompt_chars, 100, world.llm.today())
+    one = max_call_cost(
+        model,
+        request.prompt_chars,
+        100,
+        world.llm.today(),
+        input_tokens_bound=request.input_bytes,  # sin cota: un token por byte (T14, B1)
+    )
     outcomes: list[str] = []
 
     async def two_calls(inv: RunInvocation) -> None:

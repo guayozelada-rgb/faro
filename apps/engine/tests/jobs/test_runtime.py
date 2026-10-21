@@ -293,6 +293,7 @@ async def test_apagado_con_llamada_en_curso_registra_su_maximo(world: JobWorld) 
         request.prompt_chars,
         100,
         world.llm.today(),
+        input_tokens_bound=request.input_bytes,  # sin cota: un token por byte (T14, B1)
     )
     assert world.query("SELECT cost_micros, requests FROM credential_usage") == [(maximum, 1)]
     assert world.query(
@@ -453,6 +454,7 @@ async def test_el_plazo_de_cancelacion_cuenta_desde_el_aviso_no_desde_serve(
         request.prompt_chars,
         100,
         world.llm.today(),
+        input_tokens_bound=request.input_bytes,  # sin cota: un token por byte (T14, B1)
     )
     await eventually(lambda: world.query("SELECT cost_micros FROM credential_usage") != [])
     assert not serving.done()  # `serve()` aún no volvió

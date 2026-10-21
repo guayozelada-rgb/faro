@@ -22,8 +22,9 @@ Nube mínima (FastAPI + Postgres): licencias, relay de Google Ads, manifiesto de
 Reglas de comunicación:
 - La interfaz **solo** llama comandos Tauri. Nunca abre sockets ni hace `fetch` a localhost. Las operaciones del motor van por un único comando, `engine_call`, con lista permitida (skill `contratos-api-local`).
 - El núcleo es el único que conoce el puerto y el token del motor.
-- Protocolo por stdin/stdout (ADR 0004 y 0010): token, `db_key`, `ready`, `shutdown`, `secret_request`/`secret_response` y `audit` (skill `tauri-sidecar-python`).
-- El motor pide secretos al núcleo cuando va a usarlos, solo dentro de una concesión por operación (skill `llavero-y-cifrado`); no los guarda en disco. El núcleo nunca habla con sitios WordPress: todas las peticiones a sitios las hace el motor (ADR 0011).
+- Protocolo por stdin/stdout (ADR 0004, 0010 y 0014, v3): token, `db_key`, `ready`, `shutdown`, `secret_request`/`secret_response`, `audit` y, para los agentes, `run_grant_request`/`run_grant_response`/`run_grant_release`, `agents_control` y `agent_activity` (que el núcleo reenvía como evento `engine://agents`) (skill `tauri-sidecar-python`).
+- La pausa global de los agentes vive en el núcleo (`agents_pause_all`, `agents_resume_all`, `agents_control_state`; `agents-control.json`), no en el motor: funciona aunque el motor no responda (ADR 0014 §2).
+- El motor pide secretos al núcleo cuando va a usarlos, solo dentro de una concesión por operación (`engine_call`) o por ejecución de agente (`run_grant_request`, tabla `packages/shared/agent-grants.json`) (skill `llavero-y-cifrado`); no los guarda en disco. El núcleo nunca habla con sitios WordPress: todas las peticiones a sitios las hace el motor (ADR 0011).
 - Toda petición saliente del motor a una URL no fija en código pasa por `faro_engine/net` (SSRF, IP fijada, tiempos, tamaño; ADR 0012).
 - Todo HTTPS del motor (sitios, proveedores de IA, rastreador) usa el único contexto TLS `net/tls.py::tls_context()`: almacén de certificados del sistema con `truststore`, nunca `certifi` directo, `verify=False` ni `SSL_CERT_FILE` (ADR 0012, actualización 2026-10-06).
 - Google Ads siempre pasa por el relay de la nube; el developer token nunca está en la app.
@@ -34,11 +35,12 @@ Reglas de comunicación:
 | --- | --- | --- | --- |
 | `apps/desktop/src` | Interfaz | React + TS | frontend-react |
 | `apps/desktop/src-tauri` | Núcleo | Rust | tauri-rust |
-| `apps/engine/faro_engine/core` | Servidor local, protocolo, canal de secretos, auditoría, BD, logs, cola y programador (futuros) | Python 3.12 | motor-python |
+| `apps/engine/faro_engine/core` | Servidor local, protocolo, canal de secretos, auditoría, BD y repositorios (`store/`), logs, cola, trabajador y programador (`jobs/`) | Python 3.12 | motor-python |
 | `apps/engine/faro_engine/net` | Red saliente común: URLs, guardia SSRF, cliente HTTP con plazos | Python | motor-python (F2 lo reutilizan `seo-datos` e `ingeniero-ia`) |
 | `apps/engine/faro_engine/wordpress` | Cliente único del plugin: firma, descubrir, vincular, leer, revocar | Python | motor-python (F4 añade escrituras) |
 | `apps/engine/faro_engine/sites` | Casos de uso de sitios conectados y su repositorio en la BD | Python | motor-python |
-| `apps/engine/faro_engine/agents` | Agentes del producto | Python | ingeniero-ia |
+| `apps/engine/faro_engine/llm` | Capa de IA: interfaz propia sobre LiteLLM, catálogo y precios, tope diario, `FakeLLM` | Python | ingeniero-ia |
+| `apps/engine/faro_engine/agents` | Marco de agentes (`framework/`), registro y agentes del producto (`site_summary/`, …) | Python | ingeniero-ia |
 | `apps/engine/faro_engine/seo` | Crawler, SERP, clustering | Python | seo-datos |
 | `apps/engine/faro_engine/ads` | Google Ads | Python | google-ads |
 | `apps/cloud` | Licencias, relay, updates | Python (FastAPI) | nube-backend |
@@ -52,28 +54,42 @@ Reglas de comunicación:
 | Módulo | Qué hace |
 | --- | --- |
 | `engine/` | Supervisor del motor (lanzador, protocolo stdin/stdout, salud, reinicios) y `call.rs` (`engine_call`: lista permitida, parámetros, plazos, reenvío) |
-| `secrets/` | `SecretBroker`: canal `secret_request`, concesiones por operación, índice de sitios por perfil (`sites.rs`), cola de auditoría (`audit.rs`) |
+| `secrets/` | `SecretBroker`: canal `secret_request`, concesiones por operación y por ejecución de agente (`run_grants.rs`), ritmo de las decisiones que provoca el motor (`decisions.rs`), índice de sitios por perfil (`sites.rs`), cola de auditoría (`audit.rs`) |
+| `agents/` | Tabla `agent-grants.json` incrustada (`manifest.rs`), pausa global y `agents_control` (`control.rs`), validación y reenvío de `agent_activity` a `engine://agents` (`activity.rs`) |
 | `vault/` | Bóveda de claves de IA y `SecretStore` / `KeyringStore` (llavero del SO) |
 | `profile/` | Perfil activo (`profiles.json`) y llave de la base |
-| `logging/` | `tracing` en JSON con filtro de secretos por nombre y valor (`redact.rs`) |
-| `commands/` | Comandos Tauri (`engine_*`, `vault_*`, `wp_plugin_export`) |
+| `logging/` | `tracing` en JSON con filtro de secretos por nombre y valor (`redact.rs`), tope diario de 64 MiB con reserva para decisiones del núcleo (`capped.rs`) y muestreo (`sample.rs`) |
+| `commands/` | Comandos Tauri (`engine_*`, `vault_*`, `agents_*`, `wp_plugin_export`) |
 | `wp_plugin.rs` | Exportar el zip del plugin a Descargas |
 
 ### Módulos del motor (`apps/engine/faro_engine`)
 
 ```
-__main__.py            arranque: token, db_key, base, ready, hilo de stdin
-core/  app.py security.py protocol.py secrets.py audit.py run_id.py operations.py
+__main__.py            arranque: token, db_key, base, ready, hilo de stdin, serve_with_jobs, --fake-llm
+core/  app.py server.py security.py protocol.py secrets.py audit.py run_id.py operations.py
        config.py redact.py logging.py errors.py ids.py
-       db/ (connection, database, migrations, backups, profile, migrations/*.sql)
-       routes/ (health, sites)  schemas/ (common, sites)
+       db/ (connection, database, migrations, backups, profile, migrations/0001_initial.sql, 0002_agents.sql)
+       store/ (runs, approvals, autonomy_rules, schedules, checkpoints, credentials, settings,
+               site_summaries, run_control: repositorios de las tablas de 0002)
+       jobs/ (control, grants, activity, queue, worker, runner, runtime, scheduler, recovery)
+       routes/ (health, sites, agents, approvals, autonomy, llm, schedules)
+       schemas/ (common, sites, agents, llm)
+llm/   client.py service.py litellm_client.py hardening.py catalog.py models.json pricing.py
+       limits.py routing.py usage.py settings.py errors.py fake.py tiktoken/
+agents/ registry.py grants.py (export a agent-grants.json)
+       framework/ (spec, graph, state, steps, checkpoint, budget, tools, untrusted, prompts,
+                   actions, autonomy, approvals, orchestrator, tracing)
+       site_summary/ (spec, graph, state, schemas, estimate, library, limits, tools, actions,
+                      saved, fake, prompts/*.md)
 net/   urls.py (normalización)  guard.py (SSRF, IP fijada)  client.py (httpx, Deadline, reintentos)
        tls.py (contexto TLS único con el almacén del sistema; desde F1b T2b)
 wordpress/  signing.py  client.py  errors.py (wp.* → site.*)
-sites/ service.py (connect, reconnect, check, list_content, remove)  repository.py (SQL)
+sites/ service.py (connect, reconnect, check, list_content, remove, snapshot)  repository.py (SQL)
+       reader.py (SiteReader para los agentes)  snapshot.py (foto del sitio)
+export_openapi.py  export_agents.py   (contratos: npm run contracts)
 ```
 
-Regla: las rutas (`core/routes/`) solo validan y llaman a un caso de uso; la lógica vive en el paquete de dominio (`sites/`), las peticiones a sitios en `wordpress/` y toda la red en `net/`.
+Regla: las rutas (`core/routes/`) solo validan y llaman a un caso de uso; la lógica vive en el paquete de dominio (`sites/`, `agents/`, `llm/`), el SQL en `core/store/` o en el repositorio del dominio, las peticiones a sitios en `wordpress/` y toda la red en `net/`. Ningún módulo fuera de `llm/litellm_client.py` importa `litellm`, y `create_app` no importa LangGraph (se carga con la primera tarea).
 
 ## Skills por capa
 
@@ -91,7 +107,7 @@ Empieza siempre por esta. Después, carga la de la capa que vas a tocar (todas e
 | Seguridad y revisión | `revision-seguridad` |
 | CI, build y publicación | `release-y-firma` |
 
-Las cuatro skills de IA y agentes (F1b) describen el **diseño de referencia** de la spec F1b; se ajustan al código real al cerrar la fase.
+Las cuatro skills de IA y agentes (F1b) describen el código real desde el cierre de F1b (T14, 2026-10-20). Diferencias con la spec: F1b §13.
 
 ## Convenciones
 
@@ -127,5 +143,5 @@ Las cuatro skills de IA y agentes (F1b) describen el **diseño de referencia** d
 ## Documentación
 - Funcionalidad nueva → especificación en `docs/specs/` (agente `arquitecto`).
 - Decisión que afecta a varias funcionalidades → ADR en `docs/adr/`.
-- Al cerrar una fase: la spec pasa a "implementada" con una sección de diferencias y otra de pendientes, y se actualizan los ADR y las skills afectados (F0 §13–14, F1a §12–13).
+- Al cerrar una fase: la spec pasa a "implementada" con una sección de diferencias y otra de pendientes, y se actualizan los ADR y las skills afectados (F0 §13–14, F1a §12–13, F1b §12–13).
 - Los documentos privados del usuario no van al repositorio: ni su contenido, ni su nombre, ni su ruta.

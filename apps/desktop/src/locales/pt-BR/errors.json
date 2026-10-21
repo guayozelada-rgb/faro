@@ -72,7 +72,7 @@
   },
   "agents": {
     "paused": "[TODO] Los agentes están en pausa. Reanúdalos para empezar.",
-    "control_unavailable": "[TODO] No pudimos guardar el estado de los agentes. Reinicia Faro; si se repite, escríbenos.",
+    "control_unavailable": "[TODO] No pudimos guardar el estado de los agentes. Intenta de nuevo. Si cierras Faro antes, una pausa sin guardar se pierde y los agentes vuelven a trabajar.",
     "grant_rate_limited": "[TODO] Los agentes empezaron muchas tareas seguidas. Esta seguirá sola en un minuto."
   },
   "agent": {

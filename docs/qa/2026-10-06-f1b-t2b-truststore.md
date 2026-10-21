@@ -3,7 +3,7 @@
 - **Spec:** [F1b](../specs/2026-10-05-f1b-capa-ia-y-motor-de-agentes.md), tarea T2b.
 - **Decisión:** [ADR 0012, actualización 2026-10-06](../adr/0012-red-saliente-del-motor.md).
 - **Origen:** informe de T2, [§8, hallazgo 7 de §10 y §12](2026-10-05-f1b-t2-dependencias.md).
-- **Estado:** implementado. Revisiones de `revisor-seguridad`: la 1.ª y la 2.ª, APROBADO CON CAMBIOS (§6 y §7); la final, RECHAZADO porque el "dueño de hilo" rompía todo el HTTPS real con anyio. Corregido con un cerrojo por contexto (§8); falta que el revisor lo confirme. Pendiente: la prueba manual del usuario con un WordPress real.
+- **Estado:** implementado. Revisiones de `revisor-seguridad`: la 1.ª y la 2.ª, APROBADO CON CAMBIOS (§6 y §7); la final, RECHAZADO porque el "dueño de hilo" rompía todo el HTTPS real con anyio. Corregido con un cerrojo por contexto (§8), **confirmado** por `revisor-seguridad` en la revisión de T13 (2026-10-19, [informe](2026-10-19-f1b-t13-revision-seguridad.md) §5: `net/tls.py:171-252`, contrastado con `truststore` 0.10.4). Pendiente: la prueba manual del usuario (§4: `manual_tls_check.py` y un WordPress real por HTTPS).
 
 ## 1. Qué cambia
 
@@ -328,3 +328,5 @@ En este equipo (Windows 11 con Norton):
 - CI del PR #33 (ejecución 37504246633): todos los trabajos en verde. `engine`: Windows y macOS, 1126 superadas sin omitir ninguna; Ubuntu, 1125 superadas y 1 omitida (la variante "sin limpieza", que en Linux se omite a propósito). Las pruebas de conexión correcta por loopback se ejecutan y pasan en los tres sistemas. En la ejecución anterior (37502722806) fallaron dos trabajos. En Ubuntu, `injection_probe` agotó su tiempo (corregido, ver §8.4). En `wp-plugin-integration (actual)` falló `Test_Faro_Crypto_Uninstall::test_decrypt_fails_with_other_salts_or_tampering`, del plugin PHP, que este cambio no toca; en la ejecución siguiente pasó. Parece una prueba inestable y conviene que la mire quien lleva el plugin.
 
 `revisor-seguridad` debe revisar este cambio: toca el contexto TLS de todo el HTTPS del motor y la inyección global.
+
+**Confirmación (cierre de F1b, T14, 2026-10-20).** `revisor-seguridad` confirmó el cerrojo en la revisión de T13 (2026-10-19, [informe](2026-10-19-f1b-t13-revision-seguridad.md) §5): `_faro_lock` cubre toda la ventana degradada de `wrap_bio` y `wrap_socket`, `do_handshake` incluido, contrastado con `truststore` 0.10.4. Sigue pendiente la comprobación manual del usuario de §4.

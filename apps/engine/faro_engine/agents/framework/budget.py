@@ -5,11 +5,12 @@ llamada que `cost_micros + máximo ≤ max_cost_micros` y `tokens + tokens máxi
 token_budget` (`agent.budget_exhausted`). Este módulo calcula esos límites para el estimado
 de cada agente (`estimate.py`) con el **mismo** cálculo que hace `LlmService` al reservar:
 
-- tokens de entrada máximos = `ceil(caracteres máximos del prompt / 3)`
-  (`pricing.estimate_input_tokens`), lo que reserva `LlmService`, **o más** si el agente lo
-  pide con `input_tokens_bound` (p. ej. un token por byte UTF-8 de sus datos más la
-  sobrecarga de la salida estructurada: condición T6-C3, el texto no latino tiene más tokens
-  por carácter); salida máxima = `max_output_tokens` del prompt;
+- tokens de entrada máximos = `ceil(caracteres máximos del prompt / 3)` **o más** si el
+  agente lo pide con `input_tokens_bound` (p. ej. un token por byte UTF-8 de sus datos más
+  la sobrecarga de la salida estructurada: condición T6-C3, el texto no latino tiene más
+  tokens por carácter) (`pricing.max_input_tokens`). El nodo pasa la **misma** cota en su
+  llamada (`NodeContext.call_llm(..., input_tokens_bound=…)`) y `LlmService` reserva con
+  ella del tope diario (condición T9-C1); salida máxima = `max_output_tokens` del prompt;
 - **estimado** = tokens esperados x precios del catálogo;
 - **máximo** = tokens máximos de cada llamada **con sus reintentos por salida inválida**
   (uno, `BAD_OUTPUT_RETRIES`) x precios;
@@ -30,7 +31,7 @@ from faro_engine.core.jobs.runner import AgentEstimate
 from faro_engine.llm import usage
 from faro_engine.llm.catalog import Catalog
 from faro_engine.llm.client import Provider, TaskKind
-from faro_engine.llm.pricing import cost_micros, estimate_input_tokens, prices_for
+from faro_engine.llm.pricing import cost_micros, max_call_cost, max_input_tokens, prices_for
 from faro_engine.llm.routing import tier_for
 from faro_engine.llm.service import BAD_OUTPUT_RETRIES
 
@@ -66,9 +67,8 @@ class PlannedCall:
 
     @property
     def max_input_tokens(self) -> int:
-        """Lo que reserva `LlmService` para este prompt o, si es mayor, `input_tokens_bound`."""
-        reserved = estimate_input_tokens(self.max_prompt_chars)
-        return max(reserved, self.input_tokens_bound or 0)
+        """Lo que reserva `LlmService` para el prompt más grande con la misma cota."""
+        return max_input_tokens(self.max_prompt_chars, self.input_tokens_bound)
 
 
 def estimate_calls(
@@ -90,11 +90,13 @@ def estimate_calls(
         expected += cost_micros(
             call.expected_input_tokens, expected_prices.input_micros_per_mtok
         ) + cost_micros(call.expected_output_tokens, expected_prices.output_micros_per_mtok)
-        # Peor caso para el umbral de contexto largo: un token por carácter (como
-        # `pricing.max_call_cost`) o el límite de entrada, el mayor.
-        max_prices = prices_for(model, day, max(call.max_prompt_chars, call.max_input_tokens))
-        one = cost_micros(call.max_input_tokens, max_prices.input_micros_per_mtok) + cost_micros(
-            call.max_output_tokens, max_prices.output_micros_per_mtok
+        # El mismo máximo que reserva `LlmService` para el prompt más grande.
+        one = max_call_cost(
+            model,
+            call.max_prompt_chars,
+            call.max_output_tokens,
+            day,
+            input_tokens_bound=call.input_tokens_bound,
         )
         maximum += attempts * one
         budget += attempts * (call.max_input_tokens + call.max_output_tokens)

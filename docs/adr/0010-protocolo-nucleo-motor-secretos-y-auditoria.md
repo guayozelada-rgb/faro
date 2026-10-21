@@ -1,7 +1,7 @@
 # ADR 0010 — Protocolo núcleo ↔ motor v2: llave de la base, secretos por concesión y auditoría
 
 - **Fecha:** 2026-09-29
-- **Estado:** aceptado; actualizado el 2026-10-01 (cierre de F1a, al final)
+- **Estado:** aceptado; actualizado el 2026-10-01 (cierre de F1a), en F1b (T4, T5) y en el cierre de F1b (2026-10-20, al final)
 - **Spec:** [F1a — Conexión con WordPress](../specs/2026-09-29-f1a-conexion-wordpress.md)
 - **Amplía:** ADR 0004 (protocolo de arranque). **Skills:** `tauri-sidecar-python`, `llavero-y-cifrado`, `contratos-api-local`
 
@@ -142,3 +142,15 @@ Reemplaza en parte la actualización anterior:
 - El núcleo agrega **todos** los rechazos que el motor puede provocar, no solo los malformados: se agrupan por (acción, actor, resultado, `reason`, `error_code`). Los 10 primeros de un grupo, y uno más por minuto, van al log y a la auditoría uno a uno; el resto se suma en un evento con `count` (2 o más) que se envía cada minuto y al engancharse un motor. Al sumar solo quedan los campos iguales en todos (`secret_ref`, `run_id` y `details`).
 - Acción nueva del núcleo en `CORE_ACTIONS`: `audit.dropped` (`actor = system`, `result = error`, `details.reason = buffer_full`, `details.count` ≥ 1). La manda el núcleo antes que nada cuando vuelve a enviar auditoría tras haber descartado eventos con el búfer lleno; vive fuera del búfer y nunca se descarta. El búfer descarta primero los rechazos y agregables y solo después los demás.
 - El log del núcleo reserva 16 de sus 64 MiB diarios para las decisiones del núcleo (target `faro_lib::decision`), para que una inundación no borre `secret.used`, las concesiones, la pausa ni los reinicios.
+
+## Actualización (2026-10-20, cierre de F1b): ritmo de las decisiones que provoca el motor
+
+La revisión de seguridad de T13 cerró la condición 7 de T5 con un módulo nuevo del núcleo, `secrets/decisions.rs` ([informe](../qa/2026-10-19-f1b-t13-revision-seguridad.md), hallazgos C1 y C2). Los rechazos ya se agregaban (actualización anterior); esto acota lo que el motor consigue con solicitudes **aceptadas**, que antes dejaban una línea de decisión cada vez y podían agotar la reserva de 16 MiB:
+
+1. **Emisión de concesiones de ejecución** (ADR 0014 §1): cubo por tipo de agente de 10 fichas que recupera una por minuto, comprobado al final de `decide_run_grant`. Sin fichas, el motor recibe `agents.grant_rate_limited` y la auditoría registra `agent.grant_denied` con `reason = rate_limited` (agregado como los demás rechazos). Solo gasta ficha una concesión emitida. En el motor no es un fallo: la tarea vuelve a la cola o, si ocurre al renovar la concesión a mitad de tarea, queda pausada y se reanuda desde su último checkpoint (ADR 0014, actualización del cierre de F1b).
+2. **Usos de secretos** (`secret.used` y las demás operaciones del llavero): por concesión (número de serie), referencia y operación, los 3 primeros van al log uno a uno; el resto se cuenta y sale **una** línea de resumen con `count` y `errors` al liberar o caducar la concesión, al pausar, al terminar el `engine_call` o al detenerse el motor.
+3. **Tope común** de esas líneas (concesión emitida y liberada, usos y resúmenes): 200 seguidas, recupera una cada 15 s. Lo que no cabe se suma a un contador que sale antes de la siguiente línea como "decisiones del motor sin registrar" (y siempre al detenerse el motor). Cota diaria: unas 11 700 líneas, unos 3 MiB de la reserva. Pausa, reanudación, estado, reinicios y apagado, que solo provocan el usuario o el supervisor, no pasan por este tope.
+
+La auditoría (`audit_log`) no cambia: cada uso y cada concesión siguen dejando su evento.
+
+Además, `logging/capped.rs` reconoce una línea de decisión leyendo con serde solo la clave `target` de nivel superior (antes buscaba la subcadena en toda la línea; un campo futuro con un valor del motor habría pasado por decisión). No sirve un prefijo fijo porque el formateador escribe `fields` antes que `target`.

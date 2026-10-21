@@ -106,14 +106,15 @@ async fn archivo_ausente_es_activo() {
         control.state(),
         ControlState {
             paused: false,
-            changed_at: None
+            changed_at: None,
+            saved: true,
         }
     );
     assert!(!s.broker.agents_paused());
     assert!(!s.file().exists(), "no se crea el archivo hasta que cambia");
     assert_eq!(
         serde_json::to_value(control.state()).unwrap(),
-        json!({"paused": false, "changed_at": null})
+        json!({"paused": false, "changed_at": null, "saved": true})
     );
 }
 
@@ -132,7 +133,8 @@ async fn archivo_valido_se_respeta() {
             control.state(),
             ControlState {
                 paused,
-                changed_at: Some("2026-10-08T12:00:00.000Z".into())
+                changed_at: Some("2026-10-08T12:00:00.000Z".into()),
+                saved: true,
             }
         );
         assert_eq!(s.broker.agents_paused(), paused);
@@ -161,7 +163,9 @@ async fn archivo_ilegible_cuenta_como_pausado_y_no_se_sobrescribe() {
             control.state(),
             ControlState {
                 paused: true,
-                changed_at: None
+                changed_at: None,
+                // Al volver a abrir seguirá en pausa: nada que avisar.
+                saved: true,
             },
             "{bad}"
         );
@@ -192,6 +196,8 @@ async fn pausar_guarda_revoca_avisa_y_audita() {
 
     let state = control.pause().await.unwrap();
     assert!(state.paused);
+    assert!(state.saved);
+    assert_eq!(control.state(), state);
     let changed_at = state.changed_at.clone().unwrap();
     assert!(crate::agents::activity::is_utc_timestamp(&changed_at));
     // 1. Guardado de forma atómica (sin temporal).
@@ -219,6 +225,7 @@ async fn pausar_guarda_revoca_avisa_y_audita() {
 
     let resumed = control.resume().await.unwrap();
     assert!(!resumed.paused);
+    assert!(resumed.saved);
     assert!(!s.broker.agents_paused());
     assert_eq!(s.read_file()["paused"], false);
     assert_eq!(
@@ -266,6 +273,11 @@ async fn fallo_al_guardar_la_pausa_se_aplica_igual_pero_reanudar_no() {
     let err = control.pause().await.unwrap_err();
     assert_eq!(err.code, "agents.control_unavailable");
     assert!(control.state().paused, "la pausa en memoria se aplica");
+    assert!(!control.state().saved, "pero no sobrevive a cerrar Faro");
+    assert_eq!(
+        serde_json::to_value(control.state()).unwrap()["saved"],
+        json!(false)
+    );
     assert!(s.broker.agents_paused());
     assert_eq!(next_line(&mut engine).await["paused"], true);
     let event = s.audit_of("agents.paused").await;
@@ -276,10 +288,91 @@ async fn fallo_al_guardar_la_pausa_se_aplica_igual_pero_reanudar_no() {
     let err = control.resume().await.unwrap_err();
     assert_eq!(err.code, "agents.control_unavailable");
     assert!(control.state().paused, "no reanuda");
+    assert!(!control.state().saved, "sigue sin guardar");
     assert!(s.broker.agents_paused());
     let event = s.audit_of("agents.resumed").await;
     assert_eq!(event["result"], "error");
     assert!(!s.dir.path().join("agents-control.json.tmp").exists());
+}
+
+/// `saved` dice si la pausa sobrevive a cerrar Faro: es lo que la interfaz muestra tras
+/// recargar la ventana (revisión de seguridad de T10, hallazgo 1). Se comprueba contra lo que
+/// leería Faro al volver a abrirse.
+#[tokio::test]
+async fn saved_sigue_al_ultimo_guardado_con_exito() {
+    let (s, control) = setup_with(setup_dir());
+    let tmp = s.dir.path().join("agents-control.json.tmp");
+    // El temporal es una carpeta con contenido: no se puede escribir, y el archivo que ya
+    // hubiera se queda como estaba (la escritura es atómica).
+    let block = || {
+        fs::create_dir(&tmp).unwrap();
+        fs::write(tmp.join("x"), b"x").unwrap();
+    };
+    let unblock = || fs::remove_dir_all(&tmp).unwrap();
+    let reopened = |s: &Setup| {
+        let runtime = tokio::runtime::Handle::current();
+        let broker = Arc::new(SecretBroker::new(
+            Arc::new(crate::vault::store::MemoryStore::new()),
+            s.dir.path(),
+            AuditQueue::spawn(&runtime),
+        ));
+        AgentsControl::load(&runtime, s.dir.path(), broker, Arc::new(Vec::new)).state()
+    };
+
+    // Activo y sin archivo → pausa que no se guarda: `saved` es falso, porque Faro
+    // reabierto no estaría en pausa.
+    block();
+    control.pause().await.unwrap_err();
+    let failed = control.state();
+    assert!(failed.paused && !failed.saved);
+    assert!(!reopened(&s).paused);
+    unblock();
+
+    // Pausar otra vez con éxito: guardada y conserva cuándo empezó.
+    let ok = control.pause().await.unwrap();
+    assert!(ok.paused && ok.saved);
+    assert_eq!(ok.changed_at, failed.changed_at);
+    assert_eq!(control.state(), ok);
+    assert_eq!(reopened(&s), ok);
+
+    // Ya en pausa y guardada: si guardar falla otra vez, el archivo sigue diciendo
+    // "pausado" y `saved` sigue verdadero.
+    block();
+    control.pause().await.unwrap_err();
+    assert_eq!(control.state(), ok);
+    assert_eq!(reopened(&s), ok);
+
+    // Reanudar falla: sigue en pausa y guardada.
+    control.resume().await.unwrap_err();
+    assert_eq!(control.state(), ok);
+    unblock();
+
+    // Reanudar con éxito: guardado. Una pausa nueva que no se guarda vuelve a ser `false`:
+    // el archivo dice "activo".
+    let resumed = control.resume().await.unwrap();
+    assert!(!resumed.paused && resumed.saved);
+    assert_eq!(reopened(&s), resumed);
+    block();
+    control.pause().await.unwrap_err();
+    assert!(control.state().paused && !control.state().saved);
+    assert!(!reopened(&s).paused);
+}
+
+/// Mientras se guarda una pausa nueva, el estado no dice "guardado" antes de tiempo.
+#[tokio::test]
+async fn saved_es_falso_mientras_se_guarda_una_pausa_nueva() {
+    let (_s, control) = setup_with(setup_dir());
+    let seen: Arc<Mutex<Vec<(bool, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+    let out = Arc::clone(&seen);
+    let state = Arc::clone(&control.state);
+    control.set_save_hook(Arc::new(move || {
+        let current = lock(&state).clone();
+        out.lock().unwrap().push((current.paused, current.saved));
+    }));
+    assert!(control.pause().await.unwrap().saved);
+    // Pausar otra vez, ya guardada: durante el guardado sigue guardada.
+    assert!(control.pause().await.unwrap().saved);
+    assert_eq!(*seen.lock().unwrap(), [(true, false), (true, true)]);
 }
 
 /// Revisión de seguridad de T5: la revocación en memoria no espera al disco. Cuando se

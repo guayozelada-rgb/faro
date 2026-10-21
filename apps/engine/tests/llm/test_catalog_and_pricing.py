@@ -26,6 +26,7 @@ from faro_engine.llm.pricing import (
     cost_micros,
     estimate_input_tokens,
     max_call_cost,
+    max_input_tokens,
     prices_for,
 )
 from faro_engine.llm.routing import choose_provider, is_provider, secret_ref_for, tier_for
@@ -260,6 +261,25 @@ def test_maximo_usa_el_peor_caso_para_el_umbral() -> None:
     # carácter) se pasaría del umbral: se usan los precios de contexto largo.
     assert max_call_cost(haiku, 150_000, 800, day) == 25_000 + 2_000
     assert max_call_cost(haiku, 90_000, 800, day) == 3_000 + 400
+
+
+def test_tokens_de_entrada_maximos_con_la_cota_del_agente() -> None:
+    """T9-C1: `ceil(caracteres / 3)` o la cota del agente, la mayor; nunca menos."""
+    assert max_input_tokens(30) == 10
+    assert max_input_tokens(30, 50) == 50
+    assert max_input_tokens(30, 5) == 10
+    with pytest.raises(ValueError, match="negativa"):
+        max_input_tokens(30, -1)
+
+
+def test_maximo_con_cota_de_entrada() -> None:
+    haiku = default_catalog().model_for("anthropic", "economy")
+    day = date(2026, 10, 9)
+    # 9 000 caracteres en chino (27 000 bytes): la cota manda (27 000 x 0,10 + 800 x 0,50).
+    assert max_call_cost(haiku, 9_000, 800, day) == 300 + 400
+    assert max_call_cost(haiku, 9_000, 800, day, input_tokens_bound=27_000) == 2_700 + 400
+    # La cota también decide el umbral de contexto largo (120 000 > 100 000).
+    assert max_call_cost(haiku, 90_000, 800, day, input_tokens_bound=120_000) == 60_000 + 2_000
 
 
 def test_maximo_rechaza_salida_negativa() -> None:

@@ -24,12 +24,15 @@ llamada (`new_nonce`); el nonce no se guarda ni se registra:
     - …elementos normalizados…
     </datos id="k3J9xQ2mP0aZ">
 
-Tamaño en bytes (condición T6-C3 de la revisión de T6): `LlmService` estima los tokens
-de entrada con `ceil(caracteres / 3)`, pero un texto en chino, árabe o con emojis tiene
-más tokens por carácter. Ningún tokenizador de los tres proveedores produce más tokens que
-bytes UTF-8 (BPE por bytes, o SentencePiece con respaldo a bytes), así que un agente que
-quiere un máximo **garantizado** acota sus datos por bytes con `fit_items` y reserva un
-token por byte (`budget.PlannedCall.max_input_tokens`).
+Tamaño en bytes (condición T6-C3 de la revisión de T6): `ceil(caracteres / 3)` se queda
+corto con un texto en chino, árabe o con emojis, que tiene más tokens por carácter.
+Ningún tokenizador de los tres proveedores produce más tokens que bytes UTF-8 (BPE por
+bytes, o SentencePiece con respaldo a bytes), así que un agente que quiere un máximo
+**garantizado** acota sus datos por bytes con `fit_items`, reserva un token por byte
+(`budget.PlannedCall.max_input_tokens`) y pasa esa misma cota en cada llamada
+(`NodeContext.call_llm(..., input_tokens_bound=…)`, obligatoria) para que `LlmService`
+reserve con ella del tope diario (condición T9-C1). Una petición sin cota reserva como
+mínimo los bytes del prompt, del esquema y de las herramientas (revisión de T14, B1).
 
 Esto reduce el riesgo, no lo elimina: lo que publica, gasta o borra nunca depende solo de
 la salida del modelo (autonomía y aprobaciones, ADR 0016).

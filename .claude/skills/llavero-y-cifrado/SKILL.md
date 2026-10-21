@@ -9,7 +9,7 @@ description: Cómo guarda, entrega y audita Faro sus secretos - qué es secreto,
 
 | Secreto | Referencia en el llavero | Quién lo usa |
 | --- | --- | --- |
-| Clave de IA (Anthropic, OpenAI, Gemini) | `llm/<provider>/default` | núcleo (prueba, ADR 0003) y motor (uso, vía `secret_request`) |
+| Clave de IA (Anthropic, OpenAI, Gemini) | `llm/<provider>/default` | núcleo (prueba, ADR 0003) y motor (uso, vía `secret_request`, **solo** dentro de una concesión de ejecución de agente: la pide `LlmService` en cada llamada lógica y la suelta al terminar; skill `capa-llm`) |
 | Token + secreto HMAC del plugin | `wp/<site_id>/token` (JSON compacto exacto, ver "Valor de `wp/*/token`") | motor, al llamar al sitio |
 | Refresh token de Google (GSC, GA4, Ads) | `oauth/google/<account>` (`<account>` = `sub` de Google, nunca el correo) | motor |
 | Llave de SQLCipher del perfil | `db/<perfil>/key` | solo entrega al arrancar |
@@ -28,8 +28,11 @@ pub trait SecretStore: Send + Sync {
     fn get(&self, secret_ref: &str) -> Result<Option<SecretString>, AppError>;
     fn set(&self, secret_ref: &str, secret: &SecretString) -> Result<(), AppError>;
     fn delete(&self, secret_ref: &str) -> Result<(), AppError>; // idempotente
+    fn exists(&self, secret_ref: &str) -> Result<bool, AppError>; // por defecto, get().is_some()
 }
 ```
+
+`exists` sirve para saber qué proveedores tienen clave (`llm_providers` de `agents_control`) sin necesitar el valor. En Windows `KeyringStore` lee solo los atributos; en macOS `keyring` 3.6 no lo permite y lee el valor en memoria que se borra al soltarse, lo que puede mostrar el diálogo del llavero (pendiente T5-6 de la fase de macOS: atributos con `security-framework` o un índice no secreto).
 
 `KeyringStore` (producción, siempre `KEYRING_SERVICE`), `MemoryStore` (solo `#[cfg(test)]`, puede simular llavero caído). Solo bajo `cfg(test)`, `KeyringStore::with_credential_builder` acepta un constructor de credenciales mock de `keyring` **para esa instancia** (nunca `set_default_credential_builder`, que afectaría a la prueba con llavero real). Las pruebas con llavero real usan el servicio `app.faro.desktop.test` y `#[ignore]`.
 
@@ -56,14 +59,16 @@ ADR 0010 §2–3. El motor pide (stdout) → el núcleo valida → responde (std
 
 - `op` ∈ `get`, `create` (falla con `vault.already_exists` si existe), `set` (crea o reemplaza), `delete` (idempotente). `value` solo en `create`/`set`; `get` responde `value`, el resto `ok: true`. Una respuesta lleva **uno** de `value`, `ok` o `error`.
 - Línea malformada con `id` válido → el núcleo responde `vault.secret_not_allowed`; sin `id` válido no responde (el motor agota su espera).
-- Código: núcleo `apps/desktop/src-tauri/src/secrets/` (`mod.rs` broker y concesiones, `request.rs` formato, `refs.rs` gramática, `sites.rs` índice, `audit.rs` cola), motor `faro_engine/core/secrets.py`.
+- Código: núcleo `apps/desktop/src-tauri/src/secrets/` (`mod.rs` broker y concesiones, `run_grants.rs` concesiones por ejecución, `decisions.rs` ritmo y tope de líneas, `request.rs` formato, `refs.rs` gramática, `sites.rs` índice, `audit.rs` cola), motor `faro_engine/core/secrets.py` y `core/jobs/grants.py`.
 
 ### Concesiones (núcleo, ADR 0010 §3 y actualización 2026-10-01)
 
 - `engine_call` crea una concesión por llamada a partir de `secrets` de `engine-operations.json` (incrustado al compilar; tabla de accesos en `contratos-api-local`) y envía su `run_id` en `X-Faro-Run-Id`. Se borra al terminar la llamada (`GrantGuard` en `Drop`), al caducar (`timeout_seconds + 5 s`) o al reiniciar el motor.
 - Cada concesión está atada a `run_id`, **generación del motor** y **perfil** activos al concederla. Tras el candado del llavero (las operaciones van en serie, en `spawn_blocking`) se **revalida** y se usa el perfil de la concesión, no el actual. Si añades un paso entre la comprobación y el llavero, vuelve a comprobar después del candado.
 - Orden de comprobación: gramática (`vault.invalid_ref`) → `run_id` activo → referencia y `op` concedidas (`vault.secret_not_allowed`) → `db/*` **nunca** → forma del valor en `create`/`set` (`vault.invalid_input`) → en el llavero: para `get`, que exista (`vault.not_found`); para `create`, que no exista (`vault.already_exists`). Fallo del llavero → `vault.keyring_unavailable`.
-- Cada solicitud, aceptada o rechazada, deja un evento de auditoría (sin valor) y una línea de log con `op`, `secret_ref`, `operation` y código.
+- Cada solicitud, aceptada o rechazada, deja un evento de auditoría (sin valor). En el log del núcleo (target `faro_lib::decision`, ver "Log del núcleo frente a un motor que inunda"):
+  - los rechazos se agregan por (acción, actor, resultado, `reason`, `error_code`): 10 seguidos y uno por minuto van uno a uno; el resto, con `details.count` cada minuto;
+  - los usos aceptados (`secret.used` y demás operaciones del llavero) van uno a uno solo los 3 primeros por (concesión, referencia, operación); el resto sale en **una** línea de resumen con `count` y `errors` al liberar o caducar la concesión, al pausar, al terminar el `engine_call` o al detenerse el motor.
 
 ### Concesiones por ejecución de agentes (ADR 0014 §1, F1b T5)
 
@@ -72,6 +77,9 @@ ADR 0010 §2–3. El motor pide (stdout) → el núcleo valida → responde (std
 - La concesión lleva solo `llm/<provider>/default: get` y, si el agente declara `wp/{site_id}/token`, `wp/<site_id>/token: get`. Nunca `create`/`set`/`delete`, `{new}`, `db/*` ni `oauth/*`. Caduca a `min(max_grant_seconds, 900)` s; se renueva solo para el mismo `run_id` tras caducar y repitiendo todas las comprobaciones.
 - Mismo mapa que las de operación: atadas a generación y perfil, revalidadas tras el candado del llavero, borradas al reiniciar el motor. `run_grant_release` solo borra la de ejecución de su `run_id`. **Pausar borra todas las de ejecución** y no toca las de `engine_call`.
 - Auditoría `agent.grant_issued`/`agent.grant_denied`/`agent.grant_released` (actor `system`) y `agents.paused`/`agents.resumed` (actor `user`), con `details.operation = "agent:<kind>"` y `details.agent_kind` (solo para tipos de la tabla). El núcleo nunca envía `approval_id`, `decision` ni `level`.
+- **Ritmo** (`secrets/decisions.rs`, revisión de T13): tras las comprobaciones de arriba, un cubo por tipo de agente de 10 concesiones que recupera una por minuto (solo gasta ficha una concesión emitida; no se vacía al reiniciar el motor ni al pausar). Sin fichas responde `agents.grant_rate_limited` (sin detalles; auditoría `agent.grant_denied` con `reason = rate_limited`). No es un fallo de la tarea: el motor la devuelve a la cola o la deja `paused` (`grant_rate_limited`) y espera unos 60 s.
+- Respuestas posibles al motor: `ok` + `expires_in_seconds`, `agents.paused`, `agents.grant_rate_limited` o `agent.grant_denied`.
+- La pausa (`agents/control.rs`) revoca en memoria **antes** de avisar al motor y de guardar `agents-control.json`; si no se puede guardar, la pausa en memoria sigue y `agents_control_state` informa `saved: false` (ADR 0014 §2).
 
 ### `{new}` (solo `connectSite`)
 
@@ -107,6 +115,15 @@ Cualquier otro valor genérico: 1–4096 bytes de ASCII imprimible.
 - Sin canal (`--dev`) → `engine.secrets_unavailable`. Tras EOF o `shutdown` en stdin → `vault.secret_timeout`.
 - El valor: `with await broker.get(ref, max_wait=…) as secret:` → `secret.buffer` (`bytearray`), sobrescrito al salir. `create`/`set` reciben `bytes`/`bytearray` (ASCII imprimible, ≤ 4 KB) y no los borran: son de quien llama (sobrescríbelos en un `finally`). Copias `str` inevitables: la de `json.loads` al leer la respuesta. Nunca cachees el secreto entre operaciones.
 - Deshacer: si una operación crea un secreto y falla después, envía el `delete` **dentro** de la reserva de deshacer (`UNDO_RESERVE_SECONDS`, ADR 0012), mientras la concesión sigue viva.
+
+### Log del núcleo frente a un motor que inunda (ADR 0010, actualizaciones de T5 y del cierre de F1b)
+
+El log del núcleo (`faro.<fecha>.log`) es la fuente fiable de lo que decidió el núcleo: `audit_log` vive en la base del motor y un motor comprometido podría no insertar filas.
+
+- Tope de 64 MiB por día (`logging/capped.rs`) con **16 MiB reservados** a las decisiones del núcleo (`target: DECISION_TARGET`, `faro_lib::decision`). `capped.rs` reconoce una decisión leyendo solo la clave `target` de nivel superior.
+- Una decisión nueva del núcleo (llavero, concesiones, pausa, estado, ciclo de vida del motor) se registra con ese target; nada que el motor pueda repetir a voluntad lo usa **sin límite**.
+- Las líneas de decisión que provoca el motor con solicitudes aceptadas (concesión emitida y liberada, usos y sus resúmenes) comparten un tope de 200 que recupera una cada 15 s (`secrets/decisions.rs`); lo que no cabe sale después como "decisiones del motor sin registrar" con `count` (siempre al detenerse el motor). Cota: unas 11 700 líneas al día (~3 MiB). Pausa, reanudación, reinicios y apagado no pasan por ese tope.
+- La cola de auditoría del núcleo está acotada a 500 eventos (descarta primero los rechazos) y, al volver a enviar, manda `audit.dropped` con `details.count`.
 
 ### Qué protegen las concesiones
 
@@ -147,9 +164,10 @@ Quién, qué, cuándo y en qué tarea; **nunca el valor ni `last4`**. Solo se in
 
 - **Eventos del núcleo** (Bóveda y `secret_request`) → por stdin, sin ruta HTTP (ADR 0010 §4); el núcleo guarda hasta 500 en memoria mientras el motor no está listo:
   `{"event":"audit","occurred_at":"…Z","actor":"user|system|agent","action":"secret.…","secret_ref":"…"|null,"run_id":"…"|null,"result":"ok|denied|error","details":{…}}`.
-  Acciones del núcleo: `secret.added`, `secret.replaced`, `secret.tested`, `secret.used`, `secret.denied`, `secret.deleted`.
-- **Eventos del motor** (`await audit.record(action=…, result=…)`, dependencia `get_audit`): `site.connected`, `site.reconnected`, `site.revoked_detected`, `site.removed`; el `run_id` es el de la operación en curso.
-- Validación: `actor` y `result` de la lista, `secret_ref` con la gramática, `run_id` UUID, `details` solo con `site_id`, `operation`, `provider`, `op`, `reason`, `error_code` y valores de 1–64 caracteres `[A-Za-z0-9._:/-]` **sin forma de secreto** (filtro por valor). Un evento inválido del núcleo se descarta con aviso en el log (solo el nombre del campo, nunca el contenido).
+  Acciones del núcleo (`CORE_ACTIONS`): `secret.added`, `secret.replaced`, `secret.tested`, `secret.used`, `secret.denied`, `secret.deleted`, `agents.paused`, `agents.resumed`, `agent.grant_issued`, `agent.grant_denied`, `agent.grant_released` y `audit.dropped`.
+- **Eventos del motor** (`ENGINE_ACTIONS`; `await audit.record(action=…, result=…)`, dependencia `get_audit`): `site.connected`, `site.reconnected`, `site.revoked_detected`, `site.removed`, `autonomy.changed`, `approval.decided`, `approval.executed`, `llm.limit_changed` y `llm.preference_changed`; el `run_id` es el de la operación o tarea en curso.
+- La inserción va fuera del hilo de stdin: el hilo `faro-protocol` valida y encola, y el hilo `faro-audit` (`AuditWriter`) inserta.
+- Validación: `actor` y `result` de la lista, `secret_ref` con la gramática, `run_id` UUID, `details` solo con `site_id`, `operation`, `provider`, `op`, `reason`, `error_code`, `agent_kind` (comunes), `count` (solo en `secret.denied`, `agent.grant_denied`, `agent.grant_released` y `audit.dropped`, del núcleo), `level` (`autonomy.changed`), `approval_id` (`approval.*`) y `decision` (`approval.decided`), con valores de 1–64 caracteres `[A-Za-z0-9._:/-]` **sin forma de secreto** (filtro por valor). Un evento inválido del núcleo se descarta con aviso en el log (solo el nombre del campo, nunca el contenido).
 - `occurred_at` se guarda normalizado a UTC con milisegundos; `details` como JSON compacto con claves ordenadas. Base no disponible → el evento se descarta con aviso `audit.dropped`.
 
 ## Nunca en texto plano
@@ -164,6 +182,8 @@ SQLite (ni cifrado), `localStorage`, archivos de configuración, `.env`, argumen
 - [ ] `secret_request` valida existencia, `run_id` activo y concesión por operación (`op` y referencia); `db/*/key` excluida en el núcleo y en el motor.
 - [ ] La concesión se revalida tras el candado del llavero (generación y perfil); `{new}` solo una `create` y `delete` de la referencia intentada.
 - [ ] `wp/{site_id}/token` solo se concede para sitios del índice del perfil activo.
+- [ ] Un cambio de `agent-grants.json` pasa por `revisor-seguridad`; las concesiones de ejecución solo llevan `get`.
+- [ ] Toda línea de log nueva que el motor pueda provocar está agregada, muestreada o bajo el tope de `decisions.rs`.
 - [ ] Los casos de uso del motor pasan `max_wait` y deshacen dentro de la reserva (`UNDO_RESERVE_SECONDS`).
 - [ ] Todo cambio de `x-faro-secrets` en una ruta pasa por `revisor-seguridad`.
 - [ ] La llave de SQLCipher no se regenera si el `.db` existe.
