@@ -2,7 +2,7 @@
 //! `permissions/agents.toml`.
 //!
 //! Son comandos del núcleo, no `engine_call`: la pausa funciona aunque el motor no
-//! responda. Ninguno devuelve secretos: solo `{paused, changed_at}`.
+//! responda. Ninguno devuelve secretos: solo `{paused, changed_at, saved}`.
 
 use tauri::State;
 
@@ -23,7 +23,9 @@ pub async fn agents_resume_all(state: State<'_, AppState>) -> Result<ControlStat
     state.agents.resume().await
 }
 
-/// Estado de la pausa: `{paused, changed_at}` (`changed_at` es `null` si nunca cambió).
+/// Estado de la pausa: `{paused, changed_at, saved}` (`changed_at` es `null` si nunca cambió;
+/// `saved` es `false` si una pausa se aplicó pero no se pudo guardar y no sobrevive a cerrar
+/// Faro).
 #[tauri::command]
 pub fn agents_control_state(state: State<'_, AppState>) -> ControlState {
     state.agents.state()

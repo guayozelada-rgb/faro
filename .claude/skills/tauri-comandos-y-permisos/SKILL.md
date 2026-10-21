@@ -9,13 +9,13 @@ description: Plantilla para crear comandos Tauri 2 en el núcleo Rust de Faro, d
 ```
 apps/desktop/src-tauri/
   src/
-    main.rs            # arranque, plugins, estado compartido
-    commands/          # un archivo por dominio: vault.rs, license.rs, engine.rs, system.rs
+    main.rs, lib.rs    # arranque, plugins, estado compartido; `register_commands` en lib.rs
+    commands/          # un archivo por dominio: engine.rs, vault.rs, wp_plugin.rs, agents.rs (license.rs y system.rs llegarán con su fase)
     error.rs           # AppError serializable
     state.rs           # AppState (handle del motor, token, etc.)
   capabilities/
     main.json          # permisos de la ventana principal
-  permissions/         # permisos propios de comandos de Faro
+  permissions/         # permisos propios de comandos de Faro: engine.toml, vault.toml, wp_plugin.toml, agents.toml
   acl_checks.rs        # COMMANDS y comprobaciones de ACL (incluido en build.rs y en tests/acl.rs)
   build.rs             # AppManifest(COMMANDS) + check_acl al compilar
   tests/acl.rs         # pruebas de rechazo del ACL con el contexto real
@@ -97,6 +97,24 @@ Registro en `main.rs`:
 ])
 ```
 
+## Comandos actuales
+
+| Dominio | Comandos | Permisos (`permissions/<dominio>.toml`) |
+| --- | --- | --- |
+| Motor | `engine_status`, `engine_restart`, `engine_call` | `allow-engine-*` |
+| Bóveda | `vault_list_keys`, `vault_add_key`, `vault_test_key`, `vault_delete_key` | `allow-vault-*` |
+| Plugin | `wp_plugin_export` | `allow-wp-plugin-export` |
+| Agentes (F1b) | `agents_pause_all`, `agents_resume_all`, `agents_control_state` | `allow-agents-pause-all`, `allow-agents-resume-all`, `allow-agents-control-state` |
+
+### Comandos de agentes (`commands/agents.rs`, ADR 0014 §2)
+
+- Son comandos del **núcleo**, no `engine_call`: la pausa tiene que funcionar aunque el motor no responda. La lógica vive en `src/agents/control.rs` (`AgentsControl`); el comando solo la llama.
+- Los tres devuelven `ControlState` = `{paused: bool, changed_at: string | null, saved: bool}`; ninguno recibe argumentos ni devuelve secretos. `saved` es `false` solo mientras una pausa está aplicada en memoria sin guardar en `agents-control.json`.
+- `agents_pause_all`: revoca en memoria las concesiones de ejecución y rechaza nuevas → avisa al motor (`agents_control`) → guarda el archivo → audita `agents.paused` (actor `user`). Si no puede guardar, la pausa **sigue** y devuelve `agents.control_unavailable`.
+- `agents_resume_all`: guarda primero; si no puede, no reanuda (`agents.control_unavailable`).
+- `agents_control_state`: síncrono, lee el estado en memoria.
+- Eventos: el núcleo emite `engine://agents` solo a la ventana `main` (`emit_to`); la interfaz solo puede escuchar (`core:event:allow-listen`/`allow-unlisten`). `tests/acl.rs` comprueba que la interfaz no puede emitir eventos ni invocar un comando no concedido.
+
 ## Permisos (capabilities)
 
 Cada comando propio necesita un permiso en `permissions/` y aparecer en `capabilities/main.json`:
@@ -118,7 +136,8 @@ commands.allow = ["vault_add_key"]
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "allow-vault-add-key",
-    "allow-engine-status"
+    "allow-engine-status",
+    "allow-agents-pause-all"
   ]
 }
 ```

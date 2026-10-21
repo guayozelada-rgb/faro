@@ -21,11 +21,11 @@ describe("comandos de la pausa (spec F1b §5.3)", () => {
     const calls: [string, unknown][] = [];
     mockIPC((cmd, args) => {
       calls.push([cmd, args]);
-      return { paused: cmd === "agents_pause_all", changed_at: null };
+      return { paused: cmd === "agents_pause_all", changed_at: null, saved: true };
     });
-    expect(await getAgentsControlState()).toEqual({ paused: false, changed_at: null });
-    expect(await pauseAllAgents()).toEqual({ paused: true, changed_at: null });
-    expect(await resumeAllAgents()).toEqual({ paused: false, changed_at: null });
+    expect(await getAgentsControlState()).toEqual({ paused: false, changed_at: null, saved: true });
+    expect(await pauseAllAgents()).toEqual({ paused: true, changed_at: null, saved: true });
+    expect(await resumeAllAgents()).toEqual({ paused: false, changed_at: null, saved: true });
     expect(calls.map(([cmd]) => cmd)).toEqual([
       "agents_control_state",
       "agents_pause_all",
@@ -41,6 +41,11 @@ describe("comandos de la pausa (spec F1b §5.3)", () => {
 
   it("una respuesta con otra forma falla cerrado", async () => {
     mockIPC(() => ({ paused: "sí" }));
+    await expect(getAgentsControlState()).rejects.toThrow();
+    // Sin `saved` (o con otro tipo) tampoco: el aviso de pausa sin guardar depende de él.
+    mockIPC(() => ({ paused: true, changed_at: null }));
+    await expect(getAgentsControlState()).rejects.toThrow();
+    mockIPC(() => ({ paused: true, changed_at: null, saved: "no" }));
     await expect(getAgentsControlState()).rejects.toThrow();
   });
 });

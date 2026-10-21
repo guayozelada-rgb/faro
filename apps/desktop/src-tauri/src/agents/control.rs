@@ -12,6 +12,12 @@
 //!   guardar, la pausa en memoria ya está aplicada y el comando devuelve
 //!   `agents.control_unavailable`.
 //! - Reanudar: guarda el archivo; si falla, no reanuda (`agents.control_unavailable`).
+//! - `saved` (revisión de seguridad de T10, hallazgo 1): `true` si el estado en memoria es el
+//!   que Faro tendrá al volver a abrirse, es decir, si coincide con lo último que se escribió
+//!   con éxito en el archivo (o con lo que se leyó al arrancar: ausente → activo, ilegible →
+//!   pausado). Es `false` solo mientras una pausa está aplicada en memoria sin guardar: si se
+//!   cierra Faro, los agentes vuelven a trabajar. La interfaz lo lee de `agents_control_state`
+//!   para que el aviso sobreviva a recargar la ventana.
 //! - El motor recibe `{"event":"agents_control","paused":…,"llm_providers":[…]}` justo
 //!   después de `ready` (cada arranque) y en cada cambio: pausa, reanudación y alta o baja
 //!   de una clave en la Bóveda. `llm_providers` son solo los nombres de los proveedores
@@ -56,6 +62,8 @@ pub struct ControlState {
     pub paused: bool,
     /// `null` si nunca se cambió (archivo ausente) o si el archivo es ilegible.
     pub changed_at: Option<String>,
+    /// `true` si `paused` sobrevive a cerrar Faro (coincide con el archivo). Ver el módulo.
+    pub saved: bool,
 }
 
 /// Proveedores con clave en la Bóveda (bloqueante: lee el llavero).
@@ -78,6 +86,7 @@ fn read_state(path: &Path) -> ControlState {
             return ControlState {
                 paused: false,
                 changed_at: None,
+                saved: true,
             }
         }
         Err(err) => {
@@ -93,6 +102,7 @@ fn read_state(path: &Path) -> ControlState {
             ControlState {
                 paused: file.paused,
                 changed_at: Some(file.changed_at),
+                saved: true,
             }
         }
         _ => {
@@ -103,9 +113,11 @@ fn read_state(path: &Path) -> ControlState {
 }
 
 fn paused_unknown() -> ControlState {
+    // Falla cerrado y el archivo no se toca: al volver a abrir, sigue en pausa.
     ControlState {
         paused: true,
         changed_at: None,
+        saved: true,
     }
 }
 
@@ -214,25 +226,33 @@ impl AgentsControl {
     /// Pausa todos los agentes (comando `agents_pause_all`).
     pub async fn pause(&self) -> Result<ControlState, AppError> {
         let _serial = self.ops.lock().await;
-        let changed_at = {
+        let (changed_at, already_saved) = {
             let current = self.lock();
-            match (&current.changed_at, current.paused) {
-                // Ya en pausa y guardada: se conserva cuándo empezó.
+            let changed_at = match (&current.changed_at, current.paused) {
+                // Ya en pausa: se conserva cuándo empezó.
                 (Some(at), true) => at.clone(),
                 _ => now_utc(),
-            }
+            };
+            // Solo si ya estaba en pausa y guardada el archivo dice "pausado" desde antes.
+            (changed_at, current.paused && current.saved)
         };
-        // 1. Revocar y rechazar nuevas, en memoria y antes que nada.
-        let state = ControlState {
+        // 1. Revocar y rechazar nuevas, en memoria y antes que nada. Hasta guardar, `saved`
+        //    solo es `true` si el archivo ya decía "pausado".
+        *self.lock() = ControlState {
             paused: true,
             changed_at: Some(changed_at.clone()),
+            saved: already_saved,
         };
-        *self.lock() = state.clone();
         let revoked = self.broker.pause_agents();
         // 2. Avisar al motor.
         let _ = self.tx.send(ControlMsg::Changed);
         // 3. Guardar (si falla, la pausa ya está aplicada).
         let saved = self.save(true, &changed_at).await;
+        let state = {
+            let mut current = self.lock();
+            current.saved = current.saved || saved;
+            current.clone()
+        };
         // 4. Auditar.
         let mut event = AuditEvent::new(Actor::User, Action::AgentsPaused, Outcome::Ok);
         if !saved {
@@ -264,6 +284,7 @@ impl AgentsControl {
         let state = ControlState {
             paused: false,
             changed_at: Some(changed_at),
+            saved: true,
         };
         *self.lock() = state.clone();
         self.broker.resume_agents();

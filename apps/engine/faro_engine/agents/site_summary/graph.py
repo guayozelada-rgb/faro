@@ -12,6 +12,8 @@
 - `write_summary` (`premium`): la clasificación entra como **datos del modelo**
   (`UntrustedText(source="llm")`, nunca como instrucción) junto al bloque del sitio.
   Salida `SiteSummaryV1`.
+- Las dos llamadas pasan la cota de entrada de su `PlannedCall` (`estimate.py`):
+  `LlmService` reserva con ella del tope diario, no con `ceil(caracteres / 3)` (T9-C1).
 - `propose_save` / `save_summary`: los nodos estándar del marco (autonomía → sugerencia,
   propuesta con `interrupt` o ejecución por la regla; el ejecutor relee la aprobación de la
   base). `propose_save` no llama al modelo ni a herramientas (condición T8-C2): al
@@ -36,6 +38,7 @@ from faro_engine.agents.framework.untrusted import (
     fit_items,
     llm_item,
 )
+from faro_engine.agents.site_summary.estimate import classify_input_bound, write_input_bound
 from faro_engine.agents.site_summary.limits import (
     CLASSIFICATION_BLOCK_CHARS,
     ITEMS_BLOCK_BYTES,
@@ -162,7 +165,8 @@ async def classify_content(state: SiteSummaryState, n: NodeContext) -> dict[str,
         instructions_vars={"n_items": len(items.items)},
         data=[site_block(state), items],
     )
-    return {"classification": parsed_output(await n.call_llm(prompt))}
+    result = await n.call_llm(prompt, input_tokens_bound=classify_input_bound())
+    return {"classification": parsed_output(result)}
 
 
 async def write_summary(state: SiteSummaryState, n: NodeContext) -> dict[str, Any]:
@@ -173,7 +177,8 @@ async def write_summary(state: SiteSummaryState, n: NodeContext) -> dict[str, An
         PROMPT_VERSION,
         data=[classification_block(state.classification), site_block(state)],
     )
-    return {"summary": parsed_output(await n.call_llm(prompt))}
+    result = await n.call_llm(prompt, input_tokens_bound=write_input_bound())
+    return {"summary": parsed_output(result)}
 
 
 async def propose_save(state: SiteSummaryState, n: NodeContext) -> dict[str, Any]:

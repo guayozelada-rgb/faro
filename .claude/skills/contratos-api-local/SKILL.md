@@ -24,7 +24,7 @@ React → api.call("listSiteContent", { path: { site_id }, query: { kind } })
 - El comando Rust `engine_call` solo acepta `operationId` presentes en `packages/shared/engine-operations.json` (generado, incrustado en el núcleo al compilar). Cualquier otro se rechaza con `engine.operation_not_allowed`.
 - De ese mismo archivo el núcleo toma el **tiempo máximo** de cada operación (`engine.timeout`) y los **secretos** que puede pedir durante la llamada (concesión, ADR 0010 §3).
 - Rust nunca expone el puerto ni el token del motor a la interfaz.
-- Las operaciones largas (crawls, agentes) devuelven `202` con un `run_id`; el progreso llega por eventos Tauri `engine://run/{run_id}` que Rust retransmite desde el stream SSE del motor.
+- Las operaciones largas (agentes; en el futuro, rastreos) devuelven `202` con el `run_id` (`startAgentRun`) y el trabajo sigue en la cola del motor. **No hay SSE** (ADR 0014 §3): el progreso llega como líneas `agent_activity` por stdout, que el núcleo valida (esquema cerrado, sin texto libre, 20/s) y emite a la ventana `main` como evento Tauri **`engine://agents`**. La interfaz actualiza su caché con esos eventos y, ante un salto de `seq` o un identificador desconocido, vuelve a pedir el estado con `engine_call` (`getAgentRun`, `listAgentRuns`). Los textos (resultados, resúmenes) se leen siempre con `engine_call`, nunca del evento.
 
 ## Agregar un endpoint (paso a paso)
 
@@ -93,7 +93,7 @@ Eso genera las extensiones `x-faro-timeout-seconds` y `x-faro-secrets` en `opena
 }
 ```
 
-### Operaciones actuales (F1a, `packages/shared/engine-operations.json`)
+### Operaciones actuales (F1b, `packages/shared/engine-operations.json`)
 
 | `operationId` | Método y ruta | `timeout_seconds` | `secrets` |
 | --- | --- | --- | --- |
@@ -104,6 +104,29 @@ Eso genera las extensiones `x-faro-timeout-seconds` y `x-faro-secrets` en `opena
 | `checkSiteConnection` | POST `/sites/{site_id}/check` | 45 | `wp/{site_id}/token`: `get` |
 | `listSiteContent` | GET `/sites/{site_id}/content` | 45 | `wp/{site_id}/token`: `get` |
 | `removeSite` | DELETE `/sites/{site_id}` | 45 | `wp/{site_id}/token`: `get`, `delete` |
+| `getSiteSummary` | GET `/sites/{site_id}/summary` | 10 | — |
+| `listAgents` | GET `/agents` | 10 | — |
+| `estimateAgentRun` | POST `/agent-runs/estimate` | 10 | — |
+| `startAgentRun` | POST `/agent-runs` (**202**) | 10 | — |
+| `listAgentRuns` | GET `/agent-runs` | 10 | — |
+| `getAgentRun` | GET `/agent-runs/{run_id}` | 10 | — |
+| `cancelAgentRun` | POST `/agent-runs/{run_id}/cancel` | 10 | — |
+| `acceptAgentSuggestion` | POST `/agent-runs/{run_id}/suggestion/accept` | 10 | — |
+| `acknowledgeAgentNotices` | POST `/agent-runs/notices/ack` | 10 | — |
+| `listApprovals` | GET `/approvals` | 10 | — |
+| `decideApproval` | POST `/approvals/{approval_id}/decision` | 10 | — |
+| `listAutonomyRules` | GET `/autonomy-rules` | 10 | — |
+| `setAutonomyRule` | PUT `/autonomy-rules` | 10 | — |
+| `deleteAutonomyRule` | DELETE `/autonomy-rules/{rule_id}` | 10 | — |
+| `listSchedules` | GET `/schedules` | 10 | — |
+| `createSchedule` | POST `/schedules` | 10 | — |
+| `updateSchedule` | PATCH `/schedules/{schedule_id}` | 10 | — |
+| `deleteSchedule` | DELETE `/schedules/{schedule_id}` | 10 | — |
+| `getLlmUsage` | GET `/llm/usage` | 10 | — |
+| `setLlmDailyLimit` | PUT `/llm/limits/{provider}` | 10 | — |
+| `setLlmPreferences` | PUT `/llm/preferences` | 10 | — |
+
+Las operaciones de agentes, aprobaciones, autonomía, programaciones y capa de IA (F1b) no piden ningún secreto: la clave de IA y el token del sitio los pide el trabajador del motor con la concesión de la ejecución (abajo). Errores de cada una: spec F1b §5.2 y §5.5 (más `approval.not_ready`, `tool.invalid_arguments`, `tool.timeout` y `agents.grant_rate_limited`, spec F1b §13).
 
 El motor construye el plazo de cada operación como `Deadline(timeout_seconds - 5)` (`core/routes/sites.py`). Las operaciones que crean o borran secretos reservan además los últimos 10 s de ese plazo para deshacer (`UNDO_RESERVE_SECONDS`, ADR 0012): si añades una, sigue el patrón de `sites/service.py`.
 
@@ -128,7 +151,7 @@ Se guarda en el orden canónico `get`, `create`, `set`, `delete`; `secrets` se o
 
 ## Concesiones de los agentes (`agent-grants.json`, ADR 0014 §1)
 
-Las tareas de agentes no piden secretos por `engine_call`: el motor pide una **concesión por ejecución** (`run_grant_request`) y el núcleo decide con `packages/shared/agent-grants.json`, generado por `npm run contracts` e incrustado al compilar (la prueba del núcleo llega en F1b T5).
+Las tareas de agentes no piden secretos por `engine_call`: el motor pide una **concesión por ejecución** (`run_grant_request`) y el núcleo decide con `packages/shared/agent-grants.json`, generado por `npm run contracts` e incrustado al compilar (`src-tauri/src/agents/manifest.rs`, con prueba de paridad con el archivo).
 
 ```json
 [
@@ -146,9 +169,9 @@ Las tareas de agentes no piden secretos por `engine_call`: el motor pide una **c
 ]
 ```
 
-(Forma prevista para T9. En T3 el registro está vacío y el archivo es `[]`.)
+(Contenido actual, desde F1b T9: un solo agente.)
 
-- Origen: `faro_engine/agents/registry.py` → `faro_engine/export_agents.py` → `scripts/generate-contracts.mjs` (`buildAgentGrants`), que vuelve a validar y escribe el archivo ordenado por `kind`, `secrets` por `ref`, claves ordenadas, determinista.
+- Origen: el `AgentSpec` de cada agente (`agents/<agente>/spec.py`, campos `kind`, `requires_site`, `secrets`, `max_grant_seconds`) registrado en `faro_engine/agents/registry.py` → `faro_engine/export_agents.py` → `scripts/generate-contracts.mjs` (`buildAgentGrants`), que vuelve a validar y escribe el archivo ordenado por `kind`, `secrets` por `ref`, claves ordenadas, determinista.
 - Reglas (`faro_engine/agents/grants.py` al arrancar el motor, el generador y el núcleo): `access` exactamente `["get"]`; `ref` solo `llm/anthropic/default`, `llm/openai/default`, `llm/gemini/default` o `wp/{site_id}/token` (`db/*`, `oauth/*`, `wp/{new}/token`, alias distintos de `default` y cualquier otra, rechazadas); `wp/{site_id}/token` exige `requires_site: true`; `max_grant_seconds` entero entre 60 y 900; `kind` `^[a-z][a-z0-9_]{1,47}$` y único; forma cerrada (sin campos de más) y sin `ref` repetidas.
 - Paridad: los vectores de `packages/shared/fixtures/agent-grants-cases.json` los ejecutan `npm run test:contracts` y `apps/engine/tests/agents/test_grants.py`; cada caso inválido declara la regla (`rule`) con la que deben fallar los dos. Cambia una regla en los dos lados a la vez y añade su caso.
 - **Cualquier cambio de `agent-grants.json` requiere revisión de `revisor-seguridad`** (casilla en la plantilla de PR). La CI (trabajo `contracts`) falla si no está al día.

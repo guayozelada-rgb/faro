@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Provider = Literal["anthropic", "openai", "gemini"]
 Tier = Literal["economy", "premium"]
@@ -66,11 +66,46 @@ class LlmRequest(BaseModel):
     prompt_id: str = Field(pattern=PROMPT_ID_PATTERN)
     prompt_version: int = Field(ge=1, le=10_000)
     tools: tuple[ToolSpec, ...] = ()
+    # Cota de tokens de entrada del agente (`budget.PlannedCall.input_tokens_bound`): un
+    # token por byte UTF-8 de su prompt más grande más la sobrecarga de la salida
+    # estructurada. `LlmService` reserva con la mayor entre ella y `ceil(caracteres / 3)`
+    # (condición T9-C1). Nunca por debajo de `input_bytes` (mensajes, esquema y
+    # herramientas). Sin cota, `LlmService` usa `input_bytes` (revisión de T14, B1).
+    input_tokens_bound: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _bound_covers_bytes(self) -> LlmRequest:
+        if self.input_tokens_bound is not None and self.input_tokens_bound < self.input_bytes:
+            raise ValueError(
+                "input_tokens_bound por debajo de los bytes del prompt, el esquema y las "
+                "herramientas"
+            )
+        return self
 
     @property
     def prompt_chars(self) -> int:
         """Caracteres del prompt (puntos de código), base del estimado de entrada."""
         return sum(len(message.content) for message in self.messages)
+
+    @property
+    def prompt_bytes(self) -> int:
+        """Bytes UTF-8 del prompt: ningún tokenizador da más tokens que bytes."""
+        return sum(len(message.content.encode("utf-8")) for message in self.messages)
+
+    @property
+    def structure_bytes(self) -> int:
+        """Bytes UTF-8 del JSON que acompaña a los mensajes: el `response_format` de la
+        salida estructurada y las herramientas, tal como se envían (revisión de T14, B2)."""
+        parts: list[Any] = [tool_param(tool) for tool in self.tools]
+        if self.output_schema is not None:
+            parts.append(response_format_for(self.output_schema))
+        return sum(_json_bytes(part) for part in parts)
+
+    @property
+    def input_bytes(self) -> int:
+        """Cota segura mínima de tokens de entrada: bytes del prompt más `structure_bytes`
+        (un token nunca ocupa menos de un byte)."""
+        return self.prompt_bytes + self.structure_bytes
 
 
 class LlmUsage(BaseModel):
@@ -147,6 +182,10 @@ class LlmClient(Protocol):
     async def prepare(self) -> None: ...
 
     async def complete(self, call: ResolvedCall, api_key: str | None) -> RawCompletion: ...
+
+
+def _json_bytes(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
 
 
 def response_format_for(schema: type[BaseModel]) -> dict[str, Any]:

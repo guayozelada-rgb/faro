@@ -51,6 +51,10 @@ ACTION: Final = "test_graph.save"
 PROMPTS_DIR: Final = Path(__file__).resolve().parents[1] / "fixtures" / "prompts" / KIND
 GATHER: Final = "test_graph.gather"
 WRITE: Final = "test_graph.write"
+# Cotas de entrada de cada llamada: las mismas en `estimate` y en `call_llm` (T9-C1, B1 de
+# la revisión de T14). Iguales a `ceil(max_prompt_chars / 3)`: el estimado no cambia.
+GATHER_BOUND: Final = 1_000
+WRITE_BOUND: Final = 2_000
 
 
 # --- Esquemas ---------------------------------------------------------------------------
@@ -154,7 +158,7 @@ SAVE_ACTION: Final = ActionSpec(
 def build(tool: Tool[NotesIn, NotesOut]) -> Callable[[GraphBuilder], None]:
     async def gather(state: NotesGraphState, n: NodeContext) -> dict[str, Any]:
         prompt = n.render(GATHER, 1, instructions_vars={"max_notes": 3})
-        result = await n.call_llm(prompt, tools=[tool])
+        result = await n.call_llm(prompt, tools=[tool], input_tokens_bound=GATHER_BOUND)
         notes = list(state.notes)
         for _tool, output in await n.run_tool_calls(result, [tool]):
             assert isinstance(output, NotesOut)
@@ -166,7 +170,7 @@ def build(tool: Tool[NotesIn, NotesOut]) -> Callable[[GraphBuilder], None]:
         blocks = [DataBlock("api", [UntrustedText.from_json(note) for note in state.notes], 2_000)]
         if state.model_note is not None:
             blocks.append(DataBlock("llm", [UntrustedText.from_json(state.model_note)], 1_000))
-        result = await n.call_llm(n.render(WRITE, 1, data=blocks))
+        result = await n.call_llm(n.render(WRITE, 1, data=blocks), input_tokens_bound=WRITE_BOUND)
         return {"summary": result.parsed}
 
     async def propose(state: NotesGraphState, n: NodeContext) -> dict[str, Any]:
@@ -192,8 +196,8 @@ def build(tool: Tool[NotesIn, NotesOut]) -> Callable[[GraphBuilder], None]:
 
 def estimate(data: EstimateInput) -> AgentEstimate:
     calls = [
-        PlannedCall("classify", 300, 60, 3_000, 300),
-        PlannedCall("write", 500, 80, 6_000, 400),
+        PlannedCall("classify", 300, 60, 3_000, 300, input_tokens_bound=GATHER_BOUND),
+        PlannedCall("write", 500, 80, 6_000, 400, input_tokens_bound=WRITE_BOUND),
     ]
     return estimate_calls(calls, catalog=data.catalog, provider=data.provider, day=data.day)
 

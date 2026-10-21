@@ -10,8 +10,6 @@ import {
 } from "@/lib/api/agentsControl";
 import { getErrorMessage, toFaroError } from "@/lib/api/errors";
 
-import { setPauseNotSaved } from "./pauseNotSaved";
-
 import { AGENT_ESTIMATE_PREFIX, AGENT_RUNS_QUERY_KEY, AGENTS_CONTROL_QUERY_KEY } from "./queryKeys";
 
 /** Estado de la pausa global, leído del núcleo (persistente entre sesiones). */
@@ -25,6 +23,16 @@ export function useAgentsPaused(): boolean {
 }
 
 /**
+ * `true` si el núcleo dice que la pausa está aplicada pero no guardada (hallazgo 1 de la revisión
+ * de seguridad de T10): si se cierra Faro, los agentes vuelven a trabajar. Sale de
+ * `agents_control_state`, no de la memoria de la ventana, así que sobrevive a recargarla.
+ */
+export function usePauseNotSaved(): boolean {
+  const data = useAgentsControlState().data;
+  return data?.paused === true && !data.saved;
+}
+
+/**
  * Pausar y reanudar (spec F1b §3.1). Tras un error se vuelve a leer el estado del núcleo:
  * si guardar la pausa falló (`agents.control_unavailable`), la pausa en memoria sí se aplicó,
  * la barra lo muestra tal cual y avisa de que no sobrevivirá a cerrar Faro.
@@ -35,7 +43,6 @@ export function useAgentsControl() {
   const state = useAgentsControlState();
 
   function settle(next: AgentsControlState) {
-    setPauseNotSaved(false);
     queryClient.setQueryData<AgentsControlState>(AGENTS_CONTROL_QUERY_KEY, next);
     void queryClient.invalidateQueries({ queryKey: AGENT_ESTIMATE_PREFIX });
     void queryClient.invalidateQueries({ queryKey: AGENT_RUNS_QUERY_KEY, exact: true });
@@ -51,9 +58,8 @@ export function useAgentsControl() {
     onSuccess: settle,
     onError: (error) => {
       if (toFaroError(error).code === "agents.control_unavailable") {
-        // La pausa sí se aplicó en memoria, pero no sobrevive a cerrar Faro. El texto del
-        // catálogo pide reiniciar, lo que la desharía: aquí se usa uno propio (T14 corrige §5.5).
-        setPauseNotSaved(true);
+        // La pausa sí se aplicó en memoria, pero no sobrevive a cerrar Faro. Al volver a leer
+        // el estado, el núcleo responde `saved: false` y la barra lo avisa.
         toast.error(t("agentsControl.pauseNotSavedToast"));
       } else {
         toast.error(getErrorMessage(error, i18n));

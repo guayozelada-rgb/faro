@@ -187,7 +187,7 @@ describe("Lanzar Resumen del sitio (spec F1b §3.3)", () => {
 
   it("agentes en pausa: aviso arriba y botón deshabilitado", async () => {
     const { dialog } = await openDialog({
-      controlState: () => ({ paused: true, changed_at: null }),
+      controlState: () => ({ paused: true, changed_at: null, saved: true }),
     });
     expect(within(dialog).getByText("Los agentes están en pausa.")).toBeInTheDocument();
     await within(dialog).findByText(/Costo estimado/);

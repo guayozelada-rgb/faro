@@ -11,6 +11,11 @@ export interface AgentsControlState {
   paused: boolean;
   /** ISO-8601 en UTC; `null` si nunca cambió. */
   changed_at: string | null;
+  /**
+   * `false` si la pausa se aplicó pero el núcleo no pudo guardarla: si se cierra Faro, los
+   * agentes vuelven a trabajar. Lo sabe el núcleo, así que sobrevive a recargar la ventana.
+   */
+  saved: boolean;
 }
 
 /** Evento que el núcleo emite con cada línea `agent_activity` válida del motor. */
@@ -90,7 +95,9 @@ function isControlState(value: unknown): value is AgentsControlState {
   }
   const c = value as Record<string, unknown>;
   return (
-    typeof c.paused === "boolean" && (c.changed_at === null || typeof c.changed_at === "string")
+    typeof c.paused === "boolean" &&
+    (c.changed_at === null || typeof c.changed_at === "string") &&
+    typeof c.saved === "boolean"
   );
 }
 

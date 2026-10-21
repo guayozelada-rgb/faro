@@ -187,7 +187,7 @@ export function mockSitesIpc(handlers: SitesIpcHandlers = {}): SitesIpcMock {
       case "vault_list_keys":
         return handlers.listKeys ? handlers.listKeys(undefined) : [];
       case "agents_control_state":
-        return { paused: false, changed_at: null };
+        return { paused: false, changed_at: null, saved: true };
       case "plugin:event|listen":
         return 1;
       case "plugin:event|unlisten":

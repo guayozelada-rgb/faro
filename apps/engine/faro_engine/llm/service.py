@@ -7,8 +7,14 @@ clave** (hay una prueba de cada uno):
 2. **Clave disponible**: el proveedor de la tarea (o, si no tiene, la preferencia del
    usuario o el primero con clave) está en `llm_providers` del último `agents_control`
    → si no, `llm.no_key`. Sin cambio automático a otro proveedor.
-3. **Máximo de la llamada** = `ceil(caracteres / 3)` x precio de entrada +
-   `max_output_tokens` x precio de salida (`pricing.max_call_cost`).
+3. **Máximo de la llamada** = tokens de entrada máximos x precio de entrada +
+   `max_output_tokens` x precio de salida (`pricing.max_call_cost`). Los tokens de entrada
+   máximos son `ceil(caracteres / 3)` o, si el agente la da, la cota
+   `LlmRequest.input_tokens_bound` (un token por byte UTF-8 del prompt más grande más la
+   sobrecarga de la salida estructurada), la mayor (condición T9-C1: con chino o emojis
+   `caracteres / 3` se queda corto y una tarea reanudada otro día, que no vuelve a comprobar
+   su máximo completo, podría pasar el tope). Es lo que usan el presupuesto, la reserva del
+   tope y el costo que se cuenta cuando no hay `usage`.
 4. **Presupuesto de la tarea** (leído de la base): `cost_micros + máximo ≤ max_cost_micros`
    y `tokens + tokens máximos ≤ token_budget` → si no, `agent.budget_exhausted`.
 5. **Tope diario de la clave**: `gastado hoy + reservado + máximo ≤ límite` → si no,
@@ -88,7 +94,7 @@ from faro_engine.llm.client import (
 )
 from faro_engine.llm.errors import LlmCallError, classify_exception, failure_error, llm_error
 from faro_engine.llm.limits import DailyLimiter, DailyLimitReachedError, Reservation
-from faro_engine.llm.pricing import call_cost, estimate_input_tokens, max_call_cost
+from faro_engine.llm.pricing import call_cost, max_call_cost, max_input_tokens
 from faro_engine.llm.routing import choose_provider, secret_ref_for, tier_for
 from faro_engine.net.client import Deadline
 
@@ -266,9 +272,16 @@ class LlmService:
         model = self.catalog.model_for(provider, tier)
         if request.max_output_tokens > model.max_output_tokens:
             raise ValueError("max_output_tokens supera el del modelo del catálogo")
-        max_input = estimate_input_tokens(request.prompt_chars)
+        # Sin cota del agente, la cota segura de los bytes (mensajes, esquema y
+        # herramientas): nunca `ceil(caracteres / 3)` solo (revisión de T14, B1).
+        bound = request.input_tokens_bound or request.input_bytes
+        max_input = max_input_tokens(request.prompt_chars, bound)
         max_cost = max_call_cost(
-            model, request.prompt_chars, request.max_output_tokens, self.today()
+            model,
+            request.prompt_chars,
+            request.max_output_tokens,
+            self.today(),
+            input_tokens_bound=bound,
         )
         # 4. Presupuesto de la tarea.
         await self._check_budget(

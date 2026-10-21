@@ -401,7 +401,13 @@ async def test_dos_llamadas_a_la_vez_desde_el_trabajador_no_pasan_el_tope(
     world.llm_client = gated
     request = make_request(max_output_tokens=100)
     model = world.llm.catalog.model_for("anthropic", "economy")
-    one = max_call_cost(model, request.prompt_chars, 100, world.llm.today())
+    one = max_call_cost(
+        model,
+        request.prompt_chars,
+        100,
+        world.llm.today(),
+        input_tokens_bound=request.input_bytes,  # sin cota: un token por byte (T14, B1)
+    )
     outcomes: list[str] = []
 
     async def two_calls(inv: RunInvocation) -> None:

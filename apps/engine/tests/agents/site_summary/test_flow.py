@@ -19,8 +19,9 @@ from faro_engine.agents.framework.approvals import ApprovalService, accept_sugge
 from faro_engine.agents.framework.autonomy import AutonomyPolicy
 from faro_engine.agents.framework.spec import GraphBuilder
 from faro_engine.agents.site_summary import graph as summary_graph
-from faro_engine.agents.site_summary.estimate import planned_calls
+from faro_engine.agents.site_summary.estimate import planned_calls, write_input_bound
 from faro_engine.agents.site_summary.spec import SPEC
+from faro_engine.agents.site_summary.state import SiteSummaryState
 from faro_engine.agents.site_summary.tools import make_read_site_content
 from faro_engine.core.audit import AuditLog
 from faro_engine.core.db.database import open_profile_database
@@ -33,6 +34,8 @@ from faro_engine.core.store.approvals import Decision
 from faro_engine.core.store.runs import NewRun
 from faro_engine.llm.client import LlmResult, LlmUsage
 from faro_engine.llm.fake import FakeFailure
+from faro_engine.llm.pricing import max_call_cost
+from faro_engine.sites.snapshot import ContentKind
 from tests.agents.site_summary.conftest import (
     ACTION,
     CLASSIFY,
@@ -50,8 +53,9 @@ from tests.db.helpers import TEST_PROFILE_ID, key
 from tests.fakes.agents import Gate
 from tests.fakes.llm import FAKE_KEYS, FakeLLM, FakeReply
 from tests.fakes.site_reader import FakeSiteReader, snapshot_of
-from tests.jobs.world import SITE, eventually, run_id, seed
+from tests.jobs.world import SITE, eventually, run_id, seed, spend
 
+PER_KIND = 40
 NODES = ["read_site", "classify_content", "write_summary", "propose_save"]
 EMPTY_RESULT = LlmResult(
     text=None,
@@ -346,6 +350,90 @@ async def test_pausa_a_mitad_y_sigue_desde_su_paso(database: Any) -> None:
         await world.jobs.shutdown()
 
 
+CHINESE_ITEMS: list[tuple[ContentKind, str, str]] = [
+    ("product", "儿童纯棉睡衣套装" * 5, f"/producto/pijama-{i}") for i in range(PER_KIND)
+]
+CHINESE_ITEMS += [
+    ("post", "如何为宝宝选择合适的尺码" * 3, f"/blog/talla-{i}") for i in range(PER_KIND)
+]
+
+
+async def test_reanudada_otro_dia_con_tope_casi_agotado_y_sitio_en_chino(database: Any) -> None:
+    """Condición T9-C1: una tarea ya empezada no vuelve a comprobar su máximo completo al
+    reanudarse; cada llamada reserva con la cota del estimado (un token por byte), no con
+    `ceil(caracteres / 3)`, y da `llm.daily_limit_reached` antes de llamar al modelo."""
+    gate = Gate()
+
+    async def before() -> None:
+        await gate(None)  # type: ignore[arg-type]
+
+    snapshot = snapshot_of(CHINESE_ITEMS, site_name="宝宝服装店")
+    reader = FakeSiteReader(snapshots={SITE: snapshot}, before=before)
+    world = summary_world(database, reader=reader)
+    try:
+        run = await launch(world)
+        await gate.entered.wait()
+        world.run_control(paused=True)
+        gate.opened.set()
+        await world.until(run, "paused")
+        assert world.run(run).provider == "anthropic"
+
+        # Otro día: casi todo el tope ya gastado por otras tareas.
+        world.clock.now += timedelta(days=1)
+        day = world.llm.today()
+        model = world.llm.catalog.model_for("anthropic", "economy")
+        classify = planned_calls(len(CHINESE_ITEMS))[0]
+        by_chars = max_call_cost(model, classify.max_prompt_chars, classify.max_output_tokens, day)
+        by_bound = max_call_cost(
+            model,
+            classify.max_prompt_chars,
+            classify.max_output_tokens,
+            day,
+            input_tokens_bound=classify.input_tokens_bound,
+        )
+        # El prompt real en chino tiene muchos más bytes que `caracteres / 3` tokens: con la
+        # reserva de antes la llamada habría salido aunque podía pasar el tope.
+        state = SiteSummaryState(
+            site_name="宝宝服装店",
+            items=[{"kind": k, "title": t, "url": u} for k, t, u in CHINESE_ITEMS],
+            counts={"pages": 0, "posts": PER_KIND, "products": PER_KIND},
+        )
+        items = summary_graph.items_block(state)
+        assert SPEC.prompts is not None
+        request = SPEC.prompts.render(
+            CLASSIFY,
+            1,
+            instructions_vars={"n_items": len(items.items)},
+            data=[summary_graph.site_block(state), items],
+        ).request()
+        assert request.prompt_bytes > 2 * -(-request.prompt_chars // 3)
+        assert (
+            max_call_cost(model, request.prompt_chars, request.max_output_tokens, day) <= by_chars
+        )
+        assert by_chars < by_bound
+        limit = 1_000_000
+        spend(world.database, limit - by_chars, day=day.isoformat(), limit=limit)
+
+        world.run_control()
+        await world.until(run, "failed")
+        assert world.run(run).error_code == "llm.daily_limit_reached"
+        assert world.prompt_ids() == []  # nunca llegó al modelo
+        assert world.secrets.requests == []
+        classify_steps = [s for s in world.steps(run) if s.node == "classify_content"]
+        assert [(s.status, s.error_code) for s in classify_steps] == [
+            ("failed", "llm.daily_limit_reached")
+        ]
+        [(spent,)] = world.database.run_sync(
+            lambda c: c.execute(
+                "SELECT cost_micros FROM credential_usage WHERE usage_date = ?",
+                (day.isoformat(),),
+            ).fetchall()
+        )
+        assert spent == limit - by_chars
+    finally:
+        await world.jobs.shutdown()
+
+
 async def test_interrupt_sobrevive_al_reinicio_del_motor(tmp_path: Path) -> None:
     first_db = open_profile_database(tmp_path, TEST_PROFILE_ID, key())
     seed(first_db)
@@ -531,7 +619,10 @@ def _spec_with_spending_proposal(how: str) -> Any:
 
         async def spending_propose(state: Any, n: Any) -> dict[str, Any]:
             if how == "llm":
-                await n.call_llm(n.render(WRITE, 1, data=[summary_graph.site_block(state)]))
+                await n.call_llm(
+                    n.render(WRITE, 1, data=[summary_graph.site_block(state)]),
+                    input_tokens_bound=write_input_bound(),
+                )
             elif how == "tool_calls":
                 await n.run_tool_calls(EMPTY_RESULT, [tool])
             else:

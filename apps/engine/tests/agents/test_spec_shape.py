@@ -4,12 +4,16 @@ bloqueos del nodo que propone en `NodeContext`, `ToolRunner` y `LlmService`."""
 
 from __future__ import annotations
 
+import ast
+import inspect
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 from langgraph.graph import END, START
 
+import faro_engine.agents
 from faro_engine.agents import registry
 from faro_engine.agents.framework import spec as spec_module
 from faro_engine.agents.framework.graph import NodeContext
@@ -23,6 +27,8 @@ from faro_engine.llm.catalog import default_catalog
 from faro_engine.llm.service import LlmService
 from tests.fakes.graph_agent import FakeNotes, make_spec, notes_tool
 from tests.fakes.llm import FakeLLM, FakeSecrets, make_request
+
+AGENTS_DIR = Path(faro_engine.agents.__file__).resolve().parent
 
 CTX = RunContext(
     run_id="01920000-0000-7000-8000-000000000001",
@@ -132,9 +138,41 @@ def _context(kind: str) -> NodeContext:
 async def test_el_nodo_que_propone_no_llama_al_modelo() -> None:
     n = _context("approval")
     with pytest.raises(NodeKindError):
-        await n.call_llm(cast(Any, None))
+        await n.call_llm(cast(Any, None), input_tokens_bound=1)
     with pytest.raises(NodeKindError):
         await n.run_tool_calls(cast(Any, None), [])
+
+
+def test_call_llm_exige_la_cota_de_entrada() -> None:
+    """Revisión de T14, B1: `input_tokens_bound` es obligatoria (sin valor por defecto) en
+    `NodeContext.call_llm`: un agente no puede llamar al modelo sin la cota de su
+    estimado."""
+    param = inspect.signature(NodeContext.call_llm).parameters["input_tokens_bound"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default is inspect.Parameter.empty
+    assert param.annotation in (int, "int")
+
+
+def test_toda_llamada_de_agente_pasa_la_cota_de_entrada() -> None:
+    """Revisión de T14, B1: cada `call_llm(...)` de los agentes del producto
+    (`faro_engine/agents`) pasa `input_tokens_bound` (la misma cota que su `PlannedCall`)."""
+    calls: list[str] = []
+    missing: list[str] = []
+    for path in sorted(AGENTS_DIR.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if name != "call_llm":
+                continue
+            where = f"{path.relative_to(AGENTS_DIR)}:{node.lineno}"
+            calls.append(where)
+            if not any(kw.arg == "input_tokens_bound" for kw in node.keywords):
+                missing.append(where)
+    assert calls, "no se encontró ninguna llamada a call_llm"
+    assert missing == [], f"llamadas a call_llm sin input_tokens_bound: {missing}"
 
 
 async def test_solo_el_nodo_que_propone_puede_proponer() -> None:

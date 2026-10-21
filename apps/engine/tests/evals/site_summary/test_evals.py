@@ -117,13 +117,24 @@ async def test_costo_dentro_del_estimado(case: dict[str, Any], database: Databas
         assert abs(armed - expected) <= TOLERANCE * expected, (prompt_id, armed, expected)
         template = PROMPTS.template(prompt_id, 1)
         assert case["recorded"][name]["tokens_out"] <= template.max_output_tokens
-        # Coherencia: lo que reserva `LlmService` cabe en lo que reservó el estimado.
+        # Coherencia: lo que reserva `LlmService` (con la cota que pasa el nodo, T9-C1)
+        # cabe en lo que reservó el estimado.
         assert prompt_chars(call) <= planned.max_prompt_chars
         for provider in ("anthropic", "openai", "gemini"):
             model = catalog.model_for(provider, tier_for(planned.task_kind))
-            reserved = max_call_cost(model, prompt_chars(call), template.max_output_tokens, DAY)
+            reserved = max_call_cost(
+                model,
+                prompt_chars(call),
+                template.max_output_tokens,
+                DAY,
+                input_tokens_bound=planned.input_tokens_bound,
+            )
             planned_max = max_call_cost(
-                model, 3 * planned.max_input_tokens, planned.max_output_tokens, DAY
+                model,
+                planned.max_prompt_chars,
+                planned.max_output_tokens,
+                DAY,
+                input_tokens_bound=planned.input_tokens_bound,
             )
             assert reserved <= planned_max
     record = result.run
@@ -213,10 +224,13 @@ def test_t6_c3_bloques_al_tope_en_chino_arabe_y_emojis(script: str) -> None:
         raw = sum(len(content.encode("utf-8")) for content in contents)
         assert chars <= planned.max_prompt_chars
         assert real <= raw <= planned.max_input_tokens
+        # T9-C1: el nodo pasa la cota y la petición la acepta (nunca por debajo de los bytes).
+        assert planned.input_tokens_bound is not None
+        assert rendered.request(input_tokens_bound=planned.input_tokens_bound).prompt_bytes == raw
     contents = [message.content for message in classify.messages]
     real = sum(count_tokens(content) for content in contents)
     armed = math.ceil(sum(len(content) for content in contents) / 3)
-    assert real / armed >= MIN_FACTOR[script]  # `LlmService` se quedaría corto…
+    assert real / armed >= MIN_FACTOR[script]  # `ceil(caracteres / 3)` se quedaría corto…
     assert real <= classify_call.max_input_tokens  # …el máximo del agente no
 
 

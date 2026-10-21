@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 - **No uses `executescript`**: hace `COMMIT` implícito y rompe la atomicidad. Separa sentencias con `sqlite3.complete_statement`.
 - Si el `checksum` de una migración ya aplicada no coincide, el motor no arranca la base (`db.migration_tampered`). El checksum es el sha256 del archivo **con finales de línea normalizados a LF** (así un checkout con CRLF en Windows no parece alterado).
 - Antes de migrar: `PRAGMA wal_checkpoint(TRUNCATE)`, cerrar conexiones y copiar el `.db` a `backups/` (la copia sigue cifrada con la misma llave; `core/db/backups.py`, se guardan las 3 últimas). Sin copia en una base recién creada (versión 0).
-- **Piso de compatibilidad** (`PRAGMA user_version`, ADR 0009 §5): lo fija el ejecutor, no el `.sql`, desde `COMPATIBILITY_FLOORS` de `core/db/migrations.py` (hoy `{1: 1}`). Una app que encuentra migraciones que no conoce: si `user_version` ≤ su última migración, abre sin migrar ni copiar y marca `newer_schema`; si es mayor, `db.too_new`. Subir el piso rompe la compatibilidad hacia atrás y requiere ADR.
+- **Piso de compatibilidad** (`PRAGMA user_version`, ADR 0009 §5): lo fija el ejecutor, no el `.sql`, desde `COMPATIBILITY_FLOORS` de `core/db/migrations.py` (hoy `{1: 1, 2: 1}`: la 0002 solo agrega tablas, así que una app de F1a abre la base migrada con `newer_schema`). Una app que encuentra migraciones que no conoce: si `user_version` ≤ su última migración, abre sin migrar ni copiar y marca `newer_schema`; si es mayor, `db.too_new`. Subir el piso rompe la compatibilidad hacia atrás y requiere ADR.
 - `plan()` solo lee; `apply()` escribe; la copia de seguridad la hace quien los llama (`database.py`).
 
 Migraciones existentes:
@@ -82,8 +82,16 @@ Migraciones existentes:
 | Versión | Archivo | Contenido | Piso |
 | --- | --- | --- | --- |
 | 1 | `0001_initial.sql` (F1a) | `sites` (URL única normalizada), `site_connections` (`kind = 'wp_plugin'`, `token_sha256`, `secret_ref`, `status` `active`/`revoked`, metadatos y conteos; `ON DELETE CASCADE`), `audit_log` (sin clave foránea a `sites`, solo se inserta) | 1 |
+| 2 | `0002_agents.sql` (F1b T4) | `schedules` (única por agente y sitio), `agent_runs` (cola y tareas; `id` = `thread_id` de LangGraph = `run_id` de la concesión), `agent_steps` (`idempotency_key` única, `secret_ref` solo `llm/*`), `approvals` (`idempotency_key` única; `CHECK` que impide que una regla decida algo que no sea `internal`), `autonomy_rules` (única por agente sin sitio y por agente y sitio), `credential_usage` (gasto por `secret_ref` y día), `credential_limits`, `settings`, `site_summaries`, `agent_checkpoints` y `agent_checkpoint_writes` | 1 |
 
-No hay tabla `organizations`: se añadirá cuando se use (columna `NULL`, regla 3). Fixture de la versión 1 para probar la 2: `tests/fixtures/db/v0001.sql`.
+No hay tabla `organizations`: se añadirá cuando se use (columna `NULL`, regla 3). Fixtures para probar la migración siguiente sobre datos: `tests/fixtures/db/v0001.sql` y `v0002.sql`.
+
+Notas de la 0002:
+- **Excepción consciente** a "clave primaria `id`": las dos tablas de checkpoints usan la clave compuesta que espera LangGraph (`FaroCheckpointSaver`, skill `agentes-langgraph`).
+- Ninguna tabla guarda valores de secretos, prompts completos ni respuestas crudas del proveedor: solo `secret_ref`, identificadores de prompt, tokens y micros. `agent_runs.result` y `approvals.payload` son JSON validado por el esquema del agente o de la acción, siempre texto plano.
+- Dinero de la IA en `*_micros` con `currency = 'USD'` (`CHECK`).
+- Cambiar el `CHECK` de `approvals` (reglas para `publish`/`spend`, F4/F5) exige una migración nueva: la 0002 ya está publicada.
+- Repositorios en `faro_engine/core/store/` (`runs`, `approvals`, `autonomy_rules`, `schedules`, `checkpoints`, `credentials`, `settings`, `site_summaries`, `run_control` para las operaciones que tocan varias tablas en una transacción). Las transiciones de estado son `UPDATE … WHERE status = ?` (comparar e intercambiar).
 
 ## Reglas
 

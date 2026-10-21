@@ -2,8 +2,8 @@
 
 - **Fecha:** 2026-10-05
 - **Autor:** arquitecto
-- **Estado:** aprobada por el usuario (2026-10-05)
-- **ADR nuevos (propuestos):** [0014](../adr/0014-tareas-de-agentes-en-el-protocolo-nucleo-motor.md) (concesiones por ejecución, pausa global y eventos en vivo), [0015](../adr/0015-capa-de-ia-y-motor-de-agentes.md) (LiteLLM, LangGraph, APScheduler, checkpoints, programador, contenido remoto como datos), [0016](../adr/0016-autonomia-guardarrailes-y-aprobaciones.md) (autonomía, guardarraíles y aprobaciones)
+- **Estado:** implementada (2026-10-20). Historial: aprobada (2026-10-05, por el usuario) → implementada (2026-10-20, T1–T13 integradas en los PR #31 a #60; cierre T14). Las diferencias entre este documento y el código están en §13 y lo que queda abierto en §12. Verificación manual: pendiente del usuario ([lista manual](../qa/2026-10-14-f1b-verificacion-manual.md); T10 recorrió el flujo con `--fake-llm` el 2026-10-13).
+- **ADR nuevos (aceptados y actualizados en el cierre):** [0014](../adr/0014-tareas-de-agentes-en-el-protocolo-nucleo-motor.md) (concesiones por ejecución, pausa global y eventos en vivo), [0015](../adr/0015-capa-de-ia-y-motor-de-agentes.md) (LiteLLM, LangGraph, APScheduler, checkpoints, programador, contenido remoto como datos), [0016](../adr/0016-autonomia-guardarrailes-y-aprobaciones.md) (autonomía, guardarraíles y aprobaciones)
 - **ADR anteriores que aplican:** 0002 (errores), 0003 (prueba de claves en el núcleo), 0005 (CI pública), 0006 (CSP), 0007 (paleta: la IA es **azul**, nunca morado), 0009 (base cifrada), 0010 (protocolo y concesiones), 0012 (red saliente), 0013 (logs)
 - **Parte de F1a que se retoma:** pendiente §12.2-3 (auditoría fuera del hilo de stdin) y §12.4-20/21 (concesiones de tareas largas y contenido remoto como datos, adelantados de F2 a F1b). La prueba extremo a extremo (§12.4-19) pasa a F1c (§2.3).
 
@@ -457,10 +457,12 @@ interface SiteSummaryOut { site_id: string; summary: SiteSummaryV1 | null; run_i
 
 | Comando | Argumentos | Devuelve | Errores |
 | --- | --- | --- | --- |
-| `agents_pause_all` | — | `{paused: true, changed_at: string}` | `agents.control_unavailable` (no se pudo guardar el estado; la pausa en memoria **sí** se aplica) |
-| `agents_resume_all` | — | `{paused: false, changed_at: string}` | `agents.control_unavailable` (no reanuda) |
-| `agents_control_state` | — | `{paused: boolean, changed_at: string \| null}` | — |
+| `agents_pause_all` | — | `{paused: true, changed_at: string, saved: boolean}` | `agents.control_unavailable` (no se pudo guardar el estado; la pausa en memoria **sí** se aplica) |
+| `agents_resume_all` | — | `{paused: false, changed_at: string, saved: boolean}` | `agents.control_unavailable` (no reanuda) |
+| `agents_control_state` | — | `{paused: boolean, changed_at: string \| null, saved: boolean}` | — |
 | `engine_call` | sin cambios | — | — |
+
+`saved` (añadido en T14, revisión de seguridad de T10): `false` solo mientras una pausa está aplicada en memoria sin guardar en `agents-control.json` (si se cierra Faro, se pierde); la interfaz lo lee de `agents_control_state` para mantener el aviso tras recargar la ventana.
 
 **Evento** `engine://agents` (núcleo → ventana `main`): la carga de `agent_activity` sin `event` (§5.1). No hay evento para el estado de pausa: lo devuelven los comandos.
 
@@ -475,7 +477,8 @@ interface SiteSummaryOut { site_id: string; summary: SiteSummaryV1 | null; run_i
 | `code` | Mensaje |
 | --- | --- |
 | `agents.paused` | Los agentes están en pausa. Reanúdalos para empezar. |
-| `agents.control_unavailable` | No pudimos guardar el estado de los agentes. Reinicia Faro; si se repite, escríbenos. |
+| `agents.control_unavailable` | No pudimos guardar el estado de los agentes. Intenta de nuevo. Si cierras Faro antes, una pausa sin guardar se pierde y los agentes vuelven a trabajar. (Texto cambiado en T14: reiniciar Faro deshacía la pausa sin guardar.) |
+| `agents.grant_rate_limited` | Los agentes empezaron muchas tareas seguidas. Esta seguirá sola en un minuto. (T13) |
 | `agent.unknown` | Ese agente no existe en esta versión de Faro. |
 | `agent.site_required` | Elige un sitio conectado para este agente. |
 | `agent.site_not_active` | Ese sitio está desconectado. Vuelve a conectarlo para que el agente pueda leerlo. |
@@ -504,6 +507,7 @@ interface SiteSummaryOut { site_id: string; summary: SiteSummaryV1 | null; run_i
 | `approval.not_found` | No encontramos esa propuesta. |
 | `approval.already_decided` | Esta propuesta ya se decidió. |
 | `approval.expired` | Esta propuesta caducó. Lanza el agente de nuevo. |
+| `approval.not_ready` | Esta propuesta aún se está preparando. Intenta de nuevo en unos segundos. (T8, 409) |
 | `autonomy.invalid_level` | Elige uno de los niveles de la lista. |
 | `autonomy.rule_not_found` | Esa regla ya no existe. |
 | `autonomy.default_rule` | La regla general no se puede quitar, solo cambiar. |
@@ -511,6 +515,8 @@ interface SiteSummaryOut { site_id: string; summary: SiteSummaryV1 | null; run_i
 | `schedule.duplicate` | Ya hay una programación de este agente para ese sitio. |
 | `schedule.not_found` | Esa programación ya no existe. |
 | `tool.limit_reached` | El agente llegó al máximo de consultas de esta tarea. |
+| `tool.invalid_arguments` | El agente pidió una consulta que no es válida y se detuvo. Lánzalo de nuevo. (T8) |
+| `tool.timeout` | Una consulta del agente tardó demasiado. Intenta de nuevo en unos minutos. (T8) |
 
 ---
 
@@ -731,8 +737,8 @@ Con **`FARO_FAKE_LLM=1`** salvo donde se indica **(real)**, que usa la clave del
 10. Cancelar una tarea en cola y una que espera OK.
 11. Desconectar el sitio desde wp-admin y lanzar: la tarea falla con el mensaje de sitio desconectado.
 12. Bajar el límite al mínimo y lanzar varias veces con `--fake-llm` (precio alto de prueba): al llegar al tope, "Llegaste al límite de gasto de hoy…" y el chip en Claves de IA.
-13. **(real)** Reemplazar la clave por una inválida (sin probarla) o borrarla y lanzar: mensaje `llm.invalid_key` o `llm.no_key`.
-14. Matar el proceso del motor durante una tarea: el núcleo lo reinicia y la tarea se retoma sola.
+13. **(real)** Reemplazar la clave por una inválida (sin probarla) o borrarla y lanzar: mensaje `llm.invalid_key` o `llm.no_key`. (Nota de T12: la Bóveda prueba cada clave antes de guardarla, así que este paso se hace **borrando** la clave (`llm.no_key`) o **revocándola** en el panel del proveedor (`llm.invalid_key`).)
+14. Matar el proceso del motor durante una tarea: el núcleo lo reinicia y la tarea se retoma sola. (Nota de T12: con IA simulada la tarea dura uno o dos segundos y casi no da tiempo; mejor con la clave real, con la que tarda de 10 a 40 s.)
 15. `faro.AAAA-MM-DD.log` no contiene la clave de IA, prompts, títulos del sitio ni el resumen (buscar los valores conocidos).
 16. Tema claro y oscuro: azul solo en lo de IA, turquesa en acciones, **Pausar agentes** en `critical`, nada más oscuro que `#333333`.
 
@@ -748,3 +754,135 @@ Con **`FARO_FAKE_LLM=1`** salvo donde se indica **(real)**, que usa la clave del
 6. **Las propuestas caducan a los 14 días.** Más adelante podría haber planes premium que extiendan esa ventana: el valor no se fija en el código, sale de una constante o ajuste (`approvals.expiry_days`) para poder cambiarlo por plan.
 7. **Orquestador determinista** (sin LLM que planifique) hasta que haya varios agentes.
 8. **Plan B de LiteLLM autorizado:** si LiteLLM no cumple los criterios de ADR 0015 §6, se pasa al adaptador propio sin volver a consultar (se informa en el PR de T2).
+
+---
+
+## 12. Pendientes que deja F1b
+
+Actualizado en el cierre T14 (2026-10-20). Cada punto indica su agente y su origen. Ninguno bloquea el cierre: la revisión de seguridad de T13 terminó **APROBADO** sin hallazgos abiertos; lo de release no aplica hasta empaquetar la app, y lo manual depende del usuario.
+
+**Hechos en T14** (en el mismo PR del cierre, ya no son pendientes):
+- **T9-C1** (`ingeniero-ia`): la reserva del tope diario por llamada usa la cota segura de tokens del agente (`input_tokens_bound`, un token por byte), no `ceil(caracteres/3)` (§13, punto 10).
+- **T10** (`tauri-rust` + `frontend-react`): `agents.control_unavailable` ya no pide reiniciar y `agents_control_state` devuelve `saved`, así que el aviso de pausa no guardada sobrevive a recargar la ventana (§5.3, §5.5 y §13, puntos 2, 3 y 29).
+
+### 12.1 Antes de dar F1b por cerrada del todo (usuario)
+
+1. **Verificación manual** de [docs/qa/2026-10-14-f1b-verificacion-manual.md](../qa/2026-10-14-f1b-verificacion-manual.md) en Windows 11: pasos 1–16 y mediciones M1–M6 (M6 opcional), sin hacer. T10 recorrió el flujo con `--fake-llm` el 2026-10-13. — Usuario. Origen: T12.
+2. **Criterio 8 de ADR 0015 con OpenAI y Gemini:** `gpt-6.1-sol` devolvió `insufficient_quota` (sin saldo en la cuenta de prueba) y Gemini sigue sin comprobar. Anthropic y `gpt-6-luna` están comprobados. — Usuario. Origen: T2 §8, T6 §5.
+3. **HTTPS con el almacén del sistema en el equipo del usuario:** `manual_tls_check.py` y un WordPress real por HTTPS. — Usuario. Origen: [T2b](../qa/2026-10-06-f1b-t2b-truststore.md) §4.
+4. **Revisar las mediciones M1 y M2** (tokens reales por llamada, con razonamiento interno, frente a `max_output_tokens` 800/1 200 y frente a la cota de entrada reservada). Si `tokens_out` llega al tope o aparece `llm.bad_output`, versión 2 del prompt y cambio de spec (este documento, §4.4). — `ingeniero-ia`, con los datos del usuario. Origen: T9 decisión 13, condición T6-C3.
+
+### 12.2 Código (por agente)
+
+5. **Herramientas ofrecidas al modelo:** antes de habilitarlas en el adaptador real (hoy `LiteLlmClient` las rechaza), una prueba por proveedor con `respx` del formato de herramientas de LiteLLM. — `ingeniero-ia`. Origen: T6-C4 (resto).
+6. **El trabajador espera ~60 s** cuando el núcleo responde `agents.grant_rate_limited` y en ese tiempo no procesa otras tareas, tampoco de otro tipo de agente. Con un solo agente da igual; cuando haya más de uno, que pase a la siguiente tarea de otro tipo. — `motor-python`. Origen: T13 §5 y §6.
+7. **Liberar las tareas `daily_limit`** cuando el usuario sube el tope (hoy esperan al día siguiente) y **mostrar en la actividad los disparos programados que se saltan** (hoy solo `jobs.schedule_skipped` en el log). — `motor-python` + `frontend-react`. Origen: T7 §8 (mejoras).
+8. **Podar los checkpoints de una tarea cancelada** desde la ruta mientras no corría (hoy solo poda el trabajador al terminar). — `motor-python`. Origen: T8 §7 (mejora).
+9. **`strict_modules`:** añadir al 95 % `llm/client.py`, `llm/fake.py`, `llm/routing.py`, `llm/settings.py`, `llm/usage.py` y las rutas de agentes (`core/routes/agents.py`, `approvals.py`, `autonomy.py`, `llm.py`, `schedules.py`). Es un cambio de umbral: `arquitecto` lo aprueba y lo hace `devops-release`. — Origen: propuesta de T11.
+10. **Traducciones** `en` y `pt-BR` de las claves nuevas de F1b (siguen con `[TODO] `). — `frontend-react`. Origen: T10 §10.
+11. **Accesibilidad de la actividad:** con la medición M5 (NVDA) de la lista manual, decidir si `aria-live` anuncia cada cambio de costo o solo los cambios de estado (lo segundo es un cambio de spec). — `frontend-react` + `arquitecto`. Origen: T10 §10.
+
+### 12.3 Release (`devops-release`, con `tauri-rust` donde toca el núcleo)
+
+12. Conectar `SidecarLauncher` (ya parte de `engine_command`, sin modos de desarrollo) con `externalBin` y la verificación de integridad; hoy release sigue con `UnavailableLauncher`. — Origen: T11, F1a §12.4-27.
+13. **T11-C1:** carpeta de instalación no escribible por el usuario (`perMachine`) o manifiesto firmado de toda la carpeta del motor. Hasta entonces T5-3 y T2-14 quedan parciales. — Origen: T11 §10.
+14. **T12-N1:** lista permitida de las entradas `s` del CArchive del motor. — Origen: T12 §10.
+15. Comprobación del contenido (PYZ sin `sitecustomize`, `manual_*`, `respx`, `trustme`, `pytest`) sobre el **artefacto firmado**, no solo en el humo. — Origen: T11-C3, T13 §4.
+16. Build sin red a nivel del sistema operativo (hoy solo con `sitecustomize`, sin proxies y `NO_PROXY=*`). — Origen: T11-C3.
+17. Excluir del paquete el proxy de LiteLLM (`--exclude-module litellm.proxy.proxy_server`, `litellm.proxy.prisma_migration` y lo que se pueda). — Origen: T11 §10.4.
+18. Archivo de avisos de terceros con las licencias de las dependencias nuevas. — Origen: T2 §3.
+19. Que el build de release no restaure cachés escritas por un PR. — Origen: T13 §4.
+
+### 12.4 Por fase
+
+**Fase de macOS (`tauri-rust`)**
+20. **T5-6:** `KeyringStore::exists` lee hoy el valor en macOS (`keyring` 3.6); puede mostrar el diálogo del llavero en cada `agents_control`. Consultar solo atributos con `security-framework` o mantener un índice no secreto de proveedores con clave. — Origen: [condición 6 de T5](../qa/2026-10-08-f1b-t5-condiciones.md). Además (hallazgo B3 de la revisión de T14): en Unix, `fsync` de la carpeta tras el `rename` de `agents-control.json` en `agents/control.rs::write_state`, para que una pausa con `saved: true` sobreviva a un corte de luz. En Windows no aplica.
+
+**F1c**
+21. Pruebas extremo a extremo automáticas (WebdriverIO + tauri-driver), con el flujo de agentes y `--fake-llm`. — `qa-pruebas`. Origen: F1a §12.4-19, §2.3.
+
+**F4 (publicación)**
+22. Esquema de `limits` por acción (validado en la ruta y en `set_rule`) antes de exponer el nivel 2; quitar `LIMITS_CONFIGURABLE = False`. — Origen: condición 4 de T4.
+23. Reglas que decidan `publish`/`spend`: decisión del usuario, `RULE_DECIDABLE_SIDE_EFFECTS` y una migración nueva que cambie el `CHECK` de `approvals`. — Origen: condición 5 de T4.
+24. Que el ejecutor de acciones mire `cancel_requested` antes de ejecutar una acción con efectos externos. — Origen: revisión de T8.
+25. Editar una propuesta (`edited_payload` o versión de `payload`) y deshacer con `previous_value`. — Origen: ADR 0016, consecuencias.
+
+**F5 (Google Ads)**
+26. Caducidad de las aprobaciones `approved` sin ejecutar (hoy solo caducan las `pending`). — Origen: condición 3 de T4, ADR 0016 (actualización del cierre).
+
+**Arrastrados de F1a**
+27. Siguen abiertos los puntos de [F1a §12](2026-09-29-f1a-conexion-wordpress.md) que F1b no tocaba (2, 4–18, 22–35). El 3 (auditoría fuera del hilo de stdin) se cerró en T5; el 20 (concesiones por tarea) y el 21 (contenido remoto como datos) se cerraron con ADR 0014 y ADR 0015 §5; el 19 pasa a F1c (punto 21).
+
+**Límites conocidos, sin acción** (T13 §4): `GrantGuard::drop` borra la concesión por clave sin mirar la serie (solo afecta a la del propio motor); con la cola de 32 del canal de secretos llena, un `run_grant_release` se descarta y la concesión vive hasta caducar (900 s como máximo).
+
+---
+
+## 13. Diferencias con lo implementado (cierre T14, 2026-10-20)
+
+Lo construido cumple la spec salvo estas diferencias. Las de protocolo y secretos también están en ADR 0010 y 0014; las de la capa de IA y el marco, en ADR 0015; las de autonomía y aprobaciones, en ADR 0016 (actualizaciones del cierre).
+
+### 13.1 Protocolo, núcleo y secretos
+
+| # | Tema | Spec / ADR original | Implementado | Código |
+| --- | --- | --- | --- | --- |
+| 1 | Orden de la pausa | ADR 0014 §2: guardar → revocar → rechazar → avisar → auditar | Revocar en memoria y rechazar con `agents.paused` → avisar al motor → guardar `agents-control.json` → auditar. La pausa nunca espera al disco (revisión de T5, ratificado en T14). | `src-tauri/src/agents/control.rs` |
+| 2 | `saved` en el estado de la pausa (**hecho en T14**) | §5.3: `{paused, changed_at}` | `{paused, changed_at, saved}`: `saved = false` mientras una pausa está aplicada sin guardar; la interfaz lo lee para mantener el aviso tras recargar. | `agents/control.rs`, `commands/agents.rs` |
+| 3 | Texto de `agents.control_unavailable` (**hecho en T14**) | §5.5: "Reinicia Faro…" | "Intenta de nuevo. Si cierras Faro antes, una pausa sin guardar se pierde…": reiniciar deshacía la pausa. | `locales/*/errors.json`, `error.rs` |
+| 4 | Ritmo de concesiones | No existía | Cubo por tipo de agente (10 seguidas, una por minuto) al final de `decide_run_grant` → `agents.grant_rate_limited` (auditoría `agent.grant_denied`, `reason = rate_limited`); en el motor la tarea vuelve a la cola o queda `paused` (`grant_rate_limited`), nunca falla. | `secrets/decisions.rs`, `run_grants.rs`; `core/jobs/worker.py` |
+| 5 | Líneas de decisión provocadas por el motor | No existía | `secret.used`: 3 por (concesión, ref, op) y un resumen con `count`/`errors`; tope común de 200 líneas que recupera una cada 15 s ("decisiones del motor sin registrar"). `capped.rs` lee solo el `target` de nivel superior. | `secrets/decisions.rs`, `logging/capped.rs` |
+| 6 | Desbordamiento del canal del motor | ADR 0014 no lo trataba | `StdinWriter` con plazo de atasco de 10 s (reinicia el motor); cola de auditoría del núcleo acotada a 500 con descarte por prioridad y `audit.dropped`; rechazos agregados por (acción, motivo) con `details.count`; log con tope de 64 MiB/día y 16 MiB reservados a decisiones del núcleo. | `engine/supervisor.rs`, `secrets/audit.rs`, `logging/` |
+| 7 | `agent_activity` | Esquema cerrado | Además, se descarta si `agent` no está en `agent-grants.json`. | `agents/activity.rs` |
+| 8 | `SecretStore::exists` | Leer si hay clave | En Windows solo atributos; en macOS lee el valor en memoria que se borra (T5-6, pendiente §12). | `vault/store.rs` |
+| 9 | Concesiones y generación | — | Cada concesión lleva número de serie; `prepare` exige el mismo que vio `check_grant`. | `secrets/mod.rs` |
+
+### 13.2 Capa de IA
+
+| # | Tema | Spec / ADR original | Implementado | Código |
+| --- | --- | --- | --- | --- |
+| 10 | Reserva por llamada (**hecho en T14**, condición T9-C1) | §4.1 paso 3: `caracteres / 3` | La mayor entre `ceil(caracteres / 3)` y `LlmRequest.input_tokens_bound` (un token por byte UTF-8 del prompt más grande más la sobrecarga de la salida estructurada), que el nodo pasa (obligatoria) con la misma cota que usó el estimado; nunca por debajo de los bytes del prompt más el JSON del esquema y de las herramientas, que es lo que se reserva si una petición llega sin cota (revisión de T14, B1 y B2). | `llm/service.py`, `pricing.py`, `client.py`; `agents/framework/budget.py`; `site_summary/estimate.py` |
+| 11 | Hosts y endurecimiento | ADR 0015 §1: nunca `api_base` | `api_base` fijo al host oficial (`hardening.API_BASE`); variables obligatorias `LITELLM_MODE`, `LITELLM_LOCAL_MODEL_COST_MAP`, `LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS`, `CUSTOM_TIKTOKEN_CACHE_DIR` (`cl100k_base` incluido con SHA-256); el resto del entorno de LiteLLM y proveedores se borra. | `llm/hardening.py`, `llm/tiktoken/` |
+| 12 | Herramientas en el adaptador real | El marco puede ofrecerlas | `LiteLlmClient` rechaza toda llamada con herramientas; `site_summary` lee el sitio en un nodo. | `llm/litellm_client.py` |
+| 13 | Catálogo | Forma de §4.1 | Añade `long_context`, `price_changes` y `source`; modelos verificados el 2026-10-09: Anthropic `claude-haiku-5-5`/`claude-opus-5-5`, OpenAI `gpt-6-luna`/`gpt-6.1-sol`, Gemini `gemini-3.5-flash-lite`/`gemini-3.8-flash` (cambio de precio con fecha 2027-01-01). | `llm/models.json`, `catalog.py`, `pricing.py` |
+| 14 | Mapeo de errores | §4.1 | Además: 403 → `llm.invalid_key`; 400, 404 y redirecciones → `llm.provider_error`; TLS → `llm.unreachable`; `FAILED_PRECONDITION` de Gemini → `llm.insufficient_quota`; un intento sin respuesta cuenta su máximo. | `llm/errors.py`, `service.py` |
+| 15 | Orden de la llamada | §4.1 | `LlmClient.prepare()` valida modelo y salida antes de pedir la clave; un paso `approval` se rechaza antes de reservar (T8-C2). Con `--fake-llm`, `requires_key = False`. | `llm/client.py`, `service.py`, `fake.py` |
+| 16 | `FakeLLM` | `tests/fakes/llm.py` | Vive en `faro_engine/llm/fake.py` (lo usa `--fake-llm`) y `tests/fakes/llm.py` lo reexporta con `FakeSecrets`. Precio de prueba: US$25/US$125 por Mtok (máximo de `site_summary` US$2,29, bajo el tope de US$5). | `llm/fake.py` |
+
+### 13.3 Cola, marco y agente
+
+| # | Tema | Spec / ADR original | Implementado | Código |
+| --- | --- | --- | --- | --- |
+| 17 | Arranque y apagado | §4.3: `lifespan` o `run()`; gracia 10 s | `serve_with_jobs` en `run()` (uvicorn sigue con `lifespan="off"`); al apagar, 5 s para que pare el trabajador, 2 s para cancelarlo y `timeout_graceful_shutdown = 2`. | `core/jobs/runtime.py`, `__main__.py` |
+| 18 | Programador | APScheduler con `MemoryJobStore` | Solo trabajos `date` (el siguiente disparo); `next_occurrence` con `zoneinfo`, zona del sistema con `tzlocal` (dependencia directa); disparo imposible → `jobs.schedule_skipped`; el proveedor se fija al encolar. | `core/jobs/scheduler.py` |
+| 19 | `core/jobs/submit.py` | — | Existió en T7 y se sustituyó por `agents/framework/orchestrator.py` (T8). | — |
+| 20 | Decidir antes de tiempo | "Un error reintentable" | `approval.not_ready` (409). Códigos nuevos también: `tool.invalid_arguments`, `tool.timeout`, `agents.grant_rate_limited` (§5.5 al día). | `core/routes/approvals.py`, `agents/framework/tools.py` |
+| 21 | Nivel 0 | Sin decidir (skill: "verificar en T8") | Sin `interrupt`: la tarea termina `succeeded` con `result["suggestion"]`; `acceptAgentSuggestion` la reabre (`reopen_succeeded_run`) y solo corre el nodo ejecutor. | `core/store/runs.py`, `agents/framework/graph.py` |
+| 22 | `AgentSpec` y plantilla | `registry.py` | `agents/framework/spec.py` (reexportado por `registry`); el grafo se declara con `GraphBuilder` (`g.node`, `g.edge`, `g.branch`, `g.proposal`) y `GraphShape` lo valida sin importar LangGraph; LangGraph se carga con la primera tarea, en un hilo. | `agents/framework/spec.py`, `graph.py`, `agents/registry.py` |
+| 23 | Cancelación y finales | §4.3 | Una cancelación pedida gana sobre cualquier final que dejaría trabajo abierto (`waiting_approval`, `paused`, `queued`, `succeeded` con sugerencia); un apagado con cancelación pedida deja `cancelled`. Al fallar, las propuestas abiertas se cancelan (T8-C1). Tareas dependientes de una fallida → `cancelled` (`dependency_failed`). | `core/jobs/worker.py`, `queue.py`, `orchestrator.py` |
+| 24 | `site_summary`: lectura del sitio | §4.4: herramienta `read_site_content` | Nodo `read_site` que llama a la herramienta con `ToolRunner.invoke` (no se ofrece al modelo); `SitesService.snapshot` (una petición del token, `status` y 50 de cada tipo). | `agents/site_summary/`, `sites/service.py` (`snapshot`), `sites/reader.py` |
+| 25 | `site_summary`: estimado y salida | §4.4: `n = mín(150, total)`; caracteres / 3 | `n` = suma de mín(50) por tipo; máximo con un token por byte (Anthropic: típico US$0,015, máximo US$0,117); `ContentClassificationV1` como salida intermedia; `language` es el idioma del sitio y el resumen siempre en español. | `site_summary/estimate.py`, `schemas.py` |
+| 26 | `/health` | — | Añade `agents: {worker, consecutive_failures}`; el trabajador se recupera solo de un fallo inesperado con espera creciente. | `core/routes/health.py`, `core/jobs/worker.py` |
+
+### 13.4 Interfaz
+
+| # | Tema | Spec / ADR original | Implementado | Código |
+| --- | --- | --- | --- | --- |
+| 27 | Componentes | §4.6 | Además `SiteSummaryText` (resumen siempre como texto), `ui/switch.tsx`, `app/PauseAgentsButton.tsx`, `app/RouteError.tsx` (un error de sección no tumba la barra superior ni **Pausar agentes**) y `useRefetchWhenEngineReady` con reintento acotado. | `components/faro/`, `app/` |
+| 28 | Decisiones de T10 | — | Dinero con `Intl` ("0,12 US$"); "Listo · descartado" con `listApprovals?status=rejected`; botón de límite sin menú; acción desconocida solo descartable; `maxLevelFor` limita los niveles de Autonomía al máximo de las acciones del agente; identificadores desconocidos con textos genéricos. | `features/agents/`, `features/autonomy/`, `lib/format/money.ts` |
+| 29 | Pausa no guardada | §3.1: toast con el mensaje del `code` y el botón vuelve atrás | Si guardar la pausa falla, la pausa sí se aplicó: toast propio (`agentsControl.pauseNotSavedToast`) y aviso `critical` en la barra superior mientras `agents_control_state` diga `saved: false`, así que sobrevive a recargar la ventana (**hecho en T14**; en T10 era un indicador en memoria de la ventana, `pauseNotSaved.ts`, ya borrado). | `app/TopBar.tsx`, `features/agents/useAgentsControl.ts` (`usePauseNotSaved`) |
+
+### 13.5 Pruebas, CI y empaquetado
+
+| # | Tema | Spec / ADR original | Implementado | Código |
+| --- | --- | --- | --- | --- |
+| 30 | Bloqueo de red en pruebas | *Fixture* que bloquea conexiones | Gancho de auditoría de Python (PEP 578) en `tests/network_guard.py`, también DNS y DNS inverso; los procesos hijos lo heredan por un `sitecustomize` de pruebas (`tests/child_network_guard/`, `child_pythonpath`, archivo de intentos, `UnguardedChildError`). | `apps/engine/tests/` |
+| 31 | Humo del empaquetado | `bundle_smoke.py` | `bundle_smoke_build.py` con variantes `engine`/`full`/`base`, build sin red (`pyinstaller_offline/sitecustomize.py`, sin proxies, `NO_PROXY=*`), `hook-litellm.py` con lista permitida, lectura del PYZ del motor real; en verde en `windows-latest`. | `apps/engine/scripts/` |
+| 32 | `strict_modules` | 10 módulos | 71 módulos al 95 % (todo `core/jobs`, el marco y `site_summary`, la mayor parte de `llm/`); faltan los de §12 punto 9. CI: `test_strict_coverage.py` y `test_ci_workflows.py`. | `apps/engine/pyproject.toml` |
+| 33 | Evaluaciones | §9.6 | 9 casos de `site_summary` y 15 de inyección sin red; `report.py`; tokenizador `cl100k_base` local; `scripts/manual_site_summary_tokens.py` para medir con la clave real. | `tests/evals/`, `scripts/` |
+| 34 | Integración con wp-env | `pytest -m wp_env` | Solo en la CI (no se pudo ejecutar en el contenedor de T12). | `.github/workflows/` |
+
+### 13.6 Cierre (T14)
+
+| # | Tema | Implementado |
+| --- | --- | --- |
+| 35 | Skills | Actualizadas al código: `faro-arquitectura`, `contratos-api-local`, `llavero-y-cifrado`, `tauri-sidecar-python`, `migraciones-sqlite`, `pruebas-faro`, `sistema-diseno-faro`, `tauri-comandos-y-permisos`, `capa-llm`, `agentes-langgraph`, `herramientas-de-agente` y `prompts-y-evals` (dejan de ser "diseño de referencia"). |
+| 36 | ADR | 0014, 0015 y 0016 aceptados y actualizados con lo implementado; 0010 con los límites de T13. Condiciones 5 y 7 de T5 cerradas; cerrojo de T2b confirmado. |

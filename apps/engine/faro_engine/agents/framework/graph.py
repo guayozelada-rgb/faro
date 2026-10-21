@@ -148,13 +148,25 @@ class NodeContext:
         )
 
     async def call_llm(
-        self, prompt: RenderedPrompt, *, tools: Sequence[Tool[Any, Any]] = ()
+        self,
+        prompt: RenderedPrompt,
+        *,
+        tools: Sequence[Tool[Any, Any]] = (),
+        input_tokens_bound: int,
     ) -> LlmResult:
         """Llamada al modelo por `LlmService` (pausa, clave, presupuesto, tope, reintentos y
         registro en el paso). Solo se ofrecen herramientas de lectura (`tool_spec`). Nunca
-        desde el nodo que propone (`NodeKindError`, ver la cabecera del módulo)."""
+        desde el nodo que propone (`NodeKindError`, ver la cabecera del módulo).
+
+        `input_tokens_bound` (obligatoria): la misma cota de entrada que el `PlannedCall` de
+        esta llamada en el estimado del agente; `LlmService` reserva con ella del tope
+        diario (condición T9-C1). Sin ella, con chino o emojis `ceil(caracteres / 3)` se
+        quedaría corto (revisión de T14, B1); por debajo de los bytes del prompt, el esquema
+        y las herramientas, `LlmRequest` la rechaza."""
         self._not_in_proposal("llm")
-        request = prompt.request(tuple(tool_spec(tool) for tool in tools))
+        request = prompt.request(
+            tuple(tool_spec(tool) for tool in tools), input_tokens_bound=input_tokens_bound
+        )
         return await self.deps.llm.call(self.ctx, self.step, request)
 
     async def run_tool_calls(

@@ -5,9 +5,15 @@
   catálogo del día. Si el prompt pasa del umbral de contexto largo del modelo
   (`long_context.above_input_tokens`), toda la petición va con esos precios (así cobran
   Anthropic y OpenAI).
-- `max_call_cost`: **máximo** antes de llamar = `ceil(caracteres / 3)` x precio de entrada
-  + `max_output_tokens` x precio de salida. Para elegir los precios de contexto largo se
-  toma el peor caso (un token por carácter): el máximo no se queda corto por el umbral.
+- `max_input_tokens`: tokens de entrada máximos de una llamada = `ceil(caracteres / 3)` o,
+  si el agente da una cota (`input_tokens_bound`, un token por byte UTF-8 de su prompt más
+  grande más la sobrecarga de la salida estructurada), la mayor de las dos (condición T9-C1:
+  con chino o emojis `caracteres / 3` se queda hasta 5,5 veces corto).
+- `max_call_cost`: **máximo** antes de llamar = tokens de entrada máximos x precio de
+  entrada + `max_output_tokens` x precio de salida. Para elegir los precios de contexto
+  largo se toma el peor caso (un token por carácter, o la cota si es mayor): el máximo no
+  se queda corto por el umbral. Es el mismo cálculo para `LlmService` (lo que reserva del
+  tope diario) y para el estimado de cada agente (`agents/framework/budget.py`).
 
 Nunca `float` ni `Decimal`.
 """
@@ -37,6 +43,13 @@ def estimate_input_tokens(prompt_chars: int) -> int:
     return -(-prompt_chars // CHARS_PER_TOKEN_ESTIMATE)
 
 
+def max_input_tokens(prompt_chars: int, input_tokens_bound: int | None = None) -> int:
+    """Tokens de entrada máximos: `ceil(caracteres / 3)` o la cota del agente, la mayor."""
+    if input_tokens_bound is not None and input_tokens_bound < 0:
+        raise ValueError("la cota de entrada no puede ser negativa")
+    return max(estimate_input_tokens(prompt_chars), input_tokens_bound or 0)
+
+
 def prices_for(model: CatalogModel, day: date, input_tokens: int) -> Prices:
     """Precios de una petición con `input_tokens` de prompt ese día."""
     long = model.long_context
@@ -60,9 +73,17 @@ def call_cost(model: CatalogModel, usage: LlmUsage, day: date) -> int:
     return _cost(prices, usage.tokens_in, usage.tokens_out)
 
 
-def max_call_cost(model: CatalogModel, prompt_chars: int, max_output_tokens: int, day: date) -> int:
+def max_call_cost(
+    model: CatalogModel,
+    prompt_chars: int,
+    max_output_tokens: int,
+    day: date,
+    *,
+    input_tokens_bound: int | None = None,
+) -> int:
     """Máximo de una llamada antes de enviarla (lo que se reserva del tope diario)."""
     if max_output_tokens < 0:
         raise ValueError("max_output_tokens negativo")
-    prices = prices_for(model, day, prompt_chars)  # peor caso para el umbral
-    return _cost(prices, estimate_input_tokens(prompt_chars), max_output_tokens)
+    tokens_in = max_input_tokens(prompt_chars, input_tokens_bound)
+    prices = prices_for(model, day, max(prompt_chars, tokens_in))  # peor caso para el umbral
+    return _cost(prices, tokens_in, max_output_tokens)
