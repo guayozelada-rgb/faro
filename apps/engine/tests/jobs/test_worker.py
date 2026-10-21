@@ -252,7 +252,8 @@ async def test_renovar_con_el_nucleo_en_pausa_deja_la_tarea_en_pausa(world: JobW
     await world.add_run(R1)
     world.run_control()
     await eventually(lambda: "paused" in world.statuses(R1))
-    assert world.grants.releases[0] == (R1, "paused")
+    # La liberación va en un `finally` después de la transición: se espera, no se lee al vuelo.
+    await eventually(lambda: world.grants.releases[:1] == [(R1, "paused")])
     await eventually(status_is(world, R1, "succeeded"))  # sigue sin pausa en el motor
 
 
