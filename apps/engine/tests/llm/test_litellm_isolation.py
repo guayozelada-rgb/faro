@@ -51,6 +51,14 @@ def test_llamada_y_vaciado_de_cache_sin_red(provider: str) -> None:
     assert report["heap_dicts_with_key_after_flush"] == 0
 
 
+@pytest.mark.parametrize("provider", PROVIDERS)
+def test_no_carga_filelock_ni_huggingface_hub(provider: str) -> None:
+    """Justifica la excepción de filelock en pip-audit (ci.yml): si litellm empieza a cargarlos,
+    hay que revisar esa excepción con `revisor-seguridad`."""
+    assert probe("import_litellm").report["lock_modules"] == []
+    assert call(provider).report["lock_modules"] == []
+
+
 def test_openai_guarda_la_clave_en_su_cache_de_clientes() -> None:
     """Motivo del vaciado tras cada llamada: la clave de caché y el cliente la llevan en claro."""
     report = call("openai").report

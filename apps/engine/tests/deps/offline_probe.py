@@ -408,6 +408,10 @@ def main(argv: list[str]) -> int:
     else:
         report = SCENARIOS[name]()
     report["attempts"] = sorted(set(ATTEMPTS))
+    # Excepción de filelock en pip-audit (ci.yml): ni filelock ni huggingface_hub se cargan.
+    report["lock_modules"] = sorted(
+        name for name in sys.modules if name.split(".")[0] in {"filelock", "huggingface_hub"}
+    )
     sys.stdout.write("FARO_PROBE " + json.dumps(report, ensure_ascii=False) + "\n")
     sys.stdout.flush()
     return 0

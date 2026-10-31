@@ -57,6 +57,14 @@ Hallazgos bajos:
 3. **Aceptado (bajo):** `release_daily_limit()` libera las tareas `daily_limit` de todos los proveedores, no solo del que subió. `_fits` impide gastar de más; solo hay comprobaciones de más y líneas `daily_limit_released` en el log.
 4. **Pendiente (bajo):** si `release_daily_limit()` falla, el tope ya quedó guardado y auditado pero la ruta responde 500. Sin riesgo de gasto; convendría registrar el error y responder bien (el cambio de día libera igual).
 
+## 3b. Avisos nuevos de dependencias (ajenos a T15)
+
+Durante el CI de este PR aparecieron avisos nuevos que también fallarían en `main`:
+
+- `tokio` 1.53.1 → 1.53.3 (RUSTSEC-2026-0386, unsound), solo `Cargo.lock`.
+- `langgraph-sdk` 0.4.5 → 0.4.11 y `setuptools` 84.0.0 → 84.2.1 (pip-audit). `engine-bundle-smoke` en verde.
+- **`filelock` 3.32.7, 13 avisos:** solo se corrigen en 4.x y litellm exige `filelock<4.0`. **Decisión del usuario (2026-10-31):** ignorarlos en pip-audit con justificación, en `.github/workflows/ci.yml`, hasta que litellm acepte `filelock>=4.2.1`. `revisor-seguridad`: **APROBADO CON CONDICIONES**, cumplidas: el comentario ya no atribuye la protección a `HF_HUB_OFFLINE` (solo existe al construir) y `test_no_carga_filelock_ni_huggingface_hub` comprueba que importar y llamar a LiteLLM no carga `filelock` ni `huggingface_hub`. Faro no crea ningún bloqueo de `filelock`, así que los avisos (atacante local sobre la carpeta del bloqueo) no son explotables.
+
 ## 4. Pendiente
 
 - Hallazgos bajos 2 y 4 (`motor-python`).
