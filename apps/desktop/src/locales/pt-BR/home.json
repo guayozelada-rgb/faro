@@ -1,62 +1,62 @@
 {
-  "title": "[TODO] Inicio",
+  "title": "Início",
   "emptyState": {
-    "title": "[TODO] Te damos la bienvenida a Faro",
-    "description": "[TODO] Aquí verás cada día qué hacer para atraer más clientes a tu sitio.",
-    "action": "[TODO] Conectar tu sitio"
+    "title": "Boas-vindas ao Faro",
+    "description": "Aqui você vai ver todo dia o que fazer para atrair mais clientes para o seu site.",
+    "action": "Conectar seu site"
   },
   "engine": {
-    "title": "[TODO] Motor de Faro",
-    "titleHelpLabel": "[TODO] Qué es el motor",
-    "titleTooltip": "[TODO] El motor es la parte de Faro que hace el trabajo en tu computadora.",
-    "starting": "[TODO] Encendiendo el motor de Faro…",
-    "ready": "[TODO] Motor conectado",
-    "versionLabel": "[TODO] Ver la versión del motor",
-    "version": "[TODO] Versión {{version}}",
-    "restarting": "[TODO] El motor no responde. Estamos intentando reconectarlo.",
-    "retry": "[TODO] Reintentar conexión",
-    "retrying": "[TODO] Reintentando conexión…"
+    "title": "Motor do Faro",
+    "titleHelpLabel": "O que é o motor",
+    "titleTooltip": "O motor é a parte do Faro que faz o trabalho no seu computador.",
+    "starting": "Ligando o motor do Faro…",
+    "ready": "Motor conectado",
+    "versionLabel": "Ver a versão do motor",
+    "version": "Versão {{version}}",
+    "restarting": "O motor não está respondendo. Estamos tentando reconectar.",
+    "retry": "Tentar conectar de novo",
+    "retrying": "Tentando conectar de novo…"
   },
   "nextSteps": {
-    "title": "[TODO] Qué hacer ahora",
-    "allSet": "[TODO] Todo listo por ahora. Pronto los agentes empezarán a trabajar en tu sitio.",
-    "done": "[TODO] Hecho",
-    "pending": "[TODO] Pendiente",
-    "loading": "[TODO] Revisando tus sitios",
+    "title": "O que fazer agora",
+    "allSet": "Tudo pronto por enquanto. Logo os agentes vão começar a trabalhar no seu site.",
+    "done": "Feito",
+    "pending": "Pendente",
+    "loading": "Verificando seus sites",
     "connectSite": {
-      "title": "[TODO] Conecta tu sitio",
-      "action": "[TODO] Conectar tu sitio",
-      "unavailable": "[TODO] Aún no podemos ver tus sitios."
+      "title": "Conecte seu site",
+      "action": "Conectar seu site",
+      "unavailable": "Ainda não conseguimos ver seus sites."
     },
     "addKey": {
-      "title": "[TODO] Agrega una clave de IA",
-      "action": "[TODO] Agregar clave de IA"
+      "title": "Adicione uma chave de IA",
+      "action": "Adicionar chave de IA"
     },
     "knowSite": {
-      "title": "[TODO] Conoce tu sitio con IA",
-      "action": "[TODO] Lanzar Resumen del sitio",
-      "loading": "[TODO] Buscando el resumen de tu sitio"
+      "title": "Conheça seu site com IA",
+      "action": "Iniciar Resumo do site",
+      "loading": "Procurando o resumo do seu site"
     }
   },
   "notices": {
-    "label": "[TODO] Avisos de tus agentes",
-    "catchUp": "[TODO] Mientras Faro estaba cerrado no se hizo «{{agent}}» de {{site}}. Lo estamos haciendo ahora.",
-    "dailyLimit": "[TODO] «{{agent}}» espera a mañana porque llegaste a tu límite de gasto de hoy.",
-    "acknowledge": "[TODO] Entendido",
-    "acknowledging": "[TODO] Guardando…"
+    "label": "Avisos dos seus agentes",
+    "catchUp": "Enquanto o Faro estava fechado, “{{agent}}” não rodou em {{site}}. Estamos fazendo agora.",
+    "dailyLimit": "“{{agent}}” vai esperar até amanhã porque você chegou ao limite de gastos de hoje.",
+    "acknowledge": "Entendi",
+    "acknowledging": "Salvando…"
   },
   "approvals": {
-    "pending_one": "[TODO] Tienes {{count}} propuesta por revisar.",
-    "pending_other": "[TODO] Tienes {{count}} propuestas por revisar.",
-    "goToInbox": "[TODO] Ir a la Bandeja"
+    "pending_one": "Você tem {{count}} proposta para revisar.",
+    "pending_other": "Você tem {{count}} propostas para revisar.",
+    "goToInbox": "Ir para a Caixa de entrada"
   },
   "summaryCard": {
-    "title": "[TODO] Tu sitio en pocas palabras",
-    "site": "[TODO] {{site}}",
-    "savedOn": "[TODO] Guardado el {{date}}",
-    "view": "[TODO] Ver resumen",
-    "viewLabel": "[TODO] Ver resumen de {{site}}",
-    "update": "[TODO] Actualizar",
-    "updateLabel": "[TODO] Actualizar el resumen de {{site}}"
+    "title": "Seu site em poucas palavras",
+    "site": "{{site}}",
+    "savedOn": "Salvo em {{date}}",
+    "view": "Ver resumo",
+    "viewLabel": "Ver resumo de {{site}}",
+    "update": "Atualizar",
+    "updateLabel": "Atualizar o resumo de {{site}}"
   }
 }

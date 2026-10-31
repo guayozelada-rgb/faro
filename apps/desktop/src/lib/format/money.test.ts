@@ -27,7 +27,7 @@ describe("formatUsdMicros (spec F1b §3 y §9.4)", () => {
 
   it.each([
     [0, "$0.00"],
-    [5_000, "[TODO] menos de $0.01"],
+    [5_000, "less than $0.01"],
     [10_000, "$0.01"],
     [1_234_500_000, "$1,234.50"],
   ])("en: %i micros → %s", async (micros, text) => {

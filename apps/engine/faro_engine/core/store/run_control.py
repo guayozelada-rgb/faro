@@ -11,8 +11,10 @@ cancelar la tarea y sus propuestas por separado.
   → `queued` (prioridad de reanudada). Rechazar también re-encola: el grafo se reanuda con
   la decisión y la tarea termina `succeeded` con la propuesta `rejected` (ADR 0016 §5).
 - `cancel_run`: `queued` | `paused` | `waiting_approval` (y `running`, solo para el
-  trabajador al detenerse en un límite entre pasos) → `cancelled`, y sus propuestas
-  abiertas (`pending`, o `approved` sin ejecutar) → `cancelled`.
+  trabajador al detenerse en un límite entre pasos) → `cancelled`, sus propuestas
+  abiertas (`pending`, o `approved` sin ejecutar) → `cancelled` y sus checkpoints
+  intermedios podados (queda el último de cada espacio, como al terminar en el
+  trabajador; pendiente 8 de la spec F1b §12.2). Una tarea cancelada no se reanuda.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from faro_engine.core.store.approvals import (
     decide_approval,
     get_approval,
 )
+from faro_engine.core.store.checkpoints import prune_checkpoints
 from faro_engine.core.store.common import atomic, check_utc
 from faro_engine.core.store.runs import PRIORITY_RESUMED, RunRecord, get_run, transition_run
 
@@ -68,6 +71,7 @@ class CancelResult:
     outcome: CancelOutcome
     run: RunRecord | None
     approvals_cancelled: int = 0
+    checkpoints_pruned: int = 0
 
 
 def decide_and_requeue(
@@ -112,7 +116,9 @@ def cancel_run(
     error_code: str | None = None,
     include_running: bool = False,
 ) -> CancelResult:
-    """Cancela la tarea y sus propuestas abiertas, en una transacción.
+    """Cancela la tarea, sus propuestas abiertas y poda sus checkpoints, en una
+    transacción. Así también se podan los de una tarea cancelada desde la ruta mientras no
+    corría (`queued`, `paused`, `waiting_approval`), que el trabajador no vuelve a tomar.
 
     `include_running=True` solo lo usa el trabajador cuando la tarea marcada se detiene en
     el límite entre pasos; la ruta `cancelAgentRun` recibe `running` y avisa al trabajador.
@@ -137,5 +143,6 @@ def cancel_run(
         ):
             raise InconsistentStateError("run")
         cancelled = cancel_open_approvals(conn, run_id, now=now)
+        pruned = prune_checkpoints(conn, run_id)
         after = get_run(conn, run_id)
-    return CancelResult("cancelled", after, cancelled)
+    return CancelResult("cancelled", after, cancelled, pruned)

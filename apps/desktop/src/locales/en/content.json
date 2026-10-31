@@ -1,7 +1,7 @@
 {
-  "title": "[TODO] Contenido",
+  "title": "Content",
   "emptyState": {
-    "title": "[TODO] Aún no tienes contenido planeado",
-    "description": "[TODO] Aquí prepararás artículos y descripciones de productos con ayuda de la IA."
+    "title": "You don't have any content planned yet",
+    "description": "Here you'll prepare articles and product descriptions with help from AI."
   }
 }

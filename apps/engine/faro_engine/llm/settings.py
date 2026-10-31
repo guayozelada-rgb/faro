@@ -15,7 +15,11 @@ from __future__ import annotations
 from faro_engine.core.audit import AuditLog
 from faro_engine.core.errors import LLM_INVALID_LIMIT, LLM_INVALID_PROVIDER, LLM_NO_KEY
 from faro_engine.core.store.common import format_utc
-from faro_engine.core.store.credentials import MAX_DAILY_LIMIT_MICROS, MIN_DAILY_LIMIT_MICROS
+from faro_engine.core.store.credentials import (
+    MAX_DAILY_LIMIT_MICROS,
+    MIN_DAILY_LIMIT_MICROS,
+    LimitChange,
+)
 from faro_engine.llm import usage
 from faro_engine.llm.client import PROVIDERS, Provider
 from faro_engine.llm.errors import llm_error
@@ -32,12 +36,14 @@ def check_provider(value: str) -> Provider:
 
 async def change_daily_limit(
     service: LlmService, audit: AuditLog, provider: Provider, micros: int
-) -> None:
+) -> LimitChange:
+    """Cambia el tope y lo audita. Devuelve el tope nuevo y el anterior (quien llama libera
+    las tareas que esperaban por el tope si subió)."""
     if not MIN_DAILY_LIMIT_MICROS <= micros <= MAX_DAILY_LIMIT_MICROS:
         raise llm_error(LLM_INVALID_LIMIT, provider)
     now = format_utc(service.clock())
     limit_id = service.ids()
-    await service.database.run(
+    change = await service.database.run(
         lambda conn: usage.change_daily_limit(conn, provider, micros, limit_id=limit_id, now=now)
     )
     await audit.record(
@@ -47,6 +53,7 @@ async def change_daily_limit(
         secret_ref=secret_ref_for(provider),
         details={"provider": provider},
     )
+    return change
 
 
 async def change_preference(

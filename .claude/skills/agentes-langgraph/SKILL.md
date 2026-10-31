@@ -188,7 +188,7 @@ Cómo está hecho:
 - Tablas `agent_checkpoints` y `agent_checkpoint_writes` de la migración 0002. `thread_id` = `agent_runs.id`. El checkpoint se guarda entero (con `channel_values`) en una fila.
 - `ainvoke(…, durability="sync")`: cada paso queda guardado antes de seguir.
 - **Serializador solo JSON** (`JsonOnlySerializer`, sin `pickle` ni importación dinámica): escribe siempre `type = "json"`; al leer rechaza otro `type` o un `BLOB` que no sea JSON UTF-8 válido (un `pickle` incluido) con `CheckpointUnreadableError` → `agent.state_unreadable`. Admite tipos JSON (`float` finito, tuplas) y una **lista cerrada** de tipos internos de LangGraph 1.2.13: `langgraph.types.Interrupt` (escritura `__interrupt__`) y las excepciones de la escritura `__error__`, de las que solo se guarda el **nombre de la clase** (nunca el mensaje) y que al leer vuelven como `CheckpointedError`. Cualquier otro tipo → `TypeError` al escribir (falla cerrado). La clave `__faro__` es reservada.
-- Al terminar una tarea (`succeeded`, `failed`, `cancelled`) se podan los checkpoints intermedios y queda el último. Los de las tareas que siguen vivas (pausa, `vault.secret_not_allowed` con renovación) se conservan. Borrar los de tareas viejas es un pendiente de `motor-python` (spec §12).
+- Al terminar una tarea (`succeeded`, `failed`, `cancelled`) se podan los checkpoints intermedios y queda el último. Una tarea cancelada mientras no corría (`queued`, `paused`, `waiting_approval`) se poda en la misma transacción que la cancela (`run_control.cancel_run`, desde T15). Los de las tareas que siguen vivas (pausa, `vault.secret_not_allowed` con renovación) se conservan. Borrar los de tareas viejas es un pendiente de `motor-python` (spec §12).
 - Un checkpoint que no se puede leer o validar → `failed` con `agent.state_unreadable`. No se intenta reparar.
 - **Versión del agente**: con estado guardado y `agent_runs.agent_version` distinta de `AgentSpec.version` → `cancelled` con `agent.version_changed` (no se lee un estado de otra forma). Sube `version` cuando cambien el estado, los nodos o las aristas.
 
@@ -299,9 +299,9 @@ SAVE_ACTION: Final = ActionSpec(
 | `RunStopped("agents_paused")` o `agents.paused` de la capa de IA | `paused` | `agents_paused` (reanudar → `queued`) |
 | Cancelación del usuario (en curso: `cancel_requested` hasta el siguiente límite) | `cancelled` | `user_cancelled` |
 | Apagado o cierre brusco | `paused` (la recuperación pasa a `paused` lo que quedó `running`) | `interrupted` (vuelve a la cola) |
-| `agents.grant_rate_limited` al pedir la concesión | `queued` (el trabajador espera 60 s) | `grant_rate_limited` |
-| `agents.grant_rate_limited` al renovarla a mitad | `paused` → vuelve a la cola tras esperar | `grant_rate_limited` |
-| Máximo que no cabe en el tope diario | programada: `queued` hasta otro día; del usuario: `failed` | `daily_limit` / `llm.daily_limit_reached` |
+| `agents.grant_rate_limited` al pedir la concesión | `queued` (su tipo de agente espera 60 s; el trabajador sigue con otros tipos) | `grant_rate_limited` |
+| `agents.grant_rate_limited` al renovarla a mitad | `paused` → vuelve a la cola cuando termina la espera de su tipo | `grant_rate_limited` |
+| Máximo que no cabe en el tope diario | programada: `queued` hasta otro día o hasta que el usuario suba el tope (`setLlmDailyLimit`); del usuario: `failed` | `daily_limit` / `llm.daily_limit_reached` |
 | Tarea previa del plan falló o se canceló | `cancelled` | `dependency_failed` |
 | `FaroError` (`llm.*`, `site.*`, `tool.*`, `agent.*`) | `failed` | su `code` (p. ej. `tool.invalid_arguments`, `tool.timeout`, `tool.limit_reached`, `agent.budget_exhausted`) |
 | Concesión denegada, o caducada dos veces | `failed` | `agent.grant_denied` |

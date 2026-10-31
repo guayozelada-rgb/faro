@@ -1,37 +1,37 @@
 {
-  "title": "[TODO] Bandeja",
+  "title": "Caixa de entrada",
   "emptyState": {
-    "title": "[TODO] Nada por aprobar",
-    "description": "[TODO] Antes de publicar o gastar dinero, los agentes te pedirán permiso aquí."
+    "title": "Nada para aprovar",
+    "description": "Antes de publicar ou gastar dinheiro, os agentes vão pedir sua permissão aqui."
   },
-  "listLabel": "[TODO] Propuestas pendientes",
-  "loadingLabel": "[TODO] Cargando tus propuestas",
-  "retry": "[TODO] Intentar de nuevo",
-  "retrying": "[TODO] Intentando de nuevo…",
+  "listLabel": "Propostas pendentes",
+  "loadingLabel": "Carregando suas propostas",
+  "retry": "Tentar de novo",
+  "retrying": "Tentando de novo…",
   "card": {
-    "from": "[TODO] {{agent}} · {{site}}",
-    "expires": "[TODO] Caduca el {{date}}",
-    "unknownAction": "[TODO] Esta propuesta no se puede revisar en esta versión de Faro. Puedes descartarla.",
-    "previewLabel": "[TODO] Vista previa de la propuesta",
-    "approving": "[TODO] Guardando…",
-    "rejecting": "[TODO] Descartando…",
-    "reject": "[TODO] Descartar"
+    "from": "{{agent}} · {{site}}",
+    "expires": "Expira em {{date}}",
+    "unknownAction": "Esta proposta não pode ser revisada nesta versão do Faro. Você pode descartá-la.",
+    "previewLabel": "Prévia da proposta",
+    "approving": "Salvando…",
+    "rejecting": "Descartando…",
+    "reject": "Descartar"
   },
   "actions": {
     "siteSummarySave": {
-      "title": "[TODO] Guardar este resumen en Faro",
-      "approve": "[TODO] Guardar resumen",
-      "approved": "[TODO] Guardamos el resumen."
+      "title": "Salvar este resumo no Faro",
+      "approve": "Salvar resumo",
+      "approved": "Salvamos o resumo."
     },
     "unknown": {
-      "title": "[TODO] Una propuesta de un agente"
+      "title": "Uma proposta de um agente"
     }
   },
   "reasons": {
-    "siteSummaryShowOnHome": "[TODO] Por qué: así lo verás en Inicio."
+    "siteSummaryShowOnHome": "Por quê: assim você vai ver no Início."
   },
   "toast": {
-    "approved": "[TODO] Aprobamos la propuesta.",
-    "rejected": "[TODO] Descartamos la propuesta."
+    "approved": "Aprovamos a proposta.",
+    "rejected": "Descartamos a proposta."
   }
 }

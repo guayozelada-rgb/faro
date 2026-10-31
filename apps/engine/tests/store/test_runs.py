@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from faro_engine.core.db.connection import Connection, DatabaseError
@@ -222,6 +224,25 @@ def test_list_runs_by_status_and_next_queued(conn: Connection) -> None:
     ] == ["run-user"]
     conn.execute("UPDATE agent_runs SET status = 'cancelled'")
     assert runs.next_queued_run(conn) is None
+
+
+def test_next_queued_skips_agent_kinds(conn: Connection) -> None:
+    """Tipos de agente que esperan por el ritmo de concesiones (pendiente 6 de F1b §12.2):
+    se salta sus tareas, también junto con `skip_reason`."""
+    add_run(conn, "run-a", agent_kind="agente_a", priority=0, created_at="2026-10-07T10:00:00Z")
+    add_run(conn, "run-b", agent_kind="agente_b", priority=1, created_at="2026-10-07T11:00:00Z")
+    add_run(conn, "run-c", agent_kind="agente_c", priority=2, created_at="2026-10-07T12:00:00Z")
+
+    def next_id(**kwargs: Any) -> str | None:
+        found = runs.next_queued_run(conn, **kwargs)
+        return None if found is None else found.id
+
+    assert next_id(skip_kinds=()) == "run-a"
+    assert next_id(skip_kinds={"agente_a"}) == "run-b"
+    assert next_id(skip_kinds=["agente_b", "agente_a", "agente_a"]) == "run-c"
+    runs.update_run(conn, "run-c", {"status_reason": "daily_limit"}, now=T1)
+    assert next_id(skip_reason="daily_limit", skip_kinds={"agente_a", "agente_b"}) is None
+    assert next_id(skip_kinds={"agente_a", "agente_b", "agente_c"}) is None
 
 
 # --- Cambios sin transición ----------------------------------------------------------

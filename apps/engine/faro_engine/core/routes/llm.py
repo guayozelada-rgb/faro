@@ -9,6 +9,10 @@
 Ninguna pide secretos (`secrets=[]`): las claves solo llegan a las tareas de agentes por la
 concesión de su ejecución (ADR 0014). Cambiar el tope o la preferencia queda en
 `audit_log` (`llm.limit_changed`, `llm.preference_changed`, actor `user`).
+
+Subir el tope libera al momento las tareas programadas que esperaban en cola por el tope
+diario (`daily_limit`, pendiente 7 de la spec F1b §12.2): el trabajador vuelve a comprobar
+al tomarlas si su máximo cabe con el tope nuevo y, si no cabe, vuelven a esperar.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from fastapi import APIRouter, Depends, Path, Request
 from faro_engine.core.audit import AuditLog, get_audit
 from faro_engine.core.db.database import Database, get_db
 from faro_engine.core.operations import faro_operation
+from faro_engine.core.routes.agents import Jobs
 from faro_engine.core.schemas.common import ErrorOut
 from faro_engine.core.schemas.llm import (
     LlmDailyLimitIn,
@@ -114,8 +119,13 @@ async def set_llm_daily_limit(
     service: Llm,
     _database: Db,
     audit: Audit,
+    jobs: Jobs,
 ) -> LlmUsageOut:
-    await change_daily_limit(service, audit, check_provider(provider), body.daily_limit_micros)
+    change = await change_daily_limit(
+        service, audit, check_provider(provider), body.daily_limit_micros
+    )
+    if change.daily_limit_micros > change.previous_micros:
+        await jobs.queue.release_daily_limit()
     return await _usage_out(service)
 
 

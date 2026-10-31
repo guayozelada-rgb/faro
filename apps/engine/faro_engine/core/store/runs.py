@@ -11,7 +11,7 @@ diario en una tarea del usuario) | `running` y `running` → `queued` (la conces
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -337,18 +337,24 @@ _READY: Final = (
 )
 
 
-def next_queued_run(conn: Connection, *, skip_reason: str | None = None) -> RunRecord | None:
+def next_queued_run(
+    conn: Connection, *, skip_reason: str | None = None, skip_kinds: Collection[str] = ()
+) -> RunRecord | None:
     """La siguiente tarea `queued` lista por prioridad y antigüedad (opcionalmente sin las
-    que esperan por un motivo, p. ej. `daily_limit`). Las de un plan esperan a la tarea de
-    la que dependen."""
+    que esperan por un motivo, p. ej. `daily_limit`, ni las de los tipos de agente de
+    `skip_kinds`, p. ej. los que esperan por el ritmo de concesiones). Las de un plan
+    esperan a la tarea de la que dependen."""
+    where = " WHERE status = 'queued'"
+    params: list[str] = []
+    if skip_reason is not None:
+        where += " AND status_reason IS NOT ?"
+        params.append(skip_reason)
+    kinds = sorted(set(skip_kinds))
+    if kinds:
+        where += f" AND agent_kind NOT IN ({', '.join('?' for _ in kinds)})"
+        params.extend(kinds)
     order = " ORDER BY priority, created_at, id LIMIT 1"
-    if skip_reason is None:
-        row = conn.execute(_SELECT_RUN + " WHERE status = 'queued'" + _READY + order).fetchone()
-    else:
-        row = conn.execute(
-            _SELECT_RUN + " WHERE status = 'queued' AND status_reason IS NOT ?" + _READY + order,
-            (skip_reason,),
-        ).fetchone()
+    row = conn.execute(_SELECT_RUN + where + _READY + order, params).fetchone()
     return _run(row)
 
 

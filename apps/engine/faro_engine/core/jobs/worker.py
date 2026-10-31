@@ -13,18 +13,19 @@ Ciclo:
    (`run_grant_request`): `agents.paused` → vuelve a la cola y espera un cambio del
    control; `agents.grant_rate_limited` (el núcleo limita el ritmo por tipo de agente: 10
    seguidas y luego una por minuto) → vuelve a la cola con `grant_rate_limited`, sin gastar,
-   y el trabajador espera `GRANT_RATE_LIMITED_BACKOFF_SECONDS` (60 s; la cortan una pausa,
-   el apagado o la cancelación de esa tarea) antes de pedir otra; `agent.grant_denied` →
-   `failed`. Una tarea devuelta a la cola sin invocarse sigue siendo un primer arranque
-   (se vuelve a comprobar el tope diario al tomarla).
+   y **ese tipo de agente** espera `GRANT_RATE_LIMITED_BACKOFF_SECONDS` (60 s; la cortan
+   una pausa o el apagado) antes de pedir otra: mientras tanto el trabajador no toma tareas
+   de ese tipo, pero sigue con las de otros tipos (pendiente 6 de la spec F1b §12.2);
+   `agent.grant_denied` → `failed`. Una tarea devuelta a la cola sin invocarse sigue
+   siendo un primer arranque (se vuelve a comprobar el tope diario al tomarla).
 4. Fija el `run_id` (`use_run_id`: el canal de secretos lo pone en cada `secret_request`)
    y ejecuta el agente. Si a mitad un `secret_request` falla con
    `vault.secret_not_allowed` (concesión caducada o revocada), pide **una** concesión
    nueva y repite desde el último estado guardado; si vuelve a fallar, `failed` con
    `agent.grant_denied`. Si la renovación responde `agents.paused`, la tarea queda `paused`
    (`agents_paused`); si responde `agents.grant_rate_limited`, queda `paused`
-   (`grant_rate_limited`), el trabajador espera como en el paso 3 y la vuelve a encolar:
-   sigue desde su último checkpoint.
+   (`grant_rate_limited`) mientras su tipo de agente espera como en el paso 3 y luego
+   vuelve a la cola: sigue desde su último checkpoint.
 5. Resultado → estado: fin → `succeeded` (con `result`); espera de decisión →
    `waiting_approval`; `RunStopped` por pausa → `paused` (`agents_paused`), por cancelación
    → `cancelled` (y sus propuestas abiertas), por apagado → `paused` (`interrupted`);
@@ -116,7 +117,7 @@ log = structlog.get_logger(__name__)
 # Tras `agents.paused` en la concesión: espera un cambio del control como mucho esto.
 GRANT_PAUSED_BACKOFF_SECONDS: Final = 30.0
 # Tras `agents.grant_rate_limited` (el núcleo recupera una concesión por minuto por tipo de
-# agente): espera esto antes de volver a pedir, salvo pausa, apagado o cancelación.
+# agente): ese tipo espera esto antes de volver a pedir, salvo pausa o apagado.
 GRANT_RATE_LIMITED_BACKOFF_SECONDS: Final = 60.0
 # Espera antes de reintentar tras un fallo del bucle (hallazgo 3 de T7); la última se repite.
 RETRY_DELAYS_SECONDS: Final = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
@@ -206,9 +207,10 @@ class Worker:
         self._clock = clock
         self._grant_paused_backoff = grant_paused_backoff
         self._grant_rate_limited_backoff = grant_rate_limited_backoff
-        # Espera por el ritmo de concesiones: la tarea que espera y el aviso que la corta.
-        self._backoff_run: str | None = None
-        self._backoff_wake = asyncio.Event()
+        # Esperas por el ritmo de concesiones, una por tipo de agente (sus tareas no se
+        # toman mientras tanto), y el aviso de apagado que las corta.
+        self._rate_limited: dict[str, asyncio.Task[None]] = {}
+        self._stop_wake = asyncio.Event()
         self._stopping = False
         self._resume_pending = True  # al arrancar: recuperar las `paused` del cierre
         self._day: date | None = None
@@ -239,6 +241,11 @@ class Worker:
         return self._failures
 
     @property
+    def rate_limited_kinds(self) -> frozenset[str]:
+        """Tipos de agente que esperan por el ritmo de concesiones."""
+        return frozenset(self._rate_limited)
+
+    @property
     def current_run_id(self) -> str | None:
         return None if self._current is None else self._current[0]
 
@@ -247,15 +254,13 @@ class Worker:
         self._stopping = True
         if self._current is not None:
             self._current[1].request_shutdown()
-        self._backoff_wake.set()
+        self._stop_wake.set()
         self._queue.notify()
 
     def request_cancel(self, run_id: str) -> bool:
-        """El usuario canceló la tarea en curso: para en el siguiente límite. Si es la que
-        espera por el ritmo de concesiones (ya `cancelled` en la base), corta la espera.
-        `True` solo si la tarea estaba en curso."""
-        if self._backoff_run == run_id:
-            self._backoff_wake.set()
+        """El usuario canceló la tarea en curso: para en el siguiente límite. `True` solo
+        si la tarea estaba en curso. (Una tarea que espera por el ritmo de concesiones ya
+        no bloquea al trabajador: la espera es del tipo de agente y no hace falta cortarla.)"""
         if self._current is None or self._current[0] != run_id:
             return False
         self._current[1].request_cancel()
@@ -264,23 +269,26 @@ class Worker:
     # --- Bucle ---------------------------------------------------------------------------
 
     async def run_forever(self) -> None:
-        while not self.should_stop():
-            try:
-                await self._cycle()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - el trabajador sigue (hallazgo 3 de T7)
-                self._failures += 1
-                self._recover = True
-                self._resume_pending = True
-                delay = RETRY_DELAYS_SECONDS[min(self._failures, len(RETRY_DELAYS_SECONDS)) - 1]
-                log.error(
-                    "jobs.worker_error",
-                    error_type=type(exc).__name__,
-                    failures=self._failures,
-                    retry_in=delay,
-                )
-                await self._sleep(delay)
+        try:
+            while not self.should_stop():
+                try:
+                    await self._cycle()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - el trabajador sigue (hallazgo 3 de T7)
+                    self._failures += 1
+                    self._recover = True
+                    self._resume_pending = True
+                    delay = RETRY_DELAYS_SECONDS[min(self._failures, len(RETRY_DELAYS_SECONDS)) - 1]
+                    log.error(
+                        "jobs.worker_error",
+                        error_type=type(exc).__name__,
+                        failures=self._failures,
+                        retry_in=delay,
+                    )
+                    await self._sleep(delay)
+        finally:
+            await self._cancel_rate_limit_waits()
         log.info("jobs.worker_stopped")
 
     async def _cycle(self) -> None:
@@ -296,10 +304,12 @@ class Worker:
             self._recover = False
         if blocked or self._resume_pending:
             self._resume_pending = False
-            await self._queue.resume_paused()
+            await self._queue.resume_paused(hold_kinds=self.rate_limited_kinds)
         await self._new_day()
         self._queue.clear_notice()
-        candidate = await self._queue.peek()
+        # Sin las tareas de los tipos de agente que esperan por el ritmo de concesiones: al
+        # terminar su espera, `_rate_limit_wait` avisa a la cola y vuelven a tomarse.
+        candidate = await self._queue.peek(skip_kinds=self.rate_limited_kinds)
         if candidate is None:
             self._failures = 0
             await self._queue.wait_for_work(self._seconds_to_midnight())
@@ -423,8 +433,8 @@ class Worker:
             await self._grants.release(run.id, release)
         if ending is not None and ending.status_reason == GRANT_RATE_LIMITED:
             # La renovación a mitad de tarea llegó limitada: la tarea quedó `paused` y vuelve
-            # a la cola en la siguiente vuelta (`_resume_pending`), tras esperar.
-            await self._rate_limit_backoff(run.id, self._control.snapshot())
+            # a la cola cuando termine la espera de su tipo de agente (`_rate_limit_wait`).
+            self._start_rate_limit_wait(run.agent_kind, self._control.snapshot())
 
     async def _grant_failed(
         self,
@@ -447,10 +457,11 @@ class Worker:
                 await self._wait_control_change(snapshot)
         elif err.code == AGENTS_GRANT_RATE_LIMITED:
             # El núcleo limita el ritmo por tipo de agente: no es un fallo (un `catch_up` de
-            # muchos sitios no falla desde la 11.ª). Vuelve a la cola sin gastar y espera.
+            # muchos sitios no falla desde la 11.ª). Vuelve a la cola sin gastar y su tipo de
+            # agente espera; el trabajador sigue con las tareas de otros tipos.
             log.info("jobs.grant_rate_limited", run_id=run.id, agent=run.agent_kind)
             if await self._requeue(run, first_start=first_start, reason=GRANT_RATE_LIMITED):
-                await self._rate_limit_backoff(run.id, snapshot)
+                self._start_rate_limit_wait(run.agent_kind, snapshot)
         else:
             await self._finish(run, _Ending("failed", "failed", error_code=AGENT_GRANT_DENIED))
 
@@ -469,24 +480,41 @@ class Worker:
         )
         return ending.to_status == "queued"
 
-    async def _rate_limit_backoff(self, run_id: str, snapshot: ControlSnapshot) -> None:
-        """Espera `grant_rate_limited_backoff` antes de pedir otra concesión. La cortan un
-        cambio del control (pausa), el apagado o la cancelación de la tarea que espera."""
-        if self._stopping:
+    def _start_rate_limit_wait(self, kind: str, snapshot: ControlSnapshot) -> None:
+        """El tipo de agente `kind` espera `grant_rate_limited_backoff` antes de pedir otra
+        concesión, sin bloquear al trabajador (que sigue con otros tipos). Con el apagado
+        pedido no se espera: la tarea queda en la base y la recupera el siguiente arranque."""
+        if self._stopping or kind in self._rate_limited:
             return
-        self._backoff_run = run_id
-        self._backoff_wake.clear()
+        self._rate_limited[kind] = asyncio.create_task(
+            self._rate_limit_wait(kind, snapshot), name=f"faro-rate-limit-{kind}"
+        )
+
+    async def _rate_limit_wait(self, kind: str, snapshot: ControlSnapshot) -> None:
+        """La espera de un tipo de agente. La cortan un cambio del control (pausa) y el
+        apagado. Al terminar, sus tareas `paused` por el ritmo vuelven a la cola y el
+        trabajador vuelve a mirar la cola."""
         waits = [
             asyncio.ensure_future(self._sleep(self._grant_rate_limited_backoff)),
             asyncio.ensure_future(self._control.wait_for_change(snapshot)),
-            asyncio.ensure_future(self._backoff_wake.wait()),
+            asyncio.ensure_future(self._stop_wake.wait()),
         ]
         try:
             await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            self._backoff_run = None
             for waiting in waits:
                 waiting.cancel()
+            await asyncio.gather(*waits, return_exceptions=True)
+            self._rate_limited.pop(kind, None)
+            self._resume_pending = True
+            self._queue.notify()
+
+    async def _cancel_rate_limit_waits(self) -> None:
+        """Al parar el trabajador: ninguna espera queda viva."""
+        waits = list(self._rate_limited.values())
+        for waiting in waits:
+            waiting.cancel()
+        if waits:
             await asyncio.gather(*waits, return_exceptions=True)
 
     async def _cancel_requested(self, run_id: str) -> bool:
@@ -586,9 +614,8 @@ class Worker:
             self._resume_pending = True
             return _Ending("paused", "paused", status_reason=AGENTS_PAUSED_REASON)
         if denied.code == AGENTS_GRANT_RATE_LIMITED:
-            # Sigue desde su último estado guardado tras esperar (`_execute`).
+            # Sigue desde su último estado guardado tras la espera de su tipo (`_execute`).
             log.info("jobs.grant_rate_limited", run_id=run.id, renewal=True)
-            self._resume_pending = True
             return _Ending("paused", "paused", status_reason=GRANT_RATE_LIMITED)
         return _Ending("failed", "failed", error_code=AGENT_GRANT_DENIED)
 

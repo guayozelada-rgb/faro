@@ -383,8 +383,6 @@ async def cancel_agent_run(run_id: RunIdPath, jobs: Jobs, database: Db) -> Agent
     if result.outcome == "not_cancellable":
         raise jobs_error(AGENT_NOT_CANCELLABLE)
     # `running`: se detiene en el siguiente límite entre pasos (marcada `cancel_requested`).
-    # `cancelled`: si el trabajador esperaba por el ritmo de concesiones para esta tarea,
-    # deja de esperar.
     jobs.worker.request_cancel(run_id)
     return await _run_out(database, result.run)
 

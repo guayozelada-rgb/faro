@@ -21,6 +21,11 @@ function flatten(value: unknown, prefix = ""): Map<string, unknown> {
   return entries;
 }
 
+/** Nombres de las interpolaciones `{{...}}` de un texto, ordenados. */
+function interpolations(text: string): string[] {
+  return [...text.matchAll(/\{\{\s*([^}]+?)\s*\}\}/g)].map((match) => match[1] ?? "").sort();
+}
+
 describe("recursos i18n", () => {
   it("tienen los 10 namespaces de la spec en los tres idiomas", () => {
     expect(NAMESPACES).toEqual([
@@ -52,15 +57,28 @@ describe("recursos i18n", () => {
       }
     });
 
-    it.each(["en", "pt-BR"] as const)("en %s: mismas claves que es, con [TODO] ", (lng) => {
-      const other = flatten(resources[lng][ns]);
-      expect([...other.keys()].sort()).toEqual([...es.keys()].sort());
-      for (const [key, value] of other) {
-        expect(typeof value, `${lng} ${ns}:${key}`).toBe("string");
-        expect(value as string, `${lng} ${ns}:${key}`).toMatch(/^\[TODO\] \S/);
-        expect(value, `${lng} ${ns}:${key}`).toBe(`${TODO_PREFIX}${String(es.get(key))}`);
-      }
-    });
+    it.each(["en", "pt-BR"] as const)(
+      "en %s: mismas claves que es, traducidas o pendientes con [TODO] ",
+      (lng) => {
+        const other = flatten(resources[lng][ns]);
+        expect([...other.keys()].sort()).toEqual([...es.keys()].sort());
+        for (const [key, value] of other) {
+          const label = `${lng} ${ns}:${key}`;
+          const source = String(es.get(key));
+          expect(typeof value, label).toBe("string");
+          const text = value as string;
+          if (text.startsWith("[TODO]")) {
+            // Pendiente: el prefijo va sobre el texto en español, tal cual.
+            expect(text, label).toBe(`${TODO_PREFIX}${source}`);
+          } else {
+            // Traducida: no vacía, sin marcas de pendiente y con las mismas interpolaciones.
+            expect(text.trim(), label).not.toBe("");
+            expect(text, label).not.toContain("[TODO]");
+            expect(interpolations(text), label).toEqual(interpolations(source));
+          }
+        }
+      },
+    );
 
     it("t() resuelve cada clave de es (no devuelve la clave)", () => {
       for (const key of es.keys()) {

@@ -1,285 +1,285 @@
 {
-  "title": "[TODO] Configuración",
+  "title": "Configurações",
   "emptyState": {
-    "title": "[TODO] Agrega tu primera clave de IA",
-    "description": "[TODO] Los agentes la usan para escribir y analizar. Se guarda en el llavero de tu computadora.",
-    "action": "[TODO] Agregar clave"
+    "title": "Adicione sua primeira chave de IA",
+    "description": "Os agentes usam a chave para escrever e analisar. Ela fica guardada no chaveiro do seu computador.",
+    "action": "Adicionar chave"
   },
   "vault": {
-    "title": "[TODO] Claves de IA",
-    "titleHelpLabel": "[TODO] Qué son las claves de IA",
-    "titleTooltip": "[TODO] También se conocen como claves de API.",
-    "loadingLabel": "[TODO] Cargando tus claves de IA",
-    "retry": "[TODO] Intentar de nuevo",
-    "retrying": "[TODO] Intentando de nuevo…",
+    "title": "Chaves de IA",
+    "titleHelpLabel": "O que são as chaves de IA",
+    "titleTooltip": "Também são conhecidas como chaves de API.",
+    "loadingLabel": "Carregando suas chaves de IA",
+    "retry": "Tentar de novo",
+    "retrying": "Tentando de novo…",
     "providers": {
-      "anthropic": "[TODO] Anthropic (Claude)",
-      "openai": "[TODO] OpenAI (ChatGPT)",
-      "gemini": "[TODO] Google Gemini"
+      "anthropic": "Anthropic (Claude)",
+      "openai": "OpenAI (ChatGPT)",
+      "gemini": "Google Gemini"
     },
     "providerShort": {
-      "anthropic": "[TODO] Anthropic",
-      "openai": "[TODO] OpenAI",
-      "gemini": "[TODO] Google Gemini"
+      "anthropic": "Anthropic",
+      "openai": "OpenAI",
+      "gemini": "Google Gemini"
     },
-    "maskedKey": "[TODO] ••••••••{{last4}}",
-    "maskedKeyLabel": "[TODO] Clave que termina en {{last4}}",
+    "maskedKey": "••••••••{{last4}}",
+    "maskedKeyLabel": "Chave que termina em {{last4}}",
     "actions": {
-      "add": "[TODO] Agregar clave",
-      "addLabel": "[TODO] Agregar clave de {{provider}}",
-      "test": "[TODO] Probar clave",
-      "testLabel": "[TODO] Probar clave de {{provider}}",
-      "testing": "[TODO] Probando…",
-      "replace": "[TODO] Reemplazar clave",
-      "replaceLabel": "[TODO] Reemplazar clave de {{provider}}",
-      "delete": "[TODO] Borrar clave",
-      "deleteLabel": "[TODO] Borrar clave de {{provider}}"
+      "add": "Adicionar chave",
+      "addLabel": "Adicionar chave de {{provider}}",
+      "test": "Testar chave",
+      "testLabel": "Testar chave de {{provider}}",
+      "testing": "Testando…",
+      "replace": "Substituir chave",
+      "replaceLabel": "Substituir chave de {{provider}}",
+      "delete": "Apagar chave",
+      "deleteLabel": "Apagar chave de {{provider}}"
     },
     "dialog": {
-      "addTitle": "[TODO] Agregar clave de {{provider}}",
-      "replaceTitle": "[TODO] Reemplazar clave de {{provider}}",
-      "chooseTitle": "[TODO] Agregar clave de IA",
-      "description": "[TODO] Faro la prueba con el proveedor y solo la guarda si funciona.",
-      "providerLegend": "[TODO] ¿De qué proveedor es tu clave?",
-      "secretLabel": "[TODO] Pega tu clave",
-      "emptySecret": "[TODO] Pega tu clave antes de guardar.",
-      "submit": "[TODO] Guardar y probar",
-      "submitting": "[TODO] Probando la clave…",
-      "cancel": "[TODO] Cancelar"
+      "addTitle": "Adicionar chave de {{provider}}",
+      "replaceTitle": "Substituir chave de {{provider}}",
+      "chooseTitle": "Adicionar chave de IA",
+      "description": "O Faro testa a chave com o provedor e só salva se ela funcionar.",
+      "providerLegend": "De qual provedor é sua chave?",
+      "secretLabel": "Cole sua chave",
+      "emptySecret": "Cole sua chave antes de salvar.",
+      "submit": "Salvar e testar",
+      "submitting": "Testando a chave…",
+      "cancel": "Cancelar"
     },
     "help": {
-      "anthropic": "[TODO] Encuéntrala en la página de claves de tu cuenta de Anthropic.",
-      "openai": "[TODO] Encuéntrala en la página de claves de API de tu cuenta de OpenAI.",
-      "gemini": "[TODO] Encuéntrala en Google AI Studio, en la sección de claves de API."
+      "anthropic": "Você encontra na página de chaves da sua conta da Anthropic.",
+      "openai": "Você encontra na página de chaves de API da sua conta da OpenAI.",
+      "gemini": "Você encontra no Google AI Studio, na seção de chaves de API."
     },
     "delete": {
-      "title": "[TODO] ¿Borrar la clave de {{provider}}?",
-      "description": "[TODO] Los agentes ya no podrán usar {{provider}} hasta que agregues otra clave.",
-      "confirm": "[TODO] Borrar clave de {{provider}}",
-      "deleting": "[TODO] Borrando la clave…",
-      "cancel": "[TODO] Cancelar"
+      "title": "Apagar a chave de {{provider}}?",
+      "description": "Os agentes não vão mais poder usar {{provider}} até você adicionar outra chave.",
+      "confirm": "Apagar chave de {{provider}}",
+      "deleting": "Apagando a chave…",
+      "cancel": "Cancelar"
     },
     "toast": {
-      "added": "[TODO] Clave de {{provider}} guardada y funcionando.",
-      "testValid": "[TODO] La clave funciona.",
-      "deleted": "[TODO] Clave de {{provider}} borrada."
+      "added": "Chave de {{provider}} salva e funcionando.",
+      "testValid": "A chave funciona.",
+      "deleted": "Chave de {{provider}} apagada."
     },
     "usage": {
-      "preferredLabel": "[TODO] Clave que usan los agentes",
-      "preferredHelp": "[TODO] Elige qué IA hace el trabajo de tus agentes.",
-      "automatic": "[TODO] Automática (la primera que tengas)",
-      "today": "[TODO] Hoy: {{spent}} de {{limit}}",
-      "limitReached": "[TODO] Límite de hoy alcanzado",
-      "changeLimit": "[TODO] Cambiar límite diario",
-      "changeLimitLabel": "[TODO] Cambiar límite diario de {{provider}}",
-      "error": "[TODO] No pudimos leer el gasto de hoy.",
-      "retry": "[TODO] Intentar de nuevo",
+      "preferredLabel": "Chave que os agentes usam",
+      "preferredHelp": "Escolha qual IA faz o trabalho dos seus agentes.",
+      "automatic": "Automática (a primeira que você tiver)",
+      "today": "Hoje: {{spent}} de {{limit}}",
+      "limitReached": "Limite de hoje atingido",
+      "changeLimit": "Mudar limite diário",
+      "changeLimitLabel": "Mudar limite diário de {{provider}}",
+      "error": "Não conseguimos ler os gastos de hoje.",
+      "retry": "Tentar de novo",
       "toast": {
-        "preference": "[TODO] Los agentes usarán tu clave de {{provider}}.",
-        "preferenceAuto": "[TODO] Los agentes usarán la primera clave que tengas.",
-        "limit": "[TODO] Guardamos el límite de {{provider}}."
+        "preference": "Os agentes vão usar sua chave de {{provider}}.",
+        "preferenceAuto": "Os agentes vão usar a primeira chave que você tiver.",
+        "limit": "Salvamos o limite de {{provider}}."
       },
       "limitDialog": {
-        "title": "[TODO] Límite diario de {{provider}}",
-        "label": "[TODO] Límite de gasto por día (US$)",
-        "help": "[TODO] Cuando esta clave llega a su límite, los agentes que la usan esperan hasta mañana.",
-        "dayNote": "[TODO] El día es el de tu computadora: empieza a medianoche.",
-        "submit": "[TODO] Guardar límite",
-        "submitting": "[TODO] Guardando el límite…",
-        "cancel": "[TODO] Cancelar"
+        "title": "Limite diário de {{provider}}",
+        "label": "Limite de gastos por dia (US$)",
+        "help": "Quando esta chave chega ao limite, os agentes que usam a chave esperam até amanhã.",
+        "dayNote": "O dia é o do seu computador: começa à meia-noite.",
+        "submit": "Salvar limite",
+        "submitting": "Salvando o limite…",
+        "cancel": "Cancelar"
       }
     }
   },
   "tabs": {
-    "label": "[TODO] Secciones de Configuración",
-    "sites": "[TODO] Sitios conectados",
-    "aiKeys": "[TODO] Claves de IA",
-    "autonomy": "[TODO] Autonomía"
+    "label": "Seções de Configurações",
+    "sites": "Sites conectados",
+    "aiKeys": "Chaves de IA",
+    "autonomy": "Autonomia"
   },
   "sites": {
-    "title": "[TODO] Sitios conectados",
-    "titleHelpLabel": "[TODO] Cómo se conecta Faro a tu sitio",
-    "titleTooltip": "[TODO] Faro lee tu sitio con un plugin. Nunca te pedimos tu contraseña.",
-    "loadingLabel": "[TODO] Cargando tus sitios",
-    "retry": "[TODO] Intentar de nuevo",
-    "retrying": "[TODO] Intentando de nuevo…",
-    "connectAnother": "[TODO] Conectar otro sitio",
+    "title": "Sites conectados",
+    "titleHelpLabel": "Como o Faro se conecta ao seu site",
+    "titleTooltip": "O Faro lê seu site com um plugin. Nunca pedimos sua senha.",
+    "loadingLabel": "Carregando seus sites",
+    "retry": "Tentar de novo",
+    "retrying": "Tentando de novo…",
+    "connectAnother": "Conectar outro site",
     "emptyState": {
-      "title": "[TODO] Conecta tu sitio de WordPress",
-      "description": "[TODO] Faro leerá tus páginas, entradas y productos para ayudarte a atraer más clientes. Nunca te pedimos tu contraseña.",
-      "action": "[TODO] Conectar tu sitio"
+      "title": "Conecte seu site WordPress",
+      "description": "O Faro vai ler suas páginas, posts e produtos para ajudar você a atrair mais clientes. Nunca pedimos sua senha.",
+      "action": "Conectar seu site"
     },
     "status": {
-      "checking": "[TODO] Comprobando…",
-      "connected": "[TODO] Conectado",
-      "unchecked": "[TODO] Sin comprobar",
-      "disconnected": "[TODO] Desconectado"
+      "checking": "Verificando…",
+      "connected": "Conectado",
+      "unchecked": "Não verificado",
+      "disconnected": "Desconectado"
     },
     "card": {
-      "pages_one": "[TODO] {{value}} página",
-      "pages_other": "[TODO] {{value}} páginas",
-      "posts_one": "[TODO] {{value}} entrada",
-      "posts_other": "[TODO] {{value}} entradas",
-      "products_one": "[TODO] {{value}} producto",
-      "products_other": "[TODO] {{value}} productos",
-      "noWooCommerce": "[TODO] WooCommerce no está activo",
-      "separator": "[TODO] ·",
-      "checkedAt": "[TODO] Comprobado {{relative}}"
+      "pages_one": "{{value}} página",
+      "pages_other": "{{value}} páginas",
+      "posts_one": "{{value}} post",
+      "posts_other": "{{value}} posts",
+      "products_one": "{{value}} produto",
+      "products_other": "{{value}} produtos",
+      "noWooCommerce": "O WooCommerce não está ativo",
+      "separator": "·",
+      "checkedAt": "Verificado {{relative}}"
     },
     "actions": {
-      "viewContent": "[TODO] Ver contenido",
-      "viewContentLabel": "[TODO] Ver contenido de {{name}}",
-      "check": "[TODO] Comprobar conexión",
-      "checkLabel": "[TODO] Comprobar conexión de {{name}}",
-      "checking": "[TODO] Comprobando…",
-      "more": "[TODO] Más acciones para {{name}}",
-      "disconnect": "[TODO] Desconectar sitio",
-      "reconnect": "[TODO] Volver a conectar",
-      "reconnectLabel": "[TODO] Volver a conectar {{name}}",
-      "remove": "[TODO] Quitar de Faro",
-      "removeLabel": "[TODO] Quitar de Faro el sitio {{name}}"
+      "viewContent": "Ver conteúdo",
+      "viewContentLabel": "Ver conteúdo de {{name}}",
+      "check": "Verificar conexão",
+      "checkLabel": "Verificar conexão de {{name}}",
+      "checking": "Verificando…",
+      "more": "Mais ações para {{name}}",
+      "disconnect": "Desconectar site",
+      "reconnect": "Conectar de novo",
+      "reconnectLabel": "Conectar {{name}} de novo",
+      "remove": "Remover do Faro",
+      "removeLabel": "Remover o site {{name}} do Faro"
     },
     "toast": {
-      "checkOk": "[TODO] Tu sitio responde bien.",
-      "connected": "[TODO] Tu sitio {{name}} está conectado.",
-      "disconnected": "[TODO] Desconectamos {{name}}.",
-      "removed": "[TODO] Quitamos {{name}} de Faro.",
-      "remoteNotNotified": "[TODO] Quitamos {{name}} de Faro, pero no pudimos avisar a tu sitio. Para terminar, entra a WordPress → Ajustes → Faro y pulsa Desconectar."
+      "checkOk": "Seu site está respondendo bem.",
+      "connected": "Seu site {{name}} está conectado.",
+      "disconnected": "Desconectamos {{name}}.",
+      "removed": "Removemos {{name}} do Faro.",
+      "remoteNotNotified": "Removemos {{name}} do Faro, mas não conseguimos avisar seu site. Para terminar, entre em WordPress → Configurações → Faro e clique em Desconectar."
     },
     "connect": {
-      "title": "[TODO] Conecta tu sitio",
-      "reconnectTitle": "[TODO] Vuelve a conectar {{name}}",
-      "stepIndicator": "[TODO] Paso {{step}} de {{total}}",
-      "passwordNote": "[TODO] Nunca te pediremos tu contraseña de WordPress.",
-      "cancel": "[TODO] Cancelar",
-      "back": "[TODO] Atrás",
-      "next": "[TODO] Siguiente",
+      "title": "Conecte seu site",
+      "reconnectTitle": "Conecte {{name}} de novo",
+      "stepIndicator": "Passo {{step}} de {{total}}",
+      "passwordNote": "Nunca vamos pedir sua senha do WordPress.",
+      "cancel": "Cancelar",
+      "back": "Voltar",
+      "next": "Próximo",
       "step1": {
-        "title": "[TODO] Instala el plugin de Faro en tu sitio",
-        "download": "[TODO] Guardar el plugin en Descargas",
-        "downloading": "[TODO] Guardando el plugin…",
-        "downloaded": "[TODO] Guardamos {{fileName}} en tu carpeta Descargas.",
-        "instructionsLabel": "[TODO] Cómo instalarlo",
-        "instruction1": "[TODO] Entra al panel de WordPress de tu sitio.",
-        "instruction2": "[TODO] Ve a Plugins → Añadir nuevo → Subir plugin.",
-        "instruction3": "[TODO] Elige faro-wordpress.zip, pulsa Instalar ahora y después Activar.",
-        "alreadyInstalled": "[TODO] Ya tengo el plugin instalado"
+        "title": "Instale o plugin do Faro no seu site",
+        "download": "Salvar o plugin em Downloads",
+        "downloading": "Salvando o plugin…",
+        "downloaded": "Salvamos {{fileName}} na sua pasta Downloads.",
+        "instructionsLabel": "Como instalar",
+        "instruction1": "Entre no painel do WordPress do seu site.",
+        "instruction2": "Vá em Plugins → Adicionar novo plugin → Enviar plugin.",
+        "instruction3": "Escolha faro-wordpress.zip, clique em Instalar agora e depois em Ativar.",
+        "alreadyInstalled": "Já tenho o plugin instalado"
       },
       "step2": {
-        "title": "[TODO] Genera un código en WordPress",
-        "description": "[TODO] En WordPress, ve a Ajustes → Faro y pulsa Generar código de conexión. El código dura 10 minutos y solo sirve una vez."
+        "title": "Gere um código no WordPress",
+        "description": "No WordPress, vá em Configurações → Faro e clique em Gerar código de conexão. O código dura 10 minutos e só serve uma vez."
       },
       "step3": {
-        "title": "[TODO] Escribe la dirección y el código",
-        "urlLabel": "[TODO] Dirección de tu sitio",
-        "urlPlaceholder": "[TODO] https://tutienda.com",
-        "urlHelp": "[TODO] La misma dirección que escriben tus clientes.",
-        "urlRequired": "[TODO] Escribe la dirección de tu sitio.",
-        "codeLabel": "[TODO] Código de conexión",
-        "codeHelp": "[TODO] Son 6 números. Puedes escribirlos con o sin espacio.",
-        "submit": "[TODO] Conectar sitio",
-        "reconnectSubmit": "[TODO] Volver a conectar",
-        "submitting": "[TODO] Conectando con tu sitio…",
-        "slowNote": "[TODO] Puede tardar hasta un minuto.",
-        "goToSite": "[TODO] Ir al sitio"
+        "title": "Digite o endereço e o código",
+        "urlLabel": "Endereço do seu site",
+        "urlPlaceholder": "https://sualoja.com.br",
+        "urlHelp": "O mesmo endereço que seus clientes digitam.",
+        "urlRequired": "Digite o endereço do seu site.",
+        "codeLabel": "Código de conexão",
+        "codeHelp": "São 6 números. Você pode digitar com ou sem espaço.",
+        "submit": "Conectar site",
+        "reconnectSubmit": "Conectar de novo",
+        "submitting": "Conectando ao seu site…",
+        "slowNote": "Pode levar até um minuto.",
+        "goToSite": "Ir para o site"
       }
     },
     "content": {
-      "title": "[TODO] Contenido de {{name}}",
-      "close": "[TODO] Cerrar",
-      "tabsLabel": "[TODO] Tipo de contenido",
+      "title": "Conteúdo de {{name}}",
+      "close": "Fechar",
+      "tabsLabel": "Tipo de conteúdo",
       "tabs": {
-        "page": "[TODO] Páginas",
-        "post": "[TODO] Entradas",
-        "product": "[TODO] Productos"
+        "page": "Páginas",
+        "post": "Posts",
+        "product": "Produtos"
       },
       "columns": {
-        "title": "[TODO] Título",
-        "url": "[TODO] Dirección",
-        "modified": "[TODO] Última modificación"
+        "title": "Título",
+        "url": "Endereço",
+        "modified": "Última alteração"
       },
-      "loadingLabel": "[TODO] Cargando el contenido de tu sitio",
+      "loadingLabel": "Carregando o conteúdo do seu site",
       "empty": {
-        "page": "[TODO] Tu sitio no tiene páginas publicadas.",
-        "post": "[TODO] Tu sitio no tiene entradas publicadas.",
-        "product": "[TODO] Tu sitio no tiene productos publicados."
+        "page": "Seu site não tem páginas publicadas.",
+        "post": "Seu site não tem posts publicados.",
+        "product": "Seu site não tem produtos publicados."
       },
-      "noWooCommerce": "[TODO] Este sitio no tiene WooCommerce activo.",
-      "untitled": "[TODO] (Sin título)",
-      "retry": "[TODO] Intentar de nuevo",
-      "retrying": "[TODO] Intentando de nuevo…",
+      "noWooCommerce": "Este site não tem o WooCommerce ativo.",
+      "untitled": "(Sem título)",
+      "retry": "Tentar de novo",
+      "retrying": "Tentando de novo…",
       "pagination": {
-        "label": "[TODO] Páginas de resultados",
-        "previous": "[TODO] Anteriores",
-        "next": "[TODO] Siguientes",
-        "status": "[TODO] Página {{page}} de {{total}}"
+        "label": "Páginas de resultados",
+        "previous": "Anteriores",
+        "next": "Próximos",
+        "status": "Página {{page}} de {{total}}"
       }
     },
     "remove": {
-      "disconnectTitle": "[TODO] ¿Desconectar {{name}}?",
-      "disconnectDescription": "[TODO] Faro dejará de leer este sitio. Para volver a conectarlo necesitarás un código nuevo.",
-      "disconnectConfirm": "[TODO] Desconectar {{name}}",
-      "disconnecting": "[TODO] Desconectando el sitio…",
-      "removeTitle": "[TODO] ¿Quitar {{name}} de Faro?",
-      "removeDescription": "[TODO] Quitaremos {{name}} de tu lista.",
-      "removeConfirm": "[TODO] Quitar de Faro",
-      "removing": "[TODO] Quitando el sitio…",
-      "cancel": "[TODO] Cancelar"
+      "disconnectTitle": "Desconectar {{name}}?",
+      "disconnectDescription": "O Faro vai parar de ler este site. Para conectar de novo, você vai precisar de um código novo.",
+      "disconnectConfirm": "Desconectar {{name}}",
+      "disconnecting": "Desconectando o site…",
+      "removeTitle": "Remover {{name}} do Faro?",
+      "removeDescription": "Vamos remover {{name}} da sua lista.",
+      "removeConfirm": "Remover do Faro",
+      "removing": "Removendo o site…",
+      "cancel": "Cancelar"
     }
   },
   "autonomy": {
-    "title": "[TODO] Autonomía",
-    "titleHelpLabel": "[TODO] Qué es la autonomía",
-    "titleTooltip": "[TODO] Decide cuánto pueden hacer los agentes sin preguntarte.",
-    "loadingLabel": "[TODO] Cargando las reglas de autonomía",
-    "retry": "[TODO] Intentar de nuevo",
-    "retrying": "[TODO] Intentando de nuevo…",
-    "allSites": "[TODO] Todos tus sitios",
-    "levelLabel": "[TODO] Nivel de {{agent}} en {{target}}",
+    "title": "Autonomia",
+    "titleHelpLabel": "O que é a autonomia",
+    "titleTooltip": "Decida quanto os agentes podem fazer sem perguntar a você.",
+    "loadingLabel": "Carregando as regras de autonomia",
+    "retry": "Tentar de novo",
+    "retrying": "Tentando de novo…",
+    "allSites": "Todos os seus sites",
+    "levelLabel": "Nível de {{agent}} em {{target}}",
     "levels": {
       "suggest": {
-        "title": "[TODO] Solo sugerir",
-        "description": "[TODO] Te muestra lo que haría. No guarda nada."
+        "title": "Só sugerir",
+        "description": "Mostra o que faria. Não salva nada."
       },
       "ask": {
-        "title": "[TODO] Preparar y pedirte OK (recomendado)",
-        "description": "[TODO] Prepara el resultado y espera tu OK en la Bandeja."
+        "title": "Preparar e pedir seu OK (recomendado)",
+        "description": "Prepara o resultado e espera seu OK na Caixa de entrada."
       },
       "limits": {
-        "title": "[TODO] Actuar con límites",
-        "description": "[TODO] Guarda el resultado si cumple tus límites; si no, te pregunta."
+        "title": "Agir com limites",
+        "description": "Salva o resultado se ele respeitar seus limites; se não, pergunta a você."
       },
       "autopilot": {
-        "title": "[TODO] Piloto automático",
-        "description": "[TODO] Guarda el resultado sin preguntarte."
+        "title": "Piloto automático",
+        "description": "Salva o resultado sem perguntar a você."
       }
     },
-    "addSiteRule": "[TODO] Agregar regla para un sitio",
-    "addSiteTitle": "[TODO] Regla para un sitio",
-    "addSiteDescription": "[TODO] Esta regla reemplaza a la general en el sitio que elijas.",
-    "siteLabel": "[TODO] Sitio",
-    "levelField": "[TODO] Nivel",
-    "addSubmit": "[TODO] Guardar regla",
-    "noMoreSites": "[TODO] Todos tus sitios conectados ya tienen su propia regla.",
-    "siteMore": "[TODO] Más acciones para {{site}}",
-    "useGeneral": "[TODO] Usar la regla general",
-    "removedSite": "[TODO] Sitio quitado",
-    "autopilotTitle": "[TODO] ¿Activar el piloto automático?",
-    "autopilotDescription": "[TODO] {{agent}} guardará resultados sin preguntarte. Nunca publicará, borrará ni gastará más de tu límite.",
-    "autopilotConfirm": "[TODO] Activar piloto automático",
-    "back": "[TODO] Volver",
-    "cancel": "[TODO] Cancelar",
-    "saving": "[TODO] Guardando…",
-    "guardrailsTitle": "[TODO] Lo que ningún agente hace nunca",
+    "addSiteRule": "Adicionar regra para um site",
+    "addSiteTitle": "Regra para um site",
+    "addSiteDescription": "Esta regra substitui a geral no site que você escolher.",
+    "siteLabel": "Site",
+    "levelField": "Nível",
+    "addSubmit": "Salvar regra",
+    "noMoreSites": "Todos os seus sites conectados já têm uma regra própria.",
+    "siteMore": "Mais ações para {{site}}",
+    "useGeneral": "Usar a regra geral",
+    "removedSite": "Site removido",
+    "autopilotTitle": "Ativar o piloto automático?",
+    "autopilotDescription": "{{agent}} vai salvar resultados sem perguntar a você. Nunca vai publicar, apagar nem gastar mais que o seu limite.",
+    "autopilotConfirm": "Ativar piloto automático",
+    "back": "Voltar",
+    "cancel": "Cancelar",
+    "saving": "Salvando…",
+    "guardrailsTitle": "O que nenhum agente faz nunca",
     "guardrails": {
-      "noDelete": "[TODO] Borrar contenido o campañas.",
-      "dailySpendCap": "[TODO] Gastar más de tu límite diario.",
-      "publishSpendNeedRules": "[TODO] Publicar o gastar dinero sin pasar por estas reglas.",
-      "adsPaused": "[TODO] Crear campañas activas: siempre se crean en pausa."
+      "noDelete": "Apagar conteúdo ou campanhas.",
+      "dailySpendCap": "Gastar mais que o seu limite diário.",
+      "publishSpendNeedRules": "Publicar ou gastar dinheiro sem passar por estas regras.",
+      "adsPaused": "Criar campanhas ativas: elas sempre são criadas pausadas."
     },
     "toast": {
-      "saved": "[TODO] Guardamos la regla.",
-      "removed": "[TODO] El sitio vuelve a usar la regla general."
+      "saved": "Salvamos a regra.",
+      "removed": "O site volta a usar a regra geral."
     }
   }
 }

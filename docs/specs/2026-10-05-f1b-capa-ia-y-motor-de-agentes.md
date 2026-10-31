@@ -775,11 +775,11 @@ Actualizado en el cierre T14 (2026-10-20). Cada punto indica su agente y su orig
 ### 12.2 Código (por agente)
 
 5. **Herramientas ofrecidas al modelo:** antes de habilitarlas en el adaptador real (hoy `LiteLlmClient` las rechaza), una prueba por proveedor con `respx` del formato de herramientas de LiteLLM. — `ingeniero-ia`. Origen: T6-C4 (resto).
-6. **El trabajador espera ~60 s** cuando el núcleo responde `agents.grant_rate_limited` y en ese tiempo no procesa otras tareas, tampoco de otro tipo de agente. Con un solo agente da igual; cuando haya más de uno, que pase a la siguiente tarea de otro tipo. — `motor-python`. Origen: T13 §5 y §6.
-7. **Liberar las tareas `daily_limit`** cuando el usuario sube el tope (hoy esperan al día siguiente) y **mostrar en la actividad los disparos programados que se saltan** (hoy solo `jobs.schedule_skipped` en el log). — `motor-python` + `frontend-react`. Origen: T7 §8 (mejoras).
-8. **Podar los checkpoints de una tarea cancelada** desde la ruta mientras no corría (hoy solo poda el trabajador al terminar). — `motor-python`. Origen: T8 §7 (mejora).
+6. **(Hecho en T15)** **El trabajador espera ~60 s** cuando el núcleo responde `agents.grant_rate_limited` y en ese tiempo no procesa otras tareas, tampoco de otro tipo de agente. Con un solo agente da igual; cuando haya más de uno, que pase a la siguiente tarea de otro tipo. — `motor-python`. Origen: T13 §5 y §6.
+7. **(Primera parte hecha en T15: subir el tope libera las tareas `daily_limit`; el trabajador vuelve a comprobar que caben.)** **Liberar las tareas `daily_limit`** cuando el usuario sube el tope (hoy esperan al día siguiente) y **mostrar en la actividad los disparos programados que se saltan** (hoy solo `jobs.schedule_skipped` en el log). — `motor-python` + `frontend-react`. Origen: T7 §8 (mejoras).
+8. **(Hecho en T15: `cancel_run` poda en la misma transacción.)** **Podar los checkpoints de una tarea cancelada** desde la ruta mientras no corría (hoy solo poda el trabajador al terminar). — `motor-python`. Origen: T8 §7 (mejora).
 9. **`strict_modules`:** añadir al 95 % `llm/client.py`, `llm/fake.py`, `llm/routing.py`, `llm/settings.py`, `llm/usage.py` y las rutas de agentes (`core/routes/agents.py`, `approvals.py`, `autonomy.py`, `llm.py`, `schedules.py`). Es un cambio de umbral: `arquitecto` lo aprueba y lo hace `devops-release`. — Origen: propuesta de T11.
-10. **Traducciones** `en` y `pt-BR` de las claves nuevas de F1b (siguen con `[TODO] `). — `frontend-react`. Origen: T10 §10.
+10. **(Hecho en T15: todas las claves, también las de F0 y F1a.)** **Traducciones** `en` y `pt-BR` de las claves nuevas de F1b (siguen con `[TODO] `). — `frontend-react`. Origen: T10 §10.
 11. **Accesibilidad de la actividad:** con la medición M5 (NVDA) de la lista manual, decidir si `aria-live` anuncia cada cambio de costo o solo los cambios de estado (lo segundo es un cambio de spec). — `frontend-react` + `arquitecto`. Origen: T10 §10.
 
 ### 12.3 Release (`devops-release`, con `tauri-rust` donde toca el núcleo)

@@ -14,7 +14,7 @@ description: Cómo escribir y traducir los textos de la interfaz de Faro - archi
 - Números, monedas y fechas con `Intl` usando el idioma y la zona del usuario; nunca concatenes números en el texto a mano.
 - Errores: la interfaz traduce por `code` desde `errors.json`; el `message` del backend es respaldo.
 - Prohibido texto en duro en JSX. El lint (`i18next/no-literal-string`) lo detecta.
-- Al agregar una clave en `es`, agrégala en `en` y `pt-BR` con el prefijo `[TODO] ` si no tienes la traducción; CI lista los pendientes.
+- Al agregar una clave en `es`, agrégala en `en` y `pt-BR` con el prefijo `[TODO] ` si no tienes la traducción; CI lista los pendientes. Desde T15 de F1b `en` y `pt-BR` están traducidos del todo: traduce las claves nuevas en el mismo PR siempre que puedas (mismas interpolaciones `{{...}}` que el español; la prueba `locales.test.ts` lo comprueba).
 
 ## Voz y tono
 - **Tuteo** ("Conecta tu sitio"), cercano y claro, nunca infantil.

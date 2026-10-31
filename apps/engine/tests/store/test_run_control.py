@@ -8,8 +8,9 @@ from pathlib import Path
 import pytest
 
 from faro_engine.core.db.connection import Connection, transaction
-from faro_engine.core.store import approvals, run_control, runs
+from faro_engine.core.store import approvals, checkpoints, run_control, runs
 from faro_engine.core.store.approvals import ApprovalRecord, NewApproval
+from faro_engine.core.store.checkpoints import CheckpointRow, WriteRow
 from faro_engine.core.store.runs import RunRecord
 from tests.db.helpers import open_db
 from tests.store.conftest import SITE, T0, T1, T2, add_run
@@ -193,6 +194,81 @@ def test_cancel_rolls_back_if_the_run_moved(
     with pytest.raises(run_control.InconsistentStateError):
         run_control.cancel_run(conn, "run-1", now=T1)
     assert (_ap(conn).status, _run(conn).status) == ("pending", "waiting_approval")
+
+
+def _checkpoints(conn: Connection, run_id: str, *ids: str) -> None:
+    for checkpoint_id in ids:
+        checkpoints.put_checkpoint(
+            conn,
+            CheckpointRow(run_id, "", checkpoint_id, None, "json", b"{}", b"{}", T0),
+        )
+        checkpoints.put_writes(
+            conn, [WriteRow(run_id, "", checkpoint_id, "t", "", 0, "canal", "json", b"1")]
+        )
+
+
+def _checkpoint_ids(conn: Connection, run_id: str) -> list[str]:
+    return [row.checkpoint_id for row in checkpoints.list_checkpoints(conn, run_id)]
+
+
+@pytest.mark.parametrize("status", ["queued", "paused", "waiting_approval"])
+def test_cancel_prunes_checkpoints_of_a_run_that_was_not_running(
+    conn: Connection, status: str
+) -> None:
+    """Pendiente 8 de la spec F1b §12.2: queda el último checkpoint (y sus escrituras),
+    como cuando el trabajador termina la tarea; los de otra tarea no se tocan."""
+    _waiting(conn)
+    _waiting(conn, "run-2", "ap-2")
+    if status != "waiting_approval":
+        runs.transition_run(
+            conn, "run-1", from_status="waiting_approval", to_status="queued", now=T0
+        )
+    if status == "paused":
+        runs.transition_run(conn, "run-1", from_status="queued", to_status="running", now=T0)
+        runs.transition_run(conn, "run-1", from_status="running", to_status="paused", now=T0)
+    _checkpoints(conn, "run-1", "cp-1", "cp-2", "cp-3")
+    _checkpoints(conn, "run-2", "cp-1", "cp-2")
+
+    result = run_control.cancel_run(conn, "run-1", now=T1)
+
+    assert (result.outcome, result.checkpoints_pruned) == ("cancelled", 2)
+    assert _checkpoint_ids(conn, "run-1") == ["cp-3"]
+    assert [w.checkpoint_id for w in checkpoints.list_writes(conn, "run-1", "", "cp-3")] == ["cp-3"]
+    assert checkpoints.list_writes(conn, "run-1", "", "cp-1") == []
+    assert sorted(_checkpoint_ids(conn, "run-2")) == ["cp-1", "cp-2"]
+
+
+def test_cancel_of_a_running_run_from_the_route_keeps_its_checkpoints(conn: Connection) -> None:
+    """La tarea en curso sigue escribiendo checkpoints: la ruta solo la marca y el
+    trabajador poda al detenerse."""
+    add_run(conn)
+    runs.transition_run(conn, "run-1", from_status="queued", to_status="running", now=T0)
+    _checkpoints(conn, "run-1", "cp-1", "cp-2")
+    asked = run_control.cancel_run(conn, "run-1", now=T1)
+    assert (asked.outcome, asked.checkpoints_pruned) == ("running", 0)
+    assert sorted(_checkpoint_ids(conn, "run-1")) == ["cp-1", "cp-2"]
+    stopped = run_control.cancel_run(conn, "run-1", now=T2, include_running=True)
+    assert (stopped.outcome, stopped.checkpoints_pruned) == ("cancelled", 1)
+    assert _checkpoint_ids(conn, "run-1") == ["cp-2"]
+
+
+def test_cancel_that_fails_after_pruning_rolls_everything_back(
+    conn: Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La poda va en la misma transacción que la cancelación: si algo falla después, los
+    checkpoints, la tarea y su propuesta quedan como estaban."""
+    _waiting(conn)
+    _checkpoints(conn, "run-1", "cp-1", "cp-2")
+
+    def prune_then_fail(c: Connection, run_id: str) -> int:
+        checkpoints.prune_checkpoints(c, run_id)
+        raise RuntimeError("falla")
+
+    monkeypatch.setattr(run_control, "prune_checkpoints", prune_then_fail)
+    with pytest.raises(RuntimeError, match="falla"):
+        run_control.cancel_run(conn, "run-1", now=T1)
+    assert sorted(_checkpoint_ids(conn, "run-1")) == ["cp-1", "cp-2"]
+    assert (_run(conn).status, _ap(conn).status) == ("waiting_approval", "pending")
 
 
 # --- Intercalación -------------------------------------------------------------------

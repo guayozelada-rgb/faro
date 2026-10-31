@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -118,14 +118,17 @@ class RunQueue:
     async def get(self, run_id: str) -> RunRecord | None:
         return await self._database.run(lambda c: runs.get_run(c, run_id))
 
-    async def peek(self) -> RunRecord | None:
-        """La siguiente tarea `queued` lista (sin las que esperan por el tope diario ni las
-        de un plan cuya tarea previa no terminó). Antes cancela las de un plan cuya tarea
-        previa falló o se canceló (`dependency_failed`)."""
+    async def peek(self, *, skip_kinds: Collection[str] = ()) -> RunRecord | None:
+        """La siguiente tarea `queued` lista (sin las que esperan por el tope diario, las
+        de un plan cuya tarea previa no terminó ni las de los tipos de agente de
+        `skip_kinds`, que esperan por el ritmo de concesiones). Antes cancela las de un plan
+        cuya tarea previa falló o se canceló (`dependency_failed`)."""
         while orphans := await self._database.run(runs.orphaned_runs):
             for orphan in orphans:
                 await self.cancel(orphan, status_reason=DEPENDENCY_FAILED)
-        return await self._database.run(lambda c: runs.next_queued_run(c, skip_reason=DAILY_LIMIT))
+        return await self._database.run(
+            lambda c: runs.next_queued_run(c, skip_reason=DAILY_LIMIT, skip_kinds=skip_kinds)
+        )
 
     # --- Encolar y tomar -----------------------------------------------------------------
 
@@ -269,7 +272,8 @@ class RunQueue:
         error_code: str | None = None,
         include_running: bool = False,
     ) -> CancelResult:
-        """Cancela la tarea y sus propuestas abiertas en una transacción (`cancel_run`).
+        """Cancela la tarea y sus propuestas abiertas y poda sus checkpoints intermedios,
+        en una transacción (`cancel_run`).
 
         Desde la ruta (`include_running=False`), una tarea `running` no se cancela aquí: se
         marca `cancel_requested` (sobrevive a un cierre brusco) y el trabajador la detiene
@@ -296,19 +300,33 @@ class RunQueue:
 
         result = await self._database.run(write)
         if result.outcome == "cancelled" and result.run is not None:
-            log.info("jobs.run_cancelled", run_id=run_id, reason=status_reason)
+            log.info(
+                "jobs.run_cancelled",
+                run_id=run_id,
+                reason=status_reason,
+                checkpoints_pruned=result.checkpoints_pruned,
+            )
             return CancelResult(
-                "cancelled", await self.emit(result.run), result.approvals_cancelled
+                "cancelled",
+                await self.emit(result.run),
+                result.approvals_cancelled,
+                result.checkpoints_pruned,
             )
         return result
 
-    async def resume_paused(self) -> list[str]:
-        """Tareas `paused` por pausa global o cierre → `queued` (prioridad de reanudada)."""
+    async def resume_paused(self, *, hold_kinds: Collection[str] = ()) -> list[str]:
+        """Tareas `paused` por pausa global, cierre o ritmo de concesiones → `queued`
+        (prioridad de reanudada). Las `grant_rate_limited` de los tipos de agente de
+        `hold_kinds` (su espera por el ritmo aún no terminó) siguen `paused`."""
 
         def read(conn: Connection) -> list[RunRecord]:
             found: list[RunRecord] = []
             for reason in RESUMABLE_REASONS:
-                found.extend(runs.list_runs_by_status(conn, "paused", status_reason=reason))
+                found.extend(
+                    record
+                    for record in runs.list_runs_by_status(conn, "paused", status_reason=reason)
+                    if reason != GRANT_RATE_LIMITED or record.agent_kind not in hold_kinds
+                )
             return found
 
         resumed: list[str] = []
