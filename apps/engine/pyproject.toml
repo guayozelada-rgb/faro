@@ -13,12 +13,12 @@ dependencies = [
     "httpx>=0.28.1",
     "idna>=3.20",
     "langgraph==1.2.13",
-    "langgraph-checkpoint==4.2.0",
-    "litellm==1.104.0",
+    "langgraph-checkpoint==4.3.0",
+    "litellm==1.106.4",
     "pydantic>=2.13.5",
     "sqlcipher3-wheels>=0.5.7,<0.6",
     "structlog>=26.1.0",
-    "truststore==0.10.4",
+    "truststore==0.10.5",
     "tzlocal>=5.4.4",
     "uvicorn>=0.54.0,<0.55",  # core/server.py usa detalles internos de uvicorn 0.54
 ]
