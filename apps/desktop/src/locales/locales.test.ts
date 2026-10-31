@@ -4,6 +4,7 @@ import { SECTIONS } from "@/app/sections";
 import i18n, { LANGUAGES, NAMESPACES, resources } from "@/lib/i18n";
 import { takeMissingKeys } from "@/test/setup";
 
+const MARKUP = /<[a-z/\d]|https?:\/\//i;
 const TODO_PREFIX = "[TODO] ";
 
 /** Aplana un recurso a pares `clave.anidada → valor`. */
@@ -75,6 +76,8 @@ describe("recursos i18n", () => {
             expect(text.trim(), label).not.toBe("");
             expect(text, label).not.toContain("[TODO]");
             expect(interpolations(text), label).toEqual(interpolations(source));
+            // Sin marcado ni enlaces nuevos (i18n no escapa: escapeValue false).
+            if (!MARKUP.test(source)) expect(text, label).not.toMatch(MARKUP);
           }
         }
       },
