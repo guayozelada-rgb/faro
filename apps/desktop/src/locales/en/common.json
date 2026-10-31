@@ -1,46 +1,46 @@
 {
-  "appName": "[TODO] Faro",
-  "comingSoon": "[TODO] Esta sección estará disponible en una próxima versión.",
-  "skipToContent": "[TODO] Saltar al contenido",
+  "appName": "Faro",
+  "comingSoon": "This section will be available in an upcoming version.",
+  "skipToContent": "Skip to content",
   "sidebar": {
-    "label": "[TODO] Secciones de Faro",
-    "collapse": "[TODO] Contraer barra lateral",
-    "expand": "[TODO] Expandir barra lateral",
-    "pendingApprovals_one": "[TODO] {{count}} propuesta pendiente",
-    "pendingApprovals_other": "[TODO] {{count}} propuestas pendientes"
+    "label": "Faro sections",
+    "collapse": "Collapse sidebar",
+    "expand": "Expand sidebar",
+    "pendingApprovals_one": "{{count}} pending proposal",
+    "pendingApprovals_other": "{{count}} pending proposals"
   },
   "connection": {
-    "disconnected": "[TODO] Sin conectar",
-    "connected": "[TODO] Conectada",
-    "failing": "[TODO] Falla",
-    "untested": "[TODO] Sin probar",
-    "testing": "[TODO] Probando…"
+    "disconnected": "Not connected",
+    "connected": "Connected",
+    "failing": "Failing",
+    "untested": "Not tested",
+    "testing": "Testing…"
   },
   "toasts": {
-    "label": "[TODO] Notificaciones"
+    "label": "Notifications"
   },
   "agentsControl": {
-    "pause": "[TODO] Pausar agentes",
-    "pauseTooltip": "[TODO] Detiene a todos los agentes al momento. Nada se ejecuta hasta que los reanudes.",
-    "pausing": "[TODO] Pausando…",
-    "resume": "[TODO] Reanudar agentes",
-    "resuming": "[TODO] Reanudando…",
-    "pausedBanner": "[TODO] Los agentes están en pausa. No se ejecuta ninguna tarea, tampoco las programadas.",
-    "resumedToast": "[TODO] Los agentes vuelven a trabajar.",
-    "pauseNotSaved": "[TODO] La pausa no se pudo guardar: si cierras Faro, los agentes volverán a trabajar.",
-    "pauseNotSavedToast": "[TODO] Pausamos a los agentes, pero no pudimos guardar la pausa. Si cierras Faro, volverán a trabajar.",
-    "resumeFailedToast": "[TODO] No pudimos reanudar a los agentes. Intenta de nuevo."
+    "pause": "Pause agents",
+    "pauseTooltip": "Stops all agents right away. Nothing runs until you resume them.",
+    "pausing": "Pausing…",
+    "resume": "Resume agents",
+    "resuming": "Resuming…",
+    "pausedBanner": "The agents are paused. No task runs, not even scheduled ones.",
+    "resumedToast": "The agents are back to work.",
+    "pauseNotSaved": "The pause couldn't be saved: if you close Faro, the agents will go back to work.",
+    "pauseNotSavedToast": "We paused the agents, but we couldn't save the pause. If you close Faro, they'll go back to work.",
+    "resumeFailedToast": "We couldn't resume the agents. Try again."
   },
   "money": {
-    "lessThan": "[TODO] menos de {{amount}}"
+    "lessThan": "less than {{amount}}"
   },
-  "aiBadge": "[TODO] Hecho por IA",
+  "aiBadge": "Made by AI",
   "providers": {
-    "unknown": "[TODO] tu proveedor de IA"
+    "unknown": "your AI provider"
   },
   "sectionError": {
-    "title": "[TODO] No pudimos mostrar esta sección.",
-    "description": "[TODO] Algo salió mal al dibujarla. Tus datos y la pausa de los agentes no cambiaron. Ve a Inicio y vuelve a abrirla.",
-    "goHome": "[TODO] Ir a Inicio"
+    "title": "We couldn't show this section.",
+    "description": "Something went wrong while displaying it. Your data and the agents' pause didn't change. Go to Home and open it again.",
+    "goHome": "Go to Home"
   }
 }

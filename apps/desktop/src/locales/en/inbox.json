@@ -1,37 +1,37 @@
 {
-  "title": "[TODO] Bandeja",
+  "title": "Inbox",
   "emptyState": {
-    "title": "[TODO] Nada por aprobar",
-    "description": "[TODO] Antes de publicar o gastar dinero, los agentes te pedirán permiso aquí."
+    "title": "Nothing to approve",
+    "description": "Before publishing or spending money, the agents will ask for your permission here."
   },
-  "listLabel": "[TODO] Propuestas pendientes",
-  "loadingLabel": "[TODO] Cargando tus propuestas",
-  "retry": "[TODO] Intentar de nuevo",
-  "retrying": "[TODO] Intentando de nuevo…",
+  "listLabel": "Pending proposals",
+  "loadingLabel": "Loading your proposals",
+  "retry": "Try again",
+  "retrying": "Trying again…",
   "card": {
-    "from": "[TODO] {{agent}} · {{site}}",
-    "expires": "[TODO] Caduca el {{date}}",
-    "unknownAction": "[TODO] Esta propuesta no se puede revisar en esta versión de Faro. Puedes descartarla.",
-    "previewLabel": "[TODO] Vista previa de la propuesta",
-    "approving": "[TODO] Guardando…",
-    "rejecting": "[TODO] Descartando…",
-    "reject": "[TODO] Descartar"
+    "from": "{{agent}} · {{site}}",
+    "expires": "Expires on {{date}}",
+    "unknownAction": "This proposal can't be reviewed in this version of Faro. You can discard it.",
+    "previewLabel": "Proposal preview",
+    "approving": "Saving…",
+    "rejecting": "Discarding…",
+    "reject": "Discard"
   },
   "actions": {
     "siteSummarySave": {
-      "title": "[TODO] Guardar este resumen en Faro",
-      "approve": "[TODO] Guardar resumen",
-      "approved": "[TODO] Guardamos el resumen."
+      "title": "Save this summary in Faro",
+      "approve": "Save summary",
+      "approved": "We saved the summary."
     },
     "unknown": {
-      "title": "[TODO] Una propuesta de un agente"
+      "title": "A proposal from an agent"
     }
   },
   "reasons": {
-    "siteSummaryShowOnHome": "[TODO] Por qué: así lo verás en Inicio."
+    "siteSummaryShowOnHome": "Why: so you'll see it on Home."
   },
   "toast": {
-    "approved": "[TODO] Aprobamos la propuesta.",
-    "rejected": "[TODO] Descartamos la propuesta."
+    "approved": "We approved the proposal.",
+    "rejected": "We discarded the proposal."
   }
 }

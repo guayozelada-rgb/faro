@@ -40,6 +40,6 @@ Marca lo que aplique. Cualquier casilla marcada requiere la revisión de `reviso
 ## Comprobaciones generales
 
 - [ ] Sin claves, tokens ni datos reales en el código, las pruebas, los logs ni este PR.
-- [ ] Textos de interfaz en español, con tuteo y sin jerga; las claves nuevas en `en` y `pt-BR` llevan `[TODO] `.
+- [ ] Textos de interfaz en español, con tuteo y sin jerga; las claves nuevas están traducidas en `en` y `pt-BR` (o llevan `[TODO] ` si no hay traducción).
 - [ ] Nada publica contenido ni gasta dinero sin pasar por las reglas de autonomía y la Bandeja de aprobación.
 - [ ] Spec o ADR actualizados si cambia una decisión.

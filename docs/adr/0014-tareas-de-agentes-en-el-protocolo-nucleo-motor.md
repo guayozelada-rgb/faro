@@ -101,3 +101,7 @@ Ratifica las notas de las dos actualizaciones de 2026-10-08 (el orden nuevo de l
 - **Líneas de decisión provocadas por el motor (ADR 0010).** `secret.used` va al log uno a uno solo en los 3 primeros usos por (concesión, referencia, operación); el resto sale en un resumen con `count` y `errors` al terminar la concesión. Todas esas líneas (concesión emitida y liberada, usos y resúmenes) comparten un tope de 200 que recupera una cada 15 s; lo que no cabe sale después como "decisiones del motor sin registrar". Pausa, reanudación, reinicios y apagado no pasan por ese tope.
 - **`agents_control_state`** devuelve `{paused, changed_at, saved}` (§2).
 - **Riesgos aceptados que siguen:** `GrantGuard::drop` borra la concesión por clave sin mirar la serie (solo afecta a la concesión del propio motor); con la cola de 32 del canal de secretos llena, un `run_grant_release` se descarta y la concesión vive hasta caducar (900 s como máximo).
+
+## Actualización (2026-10-31, T15)
+
+- **Ritmo de concesiones (§1), espera por tipo de agente.** Ante `agents.grant_rate_limited` ya no espera el trabajador entero: espera solo el tipo de agente rechazado (unos 60 s; la pausa o el apagado cortan la espera). Mientras tanto el trabajador sigue con tareas de otros tipos, y las renovaciones limitadas de ese tipo siguen `paused` hasta que pasa el plazo. Cancelar la tarea que esperaba ya no corta la espera de su tipo: el núcleo sigue limitando ese tipo y el trabajador no está bloqueado. Queda superado el "límite conocido" de la actualización anterior.

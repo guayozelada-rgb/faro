@@ -21,7 +21,7 @@ from faro_engine.core import protocol
 from faro_engine.core.db.database import Database
 from faro_engine.core.jobs.activity import ActivityEmitter
 from faro_engine.core.jobs.control import AgentsControlState
-from faro_engine.core.jobs.runner import AgentCatalog
+from faro_engine.core.jobs.runner import AgentCatalog, AgentDefinition
 from faro_engine.core.jobs.runtime import JobSystem
 from faro_engine.core.store import approvals, credentials, runs
 from faro_engine.core.store.runs import NewRun, RunRecord
@@ -164,6 +164,8 @@ class JobWorld:
     timezone: str = "America/Santiago"
     # Distinta de la espera de `catch_up` (60 s) para soltarlas por separado.
     grant_rate_limited_backoff: float = 61.0
+    # Otros agentes del catálogo (p. ej. un segundo tipo para el ritmo de concesiones).
+    extra_agents: tuple[AgentDefinition, ...] = ()
     _jobs: JobSystem | None = None
     _llm: LlmService | None = None
 
@@ -190,7 +192,7 @@ class JobWorld:
                 grants=self.grants,
                 activity=ActivityEmitter(protocol.ProtocolWriter(self.sink)),
                 llm=self.llm,
-                agents=AgentCatalog([self.agent]),
+                agents=AgentCatalog([self.agent, *self.extra_agents]),
                 clock=self.clock,
                 sleep=self.sleep,
                 timezone_name=lambda: self.timezone,

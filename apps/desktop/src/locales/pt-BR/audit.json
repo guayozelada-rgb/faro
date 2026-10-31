@@ -1,7 +1,7 @@
 {
-  "title": "[TODO] Auditoría",
+  "title": "Auditoria",
   "emptyState": {
-    "title": "[TODO] Revisa la salud de tu sitio",
-    "description": "[TODO] Encuentra páginas que no existen, títulos repetidos y otros problemas que te quitan visitas."
+    "title": "Confira a saúde do seu site",
+    "description": "Encontre páginas que não existem, títulos repetidos e outros problemas que tiram visitas de você."
   }
 }

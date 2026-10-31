@@ -1,7 +1,7 @@
 {
-  "title": "[TODO] Anuncios",
+  "title": "Anúncios",
   "emptyState": {
-    "title": "[TODO] Aún no tienes campañas",
-    "description": "[TODO] Aquí prepararás anuncios de Google. Siempre se crean en pausa para que los revises."
+    "title": "Você ainda não tem campanhas",
+    "description": "Aqui você vai preparar anúncios do Google. Eles sempre são criados pausados para você revisar."
   }
 }

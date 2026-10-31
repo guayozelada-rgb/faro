@@ -12,7 +12,7 @@ from faro_engine.agents.framework.orchestrator import Objective
 from faro_engine.agents.registry import AgentSpec
 from faro_engine.core import protocol
 from faro_engine.core.jobs.activity import ActivityEmitter
-from faro_engine.core.jobs.runner import AgentCatalog, AgentDefinition, AgentServices
+from faro_engine.core.jobs.runner import AgentCatalog, AgentServices
 from faro_engine.core.jobs.runtime import JobSystem
 from faro_engine.core.store import approvals, autonomy_rules, checkpoints, runs, site_summaries
 from faro_engine.core.store.approvals import ApprovalRecord
@@ -27,7 +27,6 @@ BIG_BUDGET = {"token_budget": 200_000, "max_cost_micros": 5_000_000}
 class GraphWorld(JobWorld):
     notes: FakeNotes = field(default_factory=FakeNotes)
     spec: AgentSpec | None = None
-    extra_agents: tuple[AgentDefinition, ...] = ()
     objectives: tuple[Objective, ...] = ()
     services: AgentServices = field(default_factory=AgentServices)
 

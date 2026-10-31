@@ -452,11 +452,18 @@ async def test_error_del_proveedor_falla_con_su_codigo_y_borra_intermedios(
         await world.jobs.shutdown()
 
 
-async def test_cancelar_en_espera_y_el_checkpoint_queda(gworld: GraphWorld) -> None:
+async def test_cancelar_en_espera_poda_y_el_ultimo_checkpoint_queda(gworld: GraphWorld) -> None:
+    """Cancelada desde la ruta mientras espera tu OK (no corría): sus checkpoints
+    intermedios se podan como al terminar en el trabajador y queda el último (pendiente 8
+    de la spec F1b §12.2)."""
     await started(gworld)
     await gworld.until(R1, "waiting_approval")
-    result = await gworld.jobs.queue.cancel(R1)
+    before = gworld.checkpoint_count(R1)
+    assert before > 1
+    result = await gworld.jobs.queue.cancel(R1)  # como `cancelAgentRun`
     assert result.outcome == "cancelled"
+    assert result.checkpoints_pruned == before - 1
+    assert gworld.checkpoint_count(R1) == 1
     approval = gworld.approval(R1)
     assert approval is not None
     assert approval.status == "cancelled"

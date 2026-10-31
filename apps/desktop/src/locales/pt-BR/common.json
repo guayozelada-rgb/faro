@@ -1,46 +1,46 @@
 {
-  "appName": "[TODO] Faro",
-  "comingSoon": "[TODO] Esta sección estará disponible en una próxima versión.",
-  "skipToContent": "[TODO] Saltar al contenido",
+  "appName": "Faro",
+  "comingSoon": "Esta seção vai estar disponível em uma próxima versão.",
+  "skipToContent": "Pular para o conteúdo",
   "sidebar": {
-    "label": "[TODO] Secciones de Faro",
-    "collapse": "[TODO] Contraer barra lateral",
-    "expand": "[TODO] Expandir barra lateral",
-    "pendingApprovals_one": "[TODO] {{count}} propuesta pendiente",
-    "pendingApprovals_other": "[TODO] {{count}} propuestas pendientes"
+    "label": "Seções do Faro",
+    "collapse": "Recolher barra lateral",
+    "expand": "Expandir barra lateral",
+    "pendingApprovals_one": "{{count}} proposta pendente",
+    "pendingApprovals_other": "{{count}} propostas pendentes"
   },
   "connection": {
-    "disconnected": "[TODO] Sin conectar",
-    "connected": "[TODO] Conectada",
-    "failing": "[TODO] Falla",
-    "untested": "[TODO] Sin probar",
-    "testing": "[TODO] Probando…"
+    "disconnected": "Sem conexão",
+    "connected": "Conectada",
+    "failing": "Com falha",
+    "untested": "Não testada",
+    "testing": "Testando…"
   },
   "toasts": {
-    "label": "[TODO] Notificaciones"
+    "label": "Notificações"
   },
   "agentsControl": {
-    "pause": "[TODO] Pausar agentes",
-    "pauseTooltip": "[TODO] Detiene a todos los agentes al momento. Nada se ejecuta hasta que los reanudes.",
-    "pausing": "[TODO] Pausando…",
-    "resume": "[TODO] Reanudar agentes",
-    "resuming": "[TODO] Reanudando…",
-    "pausedBanner": "[TODO] Los agentes están en pausa. No se ejecuta ninguna tarea, tampoco las programadas.",
-    "resumedToast": "[TODO] Los agentes vuelven a trabajar.",
-    "pauseNotSaved": "[TODO] La pausa no se pudo guardar: si cierras Faro, los agentes volverán a trabajar.",
-    "pauseNotSavedToast": "[TODO] Pausamos a los agentes, pero no pudimos guardar la pausa. Si cierras Faro, volverán a trabajar.",
-    "resumeFailedToast": "[TODO] No pudimos reanudar a los agentes. Intenta de nuevo."
+    "pause": "Pausar agentes",
+    "pauseTooltip": "Para todos os agentes na hora. Nada roda até você retomar.",
+    "pausing": "Pausando…",
+    "resume": "Retomar agentes",
+    "resuming": "Retomando…",
+    "pausedBanner": "Os agentes estão pausados. Nenhuma tarefa roda, nem as programadas.",
+    "resumedToast": "Os agentes voltaram a trabalhar.",
+    "pauseNotSaved": "Não deu para salvar a pausa: se você fechar o Faro, os agentes vão voltar a trabalhar.",
+    "pauseNotSavedToast": "Pausamos os agentes, mas não conseguimos salvar a pausa. Se você fechar o Faro, eles vão voltar a trabalhar.",
+    "resumeFailedToast": "Não conseguimos retomar os agentes. Tente de novo."
   },
   "money": {
-    "lessThan": "[TODO] menos de {{amount}}"
+    "lessThan": "menos de {{amount}}"
   },
-  "aiBadge": "[TODO] Hecho por IA",
+  "aiBadge": "Feito por IA",
   "providers": {
-    "unknown": "[TODO] tu proveedor de IA"
+    "unknown": "seu provedor de IA"
   },
   "sectionError": {
-    "title": "[TODO] No pudimos mostrar esta sección.",
-    "description": "[TODO] Algo salió mal al dibujarla. Tus datos y la pausa de los agentes no cambiaron. Ve a Inicio y vuelve a abrirla.",
-    "goHome": "[TODO] Ir a Inicio"
+    "title": "Não conseguimos mostrar esta seção.",
+    "description": "Algo deu errado ao exibir a seção. Seus dados e a pausa dos agentes não mudaram. Vá para o Início e abra a seção de novo.",
+    "goHome": "Ir para o Início"
   }
 }

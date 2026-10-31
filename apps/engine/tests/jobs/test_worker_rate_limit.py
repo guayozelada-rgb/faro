@@ -6,6 +6,7 @@ estado guardado (spec F1b §4.3)."""
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,27 +14,33 @@ import pytest
 
 from faro_engine.core.errors import AGENTS_GRANT_RATE_LIMITED, AGENTS_PAUSED
 from faro_engine.core.jobs.grants import RunGrant, RunGrantError
-from faro_engine.core.jobs.runner import RunInvocation
+from faro_engine.core.jobs.runner import AgentAction, RunInvocation
 from faro_engine.core.jobs.worker import Worker
 from faro_engine.core.secrets import SecretError
 from tests.db.helpers import insert_row
-from tests.fakes.agents import FakeGrants
-from tests.jobs.world import SITE, JobWorld, ManualSleep, eventually, run_id, settled, spend
+from tests.fakes.agents import FakeGrants, StepAgent
+from tests.jobs.world import JobWorld, ManualSleep, eventually, run_id, settled, spend
 
 WAIT = 61.0  # `JobWorld.grant_rate_limited_backoff` (en producción, 60 s)
 R1 = run_id(1)
 R2 = run_id(2)
+R3 = run_id(3)
+OTHER = "other_agent"
 
 
 @dataclass
 class RateLimitedGrants(FakeGrants):
     """Núcleo simulado con el cubo de concesiones de un tipo de agente: `tokens` fichas;
-    sin fichas responde `agents.grant_rate_limited`. La prueba repone con `refill`."""
+    sin fichas responde `agents.grant_rate_limited`. La prueba repone con `refill`. Los
+    demás tipos de agente no tienen límite (el núcleo lleva un cubo por tipo)."""
 
     tokens: int = 10
     limited: int = 0
+    kind: str = "test_agent"
 
     async def request(self, **kwargs: Any) -> RunGrant:
+        if kwargs["agent"] != self.kind:
+            return await super().request(**kwargs)
         if self.tokens == 0:
             self.requests.append(dict(kwargs))
             self.limited += 1
@@ -69,6 +76,25 @@ def add_sites(world: JobWorld, count: int) -> list[str]:
 
     world.database.run_sync(write)
     return ids
+
+
+def other_agent(world: JobWorld) -> StepAgent:
+    """Un segundo tipo de agente en el catálogo (antes de crear el sistema de tareas)."""
+    agent = StepAgent(
+        kind=OTHER,
+        objective=f"{OTHER}.run",
+        actions=(AgentAction(f"{OTHER}.save", "internal"),),
+    )
+    world.extra_agents = (agent,)
+    return agent
+
+
+async def settle_worker(world: JobWorld) -> None:
+    """Deja correr al trabajador hasta que vuelve a esperar trabajo (sin `sleep` fijo)."""
+    await eventually(lambda: not world.jobs.worker.busy)
+    for _ in range(20):
+        await asyncio.sleep(0)
+    await eventually(lambda: not world.jobs.worker.busy)
 
 
 def limited(world: JobWorld, count: int = 10) -> RateLimitedGrants:
@@ -160,6 +186,104 @@ async def test_renovacion_limitada_queda_en_pausa_y_sigue_desde_su_paso(world: J
     await eventually(lambda: grants.releases == [(R1, "paused"), (R1, "succeeded")])
 
 
+# --- Pendiente 6 de la spec F1b §12.2: la espera es por tipo de agente --------------------
+
+
+async def test_otro_tipo_de_agente_sigue_mientras_uno_espera(world: JobWorld) -> None:
+    """Mientras `test_agent` espera por el ritmo, el trabajador no se queda parado: toma
+    la tarea de otro tipo de agente. La otra de `test_agent` espera, sin pedir concesión
+    ni fallar, hasta que termina la espera de su tipo."""
+    grants = limited(world, count=0)
+    other = other_agent(world)
+    second_site = add_sites(world, 1)[0]
+    await world.jobs.start()
+    await world.add_run(R1, created_at="2026-10-09T15:00:00Z")
+    await world.add_run(R3, site_id=second_site, created_at="2026-10-09T15:00:01Z")
+    await world.add_run(
+        R2, agent_kind=OTHER, objective=f"{OTHER}.run", created_at="2026-10-09T15:00:02Z"
+    )
+    world.run_control()
+
+    # La de otro tipo termina aunque la espera de `test_agent` sigue sin soltarse.
+    await eventually(settled(world, R2, "succeeded"))
+    assert world.sleep.pending(WAIT) == 1
+    assert world.jobs.worker.rate_limited_kinds == frozenset({"test_agent"})
+    assert [inv.ctx.run_id for inv in other.invocations] == [R2]
+    assert world.agent.invocations == []
+    first = world.run(R1)
+    assert (first.status, first.status_reason, first.error_code) == (
+        "queued",
+        "grant_rate_limited",
+        None,
+    )
+    # La segunda de `test_agent` ni siquiera se tomó: espera a su tipo, no falla.
+    await settle_worker(world)
+    assert (world.run(R3).status, world.run(R3).status_reason) == ("queued", None)
+    assert world.statuses(R3) == ["queued"]
+    assert [r["run_id"] for r in grants.requests if r["agent"] == "test_agent"] == [R1]
+
+    # Termina la espera: las dos de `test_agent` salen (una ficha por cada una).
+    grants.refill()
+    grants.refill()
+    world.sleep.release(WAIT)
+    await eventually(
+        lambda: settled(world, R1, "succeeded")() and settled(world, R3, "succeeded")()
+    )
+    assert grants.limited == 1
+    assert world.sleep.delays.count(WAIT) == 1
+    assert world.query("SELECT COUNT(*) FROM agent_runs WHERE status = 'failed'") == [(0,)]
+    assert world.jobs.worker.rate_limited_kinds == frozenset()
+
+
+async def test_renovacion_limitada_no_frena_a_otro_tipo(world: JobWorld) -> None:
+    """La renovación de `test_agent` llega limitada: su tarea queda `paused` (no vuelve a
+    la cola antes de tiempo) y el trabajador sigue con la de otro tipo."""
+    grants = limited(world, count=1)
+    other_agent(world)
+    failures: list[int] = []
+
+    async def expired(_inv: RunInvocation) -> None:
+        if not failures:
+            failures.append(1)
+            raise SecretError("vault.secret_not_allowed")
+
+    world.agent.hooks[1] = expired
+    await world.jobs.start()
+    await world.add_run(R1)
+    world.run_control()
+    await eventually(lambda: world.sleep.pending(WAIT) == 1)
+
+    await world.add_run(R2, agent_kind=OTHER, objective=f"{OTHER}.run")
+    await eventually(settled(world, R2, "succeeded"))
+    await settle_worker(world)
+    record = world.run(R1)
+    assert (record.status, record.status_reason) == ("paused", "grant_rate_limited")
+
+    grants.refill()
+    world.sleep.release(WAIT)
+    await eventually(settled(world, R1, "succeeded"))
+    assert [inv.first_start for inv in world.agent.invocations] == [True, False]
+    assert "failed" not in world.statuses(R1)
+
+
+async def test_si_el_trabajador_se_cancela_no_queda_ninguna_espera(world: JobWorld) -> None:
+    """El sistema de tareas cancela al trabajador (apagado sin llegar a un límite): las
+    esperas por el ritmo se cancelan con él y la tarea sigue en la base, en cola."""
+    limited(world, count=0)
+    await world.jobs.start()
+    await world.add_run(R1)
+    world.run_control()
+    await eventually(lambda: world.sleep.pending(WAIT) == 1)
+    task = world.jobs.worker_task
+    assert task is not None
+
+    task.cancel()
+    await eventually(task.done)
+    assert world.sleep.pending(WAIT) == 0
+    assert world.jobs.worker.rate_limited_kinds == frozenset()
+    assert (world.run(R1).status, world.run(R1).status_reason) == ("queued", "grant_rate_limited")
+
+
 async def test_la_pausa_corta_la_espera(world: JobWorld) -> None:
     grants = limited(world, count=0)
     await world.jobs.start()
@@ -175,8 +299,13 @@ async def test_la_pausa_corta_la_espera(world: JobWorld) -> None:
     assert grants.limited == 1
 
 
-async def test_cancelar_la_tarea_que_espera_corta_la_espera(world: JobWorld) -> None:
+async def test_cancelar_la_tarea_que_espera_no_corta_la_espera_de_su_tipo(
+    world: JobWorld,
+) -> None:
+    """La espera es del tipo de agente (el núcleo sigue limitando ese tipo), no de la
+    tarea: cancelarla no la corta, y otra tarea del mismo tipo espera a que termine."""
     grants = limited(world, count=0)
+    other_site = add_sites(world, 1)[0]
     await world.jobs.start()
     await world.add_run(R1)
     world.run_control()
@@ -186,13 +315,18 @@ async def test_cancelar_la_tarea_que_espera_corta_la_espera(world: JobWorld) -> 
     result = await world.jobs.queue.cancel(R1)
     assert result.outcome == "cancelled"
     assert world.jobs.worker.request_cancel(R1) is False  # no estaba en curso
-    await eventually(lambda: world.sleep.pending(WAIT) == 0)
     assert world.run(R1).status_reason == "user_cancelled"
 
     grants.refill()
-    await world.add_run(R2, site_id=SITE)
+    await world.add_run(R2, site_id=other_site, created_at="2026-10-09T15:00:01Z")
+    await settle_worker(world)
+    assert world.sleep.pending(WAIT) == 1
+    assert (world.run(R2).status, world.run(R2).status_reason) == ("queued", None)
+    assert [request["run_id"] for request in grants.requests] == [R1]
+
+    world.sleep.release(WAIT)
     await eventually(settled(world, R2, "succeeded"))
-    assert world.jobs.worker.request_cancel(R1) is False
+    assert world.jobs.worker.rate_limited_kinds == frozenset()
 
 
 async def test_el_apagado_corta_la_espera_y_la_tarea_sigue_en_cola(world: JobWorld) -> None:
